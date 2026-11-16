@@ -76,7 +76,7 @@ function fmtUptime(ms) {
   const d = Math.floor(s / 86400); s %= 86400;
   const h = Math.floor(s / 3600); s %= 3600;
   const m = Math.floor(s / 60);
-  return ((d ? d + 'd ' : '') + h + 'h ' + m + 'm';
+  return (d ? d + 'd ' : '') + h + 'h ' + m + 'm';
 }
 const extOf = n => { const i = n.lastIndexOf('.'); return i > 0 ? n.slice(i + 1).toLowerCase() : ''; };
 
