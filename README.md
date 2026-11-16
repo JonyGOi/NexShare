@@ -54,6 +54,8 @@ root prompt.
   needed. Enabling a tunnel force-enables the PIN.
 - **Wallpaper** — generate NexOS-branded wallpapers and set them on the phone,
   or set any image in File Station as wallpaper.
+- **Always-on Background Service & Screen-Off Mode** — runs 24/7 in the background with partial wake lock and Wi-Fi lock so you can turn off the phone's screen completely without losing file transfers or network access. Automatically exempts from Doze mode (via root shell or 1-tap exemption dialog) and auto-starts on phone boot.
+- **Auto-Reconnection** — dynamically monitors network state; when Wi-Fi or internet connection drops, the service automatically stays alive, updates notifications, rejoins mDNS, and keeps reconnecting the Cloudflare internet tunnel until restored.
 - **Network Drive (WebDAV)** — map your Android phone's storage directly as a Windows network
   drive (e.g. `Z:`) over HTTP/WebDAV. Open, edit, copy, and stream files natively from File Explorer.
 - **System widgets** — System Health, Resource Monitor (CPU/RAM/network),

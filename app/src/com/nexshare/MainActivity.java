@@ -35,8 +35,8 @@ import java.net.Inet4Address;
 public class MainActivity extends Activity {
 
     private static final int BLUE = 0xFF1E6FD9;
-    private TextView status, urlHost, urlIp, davUrl, permNote;
-    private Button toggle, permBtn;
+    private TextView status, urlHost, urlIp, davUrl, permNote, bgStatus;
+    private Button toggle, permBtn, bgBtn;
     private Switch davSwitch;
     private RadioGroup authGroup;
     private LinearLayout authDetail;
@@ -142,6 +142,23 @@ public class MainActivity extends Activity {
         screenCard.addView(screenSwitch);
         screenCard.addView(text(Flavor.ROOT ? "Root edition: Screen stays on across other apps (svc power stayon)" : "Screen stays on only while this app is open", 12, 0xFF8A96A3, false));
 
+        LinearLayout bgCard = card(body);
+        bgCard.addView(text("Background & Screen Off", 15, 0xFF1D2733, true));
+        bgStatus = text("", 13, 0xFF6B7785, false);
+        bgCard.addView(bgStatus);
+        bgBtn = new Button(this);
+        bgBtn.setAllCaps(false);
+        bgBtn.setText("Allow Unrestricted Background");
+        bgBtn.setOnClickListener(v -> requestBatteryExemption());
+        bgCard.addView(bgBtn);
+
+        Switch bootSwitch = new Switch(this);
+        bootSwitch.setText("Start server automatically on device boot");
+        bootSwitch.setTextSize(14);
+        bootSwitch.setChecked(Settings.bootStartEnabled(this));
+        bootSwitch.setOnCheckedChangeListener((v, on) -> Settings.setBootStartEnabled(this, on));
+        bgCard.addView(bootSwitch);
+
         LinearLayout davCard = card(body);
         davCard.addView(text("WebDAV (Windows Network Drive)", 15, 0xFF1D2733, true));
         davSwitch = new Switch(this);
@@ -198,6 +215,7 @@ public class MainActivity extends Activity {
 
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 2);
+        if (Build.VERSION.SDK_INT >= 23 && isBatteryOptimized()) requestBatteryExemption();
         if (!hasFileAccess()) requestFileAccess();
         else if (!ServerService.running) startServer();
     }
@@ -351,6 +369,42 @@ public class MainActivity extends Activity {
         boolean access = hasFileAccess();
         permNote.setText(access ? "✓ All files access granted" : "Storage permission not granted. Web UI will not be able to browse folders.");
         permBtn.setVisibility(access ? View.GONE : View.VISIBLE);
+
+        if (bgStatus != null) {
+            boolean opt = isBatteryOptimized();
+            if (opt) {
+                bgStatus.setText("⚠️ Battery optimization active: Android may stop server when screen is off.");
+                bgStatus.setTextColor(0xFFD97706);
+                bgBtn.setVisibility(View.VISIBLE);
+            } else {
+                bgStatus.setText("✓ Unrestricted background execution active — Server stays alive with screen turned off.");
+                bgStatus.setTextColor(0xFF16A34A);
+                bgBtn.setVisibility(View.GONE);
+            }
+        }
+    }
+
+    private boolean isBatteryOptimized() {
+        if (Build.VERSION.SDK_INT >= 23) {
+            android.os.PowerManager pm = (android.os.PowerManager) getSystemService(Context.POWER_SERVICE);
+            return pm != null && !pm.isIgnoringBatteryOptimizations(getPackageName());
+        }
+        return false;
+    }
+
+    private void requestBatteryExemption() {
+        if (Build.VERSION.SDK_INT >= 23) {
+            try {
+                Intent intent = new Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+                intent.setData(Uri.parse("package:" + getPackageName()));
+                startActivity(intent);
+            } catch (Exception e) {
+                try {
+                    Intent intent = new Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS);
+                    startActivity(intent);
+                } catch (Exception ignored) { }
+            }
+        }
     }
 
     private LinearLayout card(LinearLayout parent) {

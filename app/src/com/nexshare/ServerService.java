@@ -8,6 +8,11 @@ import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
+import android.net.ConnectivityManager;
+import android.net.LinkProperties;
+import android.net.Network;
+import android.net.NetworkCapabilities;
+import android.net.NetworkRequest;
 import android.net.nsd.NsdManager;
 import android.net.nsd.NsdServiceInfo;
 import android.net.wifi.WifiManager;
@@ -17,7 +22,10 @@ import android.os.PowerManager;
 
 import java.net.Inet4Address;
 
-/** Foreground service that keeps the web server and mDNS responder alive while sharing. */
+/**
+ * Foreground service that keeps the HTTP/WebDAV server, mDNS responder and internet tunnel
+ * alive 24/7 in background even when the screen is turned off, and automatically reconnects on network changes.
+ */
 public class ServerService extends Service {
 
     public static final int PORT = 8080;
@@ -33,6 +41,8 @@ public class ServerService extends Service {
     private WifiManager.WifiLock wifiLock;
     private NsdManager nsd;
     private NsdManager.RegistrationListener nsdListener;
+    private ConnectivityManager connMgr;
+    private ConnectivityManager.NetworkCallback networkCallback;
 
     @Override
     public IBinder onBind(Intent intent) {
@@ -50,11 +60,36 @@ public class ServerService extends Service {
         return START_STICKY;
     }
 
+    @Override
+    public void onTaskRemoved(Intent rootIntent) {
+        // Prevent system from killing the background sharing service when swiped from recents
+        if (running) {
+            updateNotification();
+        }
+        super.onTaskRemoved(rootIntent);
+    }
+
     private void goForeground() {
+        Notification n = buildNotification();
+        if (Build.VERSION.SDK_INT >= 34) startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
+        else startForeground(1, n);
+    }
+
+    public void updateNotification() {
+        if (!running) return;
+        NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        if (nm != null) {
+            nm.notify(1, buildNotification());
+        }
+    }
+
+    private Notification buildNotification() {
         NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
         Notification.Builder b;
         if (Build.VERSION.SDK_INT >= 26) {
-            nm.createNotificationChannel(new NotificationChannel(CHANNEL, "NexShare server", NotificationManager.IMPORTANCE_LOW));
+            NotificationChannel chan = new NotificationChannel(CHANNEL, "NexShare server", NotificationManager.IMPORTANCE_LOW);
+            chan.setShowBadge(false);
+            if (nm != null) nm.createNotificationChannel(chan);
             b = new Notification.Builder(this, CHANNEL);
         } else {
             b = new Notification.Builder(this);
@@ -62,16 +97,22 @@ public class ServerService extends Service {
         int piFlags = Build.VERSION.SDK_INT >= 23 ? PendingIntent.FLAG_IMMUTABLE : 0;
         PendingIntent open = PendingIntent.getActivity(this, 0, new Intent(this, MainActivity.class), piFlags);
         PendingIntent stop = PendingIntent.getService(this, 1, new Intent(this, ServerService.class).setAction(ACTION_STOP), piFlags);
+
         Inet4Address ip = MdnsResponder.lanAddress();
+        String text;
+        if (ip != null) {
+            text = "http://" + MdnsResponder.HOST + ":" + PORT + "  •  " + ip.getHostAddress() + ":" + PORT;
+        } else {
+            text = "Waiting for network connection... (auto-reconnecting)";
+        }
+
         b.setSmallIcon(R.drawable.ic_notify)
             .setContentTitle("NexShare is sharing files")
-            .setContentText("http://" + MdnsResponder.HOST + ":" + PORT + (ip != null ? "  •  " + ip.getHostAddress() + ":" + PORT : ""))
+            .setContentText(text)
             .setContentIntent(open)
             .setOngoing(true)
             .addAction(new Notification.Action.Builder(null, "Stop", stop).build());
-        Notification n = b.build();
-        if (Build.VERSION.SDK_INT >= 34) startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
-        else startForeground(1, n);
+        return b.build();
     }
 
     private void startServer() {
@@ -85,16 +126,28 @@ public class ServerService extends Service {
             DownloadManager.get(this).startup();
             applyStayOn();
             TunnelManager.get(this).restoreIfEnabled();
+
+            // Acquire CPU wake lock so the server executes continuously with screen off
             PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
-            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "nexshare:server");
-            wakeLock.acquire();
+            if (pm != null) {
+                wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "nexshare:server");
+                wakeLock.setReferenceCounted(false);
+                wakeLock.acquire();
+            }
+
+            // Acquire Wi-Fi lock so Wi-Fi does not sleep or drop packets with screen off
             WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
             if (wm != null) {
                 wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "nexshare:wifi");
+                wifiLock.setReferenceCounted(false);
                 wifiLock.acquire();
             }
+
+            registerNetworkMonitoring();
+
             running = true;
             lastError = null;
+            updateNotification();
         } catch (Exception e) {
             lastError = e.getMessage();
             running = false;
@@ -103,23 +156,80 @@ public class ServerService extends Service {
         }
     }
 
-    /** Root edition: keep the physical screen on across the whole device while sharing. */
+    private void registerNetworkMonitoring() {
+        try {
+            connMgr = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+            if (connMgr == null) return;
+            networkCallback = new ConnectivityManager.NetworkCallback() {
+                @Override
+                public void onAvailable(Network network) {
+                    updateNotification();
+                    if (mdns != null) mdns.onNetworkChanged();
+                    registerNsd();
+                    TunnelManager.get(ServerService.this).onNetworkAvailable();
+                }
+
+                @Override
+                public void onLost(Network network) {
+                    updateNotification();
+                    TunnelManager.get(ServerService.this).onNetworkLost();
+                }
+
+                @Override
+                public void onLinkPropertiesChanged(Network network, LinkProperties linkProperties) {
+                    updateNotification();
+                    if (mdns != null) mdns.onNetworkChanged();
+                }
+            };
+            if (Build.VERSION.SDK_INT >= 24) {
+                connMgr.registerDefaultNetworkCallback(networkCallback);
+            } else {
+                NetworkRequest req = new NetworkRequest.Builder().addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).build();
+                connMgr.registerNetworkCallback(req, networkCallback);
+            }
+        } catch (Exception ignored) { }
+    }
+
+    private void unregisterNetworkMonitoring() {
+        try {
+            if (connMgr != null && networkCallback != null) {
+                connMgr.unregisterNetworkCallback(networkCallback);
+            }
+        } catch (Exception ignored) { }
+        networkCallback = null;
+    }
+
+    /** Whitelist app from battery optimizations (Doze mode) in Root edition, and optionally keep physical screen on. */
     private void applyStayOn() {
         if (!Flavor.ROOT) return;
-        final boolean on = Settings.keepScreenOn(this);
+        final boolean keepScreen = Settings.keepScreenOn(this);
+        final String pkg = getPackageName();
         new Thread(new Runnable() {
             public void run() {
                 try {
-                    if (RootShell.available()) RootShell.main().exec("svc power stayon " + (on ? "true" : "false"), 8000);
+                    if (RootShell.available()) {
+                        // Whitelist NexShare from Android Doze mode completely
+                        RootShell.main().exec("dumpsys deviceidle whitelist +" + pkg, 8000);
+                        RootShell.main().exec("am set-inactive " + pkg + " false", 8000);
+                        if (keepScreen) {
+                            RootShell.main().exec("svc power stayon true", 8000);
+                        }
+                    }
                 } catch (Exception ignored) { }
             }
         }).start();
     }
 
-    /** Also advertise as a DNS-SD web service so discovery apps list it. */
+    /** Advertise as a DNS-SD web service so discovery apps list it. */
     private void registerNsd() {
         try {
+            if (nsd != null && nsdListener != null) {
+                try {
+                    nsd.unregisterService(nsdListener);
+                } catch (Exception ignored) { }
+            }
             nsd = (NsdManager) getSystemService(Context.NSD_SERVICE);
+            if (nsd == null) return;
             NsdServiceInfo info = new NsdServiceInfo();
             info.setServiceName("NexShare");
             info.setServiceType("_http._tcp");
@@ -139,18 +249,21 @@ public class ServerService extends Service {
     @Override
     public void onDestroy() {
         running = false;
+        unregisterNetworkMonitoring();
         if (server[0] != null) server[0].stop();
         server[0] = null;
         if (mdns != null) mdns.stop();
         TunnelManager.get(this).stop();
         DownloadManager.get(this).shutdown();
-        if (Flavor.ROOT) new Thread(new Runnable() {
-            public void run() {
-                try {
-                    if (RootShell.available()) RootShell.main().exec("svc power stayon false", 6000);
-                } catch (Exception ignored) { }
-            }
-        }).start();
+        if (Flavor.ROOT) {
+            new Thread(new Runnable() {
+                public void run() {
+                    try {
+                        if (RootShell.available()) RootShell.main().exec("svc power stayon false", 6000);
+                    } catch (Exception ignored) { }
+                }
+            }).start();
+        }
         try {
             if (nsd != null && nsdListener != null) nsd.unregisterService(nsdListener);
         } catch (Exception ignored) { }

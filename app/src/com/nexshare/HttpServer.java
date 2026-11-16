@@ -192,6 +192,17 @@ public class HttpServer {
                         });
                     } catch (IOException e) {
                         if (!running) break;
+                        if (server == null || server.isClosed()) {
+                            try {
+                                Thread.sleep(1000);
+                                if (!running) break;
+                                server = new ServerSocket();
+                                server.setReuseAddress(true);
+                                server.bind(new InetSocketAddress(port), 64);
+                            } catch (Exception ex) {
+                                try { Thread.sleep(2000); } catch (InterruptedException ignored) { }
+                            }
+                        }
                     }
                 }
             }

@@ -51,6 +51,19 @@ public class MdnsResponder implements Runnable {
         if (lock != null && lock.isHeld()) lock.release();
     }
 
+    /** Called when Wi-Fi or network changes to immediately rejoin multicast groups and re-announce. */
+    public void onNetworkChanged() {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    joinAll();
+                    announce();
+                } catch (Exception ignored) { }
+            }
+        }, "mdns-reannounce").start();
+    }
+
     @Override
     public void run() {
         while (running) {

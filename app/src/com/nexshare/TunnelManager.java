@@ -8,13 +8,13 @@ import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Runs Cloudflare's {@code cloudflared} (bundled as a native lib so it is executable) to expose
- * the local web server on the internet — either a throwaway trycloudflare.com URL ("quick")
- * or a user's named tunnel via a token.
+ * Runs Cloudflare's cloudflared to expose the local web server on the internet.
+ * Automatically keeps reconnecting whenever internet drops or network changes.
  */
 public class TunnelManager {
 
@@ -24,11 +24,15 @@ public class TunnelManager {
 
     private final Context ctx;
     private Process proc;
-    private Thread reader;
     private final List<String> log = new ArrayList<>();
     private volatile State state = State.OFF;
     private volatile String url = "";
     private volatile String error = "";
+
+    private volatile String desiredMode = "off";
+    private volatile String desiredToken = "";
+    private Thread supervisor;
+    private final Object reconnectLock = new Object();
 
     private static final Pattern QUICK_URL = Pattern.compile("https://[a-z0-9-]+\\.trycloudflare\\.com");
 
@@ -70,8 +74,99 @@ public class TunnelManager {
     }
 
     public synchronized void start(String mode, String token) throws Exception {
-        stop();
         if (!supported()) throw new Exception("This device is not supported (no cloudflared binary for this CPU architecture)");
+        desiredMode = mode == null ? "off" : mode;
+        desiredToken = token == null ? "" : token.trim();
+        Settings.setTunnel(ctx, desiredMode, desiredToken);
+
+        stopProcess();
+        synchronized (this) {
+            log.clear();
+            url = "";
+            error = "";
+            state = State.STARTING;
+        }
+
+        startSupervisor();
+    }
+
+    public synchronized void stop() {
+        desiredMode = "off";
+        Settings.setTunnel(ctx, "off", Settings.tunnelToken(ctx));
+        stopProcess();
+        synchronized (this) {
+            state = State.OFF;
+            url = "";
+        }
+        synchronized (reconnectLock) {
+            reconnectLock.notifyAll();
+        }
+    }
+
+    private synchronized void stopProcess() {
+        if (proc != null) {
+            try {
+                proc.destroy();
+            } catch (Exception ignored) { }
+            proc = null;
+        }
+    }
+
+    private void startSupervisor() {
+        if (supervisor != null && supervisor.isAlive()) {
+            synchronized (reconnectLock) {
+                reconnectLock.notifyAll();
+            }
+            return;
+        }
+
+        supervisor = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                int retryDelay = 3;
+                while (!"off".equals(desiredMode) && ServerService.running) {
+                    try {
+                        runProcessOnce();
+                    } catch (Exception e) {
+                        synchronized (TunnelManager.this) {
+                            error = e.getMessage();
+                            state = State.ERROR;
+                        }
+                    }
+
+                    if ("off".equals(desiredMode) || !ServerService.running) break;
+
+                    synchronized (TunnelManager.this) {
+                        if (state != State.CONNECTED) {
+                            state = State.STARTING;
+                            error = "Internet disconnected. Reconnecting in " + retryDelay + "s...";
+                        }
+                    }
+
+                    // Wait before reconnecting; woken up immediately if network becomes available
+                    synchronized (reconnectLock) {
+                        try {
+                            reconnectLock.wait(retryDelay * 1000L);
+                        } catch (InterruptedException ignored) { }
+                    }
+
+                    if ("off".equals(desiredMode) || !ServerService.running) break;
+                    retryDelay = Math.min(retryDelay * 2, 20); // Backoff up to 20s
+                }
+
+                synchronized (TunnelManager.this) {
+                    if ("off".equals(desiredMode)) {
+                        state = State.OFF;
+                        url = "";
+                    }
+                }
+            }
+        }, "tunnel-supervisor");
+        supervisor.setDaemon(true);
+        supervisor.start();
+    }
+
+    private void runProcessOnce() throws Exception {
         File cf = binary();
         File home = new File(ctx.getFilesDir(), "cloudflared");
         home.mkdirs();
@@ -82,11 +177,13 @@ public class TunnelManager {
         cmd.add("--no-autoupdate");
         cmd.add("--edge-ip-version");
         cmd.add("auto");
-        if ("named".equals(mode)) {
-            if (token == null || token.trim().isEmpty()) throw new Exception("Tunnel token is required");
+
+        final boolean named = "named".equals(desiredMode);
+        if (named) {
+            if (desiredToken.isEmpty()) throw new Exception("Tunnel token is required");
             cmd.add("run");
             cmd.add("--token");
-            cmd.add(token.trim());
+            cmd.add(desiredToken);
         } else {
             cmd.add("--url");
             cmd.add("http://127.0.0.1:" + ServerService.PORT);
@@ -98,34 +195,32 @@ public class TunnelManager {
         pb.environment().put("HOME", home.getAbsolutePath());
         pb.environment().put("TMPDIR", ctx.getCacheDir().getAbsolutePath());
 
+        final Process p = pb.start();
         synchronized (this) {
-            log.clear();
-            url = "";
-            error = "";
-            state = State.STARTING;
+            proc = p;
         }
-        final boolean named = "named".equals(mode);
-        proc = pb.start();
-        Settings.setTunnel(ctx, mode, token);
 
-        reader = new Thread(new Runnable() {
+        Thread reader = new Thread(new Runnable() {
+            @Override
             public void run() {
-                try (BufferedReader r = new BufferedReader(new InputStreamReader(proc.getInputStream(), StandardCharsets.UTF_8))) {
+                try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
                     String line;
                     while ((line = r.readLine()) != null) {
                         synchronized (TunnelManager.this) {
                             log.add(line);
                             if (log.size() > 200) log.remove(0);
+
                             Matcher m = QUICK_URL.matcher(line);
                             if (m.find()) {
                                 url = m.group();
                                 state = State.CONNECTED;
+                                error = "";
                             }
-                            if (named && state != State.CONNECTED
-                                && (line.contains("Registered tunnel connection") || line.contains("Connection registered"))) {
+                            if (named && (line.contains("Registered tunnel connection") || line.contains("Connection registered"))) {
                                 state = State.CONNECTED;
+                                error = "";
                             }
-                            String low = line.toLowerCase();
+                            String low = line.toLowerCase(Locale.ROOT);
                             if (low.contains("error") && (low.contains("unauthorized") || low.contains("invalid") || low.contains("failed to"))) {
                                 if (state != State.CONNECTED) {
                                     error = line;
@@ -134,34 +229,49 @@ public class TunnelManager {
                             }
                         }
                     }
-                } catch (Exception ignored) {
-                }
-                synchronized (TunnelManager.this) {
-                    if (state != State.OFF && state != State.ERROR) {
-                        if (state != State.CONNECTED) error = "cloudflared stopped working";
-                        state = state == State.CONNECTED ? State.OFF : State.ERROR;
-                        url = "";
-                    }
-                }
+                } catch (Exception ignored) { }
             }
-        }, "cloudflared");
+        }, "cloudflared-reader");
         reader.setDaemon(true);
         reader.start();
+
+        try {
+            p.waitFor();
+        } catch (InterruptedException ignored) { }
+
+        stopProcess();
+
+        synchronized (this) {
+            if (!"off".equals(desiredMode)) {
+                if (state != State.ERROR) {
+                    error = "Connection lost. Reconnecting...";
+                }
+                state = State.STARTING;
+                url = "";
+            }
+        }
     }
 
-    public synchronized void stop() {
-        if (proc != null) {
-            proc.destroy();
-            proc = null;
+    /** Called by ServerService when internet connectivity is detected/restored. */
+    public void onNetworkAvailable() {
+        synchronized (reconnectLock) {
+            reconnectLock.notifyAll(); // Wake up supervisor immediately
         }
-        state = State.OFF;
-        url = "";
+    }
+
+    /** Called by ServerService when internet connectivity is lost. */
+    public void onNetworkLost() {
+        synchronized (this) {
+            if (state == State.CONNECTED) {
+                error = "Internet disconnected. Waiting for connection...";
+            }
+        }
     }
 
     /** Re-start the tunnel after a service restart if the user had one enabled. */
     public void restoreIfEnabled() {
         String mode = Settings.tunnelMode(ctx);
-        if (mode == null || mode.equals("off")) return;
+        if (mode == null || "off".equals(mode)) return;
         try {
             start(mode, Settings.tunnelToken(ctx));
         } catch (Exception e) {
