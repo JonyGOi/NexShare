@@ -92,6 +92,15 @@ public class WebDavHandler implements HttpServer.Handler {
     // ---------- authentication ----------
 
     private boolean authenticate(HttpServer.Request req, HttpServer.Response res) throws IOException {
+        String mode = Settings.authMode(ctx);
+        if (Settings.MODE_NONE.equals(mode)) {
+            return true;
+        }
+
+        String configuredUser = Settings.username(ctx);
+        String configuredPass = Settings.plainPassword(ctx);
+        String currentPin = Settings.pin(ctx);
+
         String auth = req.header("authorization");
         if (auth != null) {
             String lower = auth.toLowerCase(Locale.ROOT);
@@ -105,17 +114,22 @@ public class WebDavHandler implements HttpServer.Handler {
                         String user = creds.substring(0, colon).trim();
                         String pass = creds.substring(colon + 1).trim();
 
-                        // Strip Windows machine/domain prefix (e.g. WORKGROUP\nexshare, DESKTOP-XYZ\Jony)
+                        // Strip Windows machine/domain prefix (e.g. WORKGROUP\admin, DESKTOP-XYZ\Jony)
                         int slash = user.lastIndexOf('\\');
                         if (slash >= 0) user = user.substring(slash + 1);
 
-                        String currentPin = Settings.pin(ctx);
-                        boolean pinMatches = currentPin != null && currentPin.equals(pass);
-                        boolean passMatches = Settings.hasPassword(ctx) && Settings.checkPassword(ctx, pass);
+                        if (Settings.MODE_PASSWORD.equals(mode)) {
+                            boolean passMatches = Settings.checkPassword(ctx, pass);
+                            boolean pinMatches = currentPin != null && currentPin.equals(pass);
 
-                        // Accept login if PIN/password matches, regardless of what username Windows auto-fills
-                        if (pinMatches || passMatches) {
-                            return true;
+                            if (passMatches || pinMatches) {
+                                return true;
+                            }
+                        } else { // MODE_PIN
+                            boolean pinMatches = currentPin != null && currentPin.equals(pass);
+                            if (pinMatches) {
+                                return true;
+                            }
                         }
                     }
                 } catch (Exception ignored) { }
@@ -136,23 +150,54 @@ public class WebDavHandler implements HttpServer.Handler {
                         int slash = cleanUser.lastIndexOf('\\');
                         if (slash >= 0) cleanUser = cleanUser.substring(slash + 1);
 
-                        String currentPin = Settings.pin(ctx);
-                        if (currentPin != null) {
-                            if (checkDigest(req.method, uri, realm, nonce, nc, cnonce, qop, response, username, currentPin)
-                             || checkDigest(req.method, uri, realm, nonce, nc, cnonce, qop, response, cleanUser, currentPin)
-                             || checkDigest(req.method, uri, realm, nonce, nc, cnonce, qop, response, "nexshare", currentPin)
-                             || checkDigest(req.method, uri, realm, nonce, nc, cnonce, qop, response, Settings.username(ctx), currentPin)) {
-                                return true;
+                        if (Settings.MODE_PASSWORD.equals(mode)) {
+                            if (configuredPass != null) {
+                                if (checkDigest(req.method, uri, realm, nonce, nc, cnonce, qop, response, username, configuredPass)
+                                 || checkDigest(req.method, uri, realm, nonce, nc, cnonce, qop, response, cleanUser, configuredPass)
+                                 || checkDigest(req.method, uri, realm, nonce, nc, cnonce, qop, response, configuredUser, configuredPass)
+                                 || checkDigest(req.method, uri, realm, nonce, nc, cnonce, qop, response, "admin", configuredPass)
+                                 || checkDigest(req.method, uri, realm, nonce, nc, cnonce, qop, response, "nexshare", configuredPass)) {
+                                    return true;
+                                }
+                            }
+                            if (currentPin != null) {
+                                if (checkDigest(req.method, uri, realm, nonce, nc, cnonce, qop, response, username, currentPin)
+                                 || checkDigest(req.method, uri, realm, nonce, nc, cnonce, qop, response, cleanUser, currentPin)
+                                 || checkDigest(req.method, uri, realm, nonce, nc, cnonce, qop, response, configuredUser, currentPin)
+                                 || checkDigest(req.method, uri, realm, nonce, nc, cnonce, qop, response, "nexshare", currentPin)) {
+                                    return true;
+                                }
+                            }
+                        } else { // MODE_PIN
+                            if (currentPin != null) {
+                                if (checkDigest(req.method, uri, realm, nonce, nc, cnonce, qop, response, username, currentPin)
+                                 || checkDigest(req.method, uri, realm, nonce, nc, cnonce, qop, response, cleanUser, currentPin)
+                                 || checkDigest(req.method, uri, realm, nonce, nc, cnonce, qop, response, "nexshare", currentPin)
+                                 || checkDigest(req.method, uri, realm, nonce, nc, cnonce, qop, response, "admin", currentPin)) {
+                                    return true;
+                                }
                             }
                         }
                     }
                 } catch (Exception ignored) { }
             }
         }
+
         String nonce = Long.toHexString(System.currentTimeMillis()) + Integer.toHexString(new java.util.Random().nextInt());
-        res.header("WWW-Authenticate", "Digest realm=\"NexShare\", nonce=\"" + nonce + "\", qop=\"auth\", algorithm=MD5");
+        boolean canDigest = (Settings.MODE_PASSWORD.equals(mode) && configuredPass != null) 
+                         || (!Settings.MODE_PASSWORD.equals(mode) && currentPin != null);
+        if (canDigest) {
+            res.header("WWW-Authenticate", "Digest realm=\"NexShare\", nonce=\"" + nonce + "\", qop=\"auth\", algorithm=MD5");
+        }
         res.header("WWW-Authenticate", "Basic realm=\"NexShare\", charset=\"UTF-8\"");
-        res.text(401, "text/plain", "Authentication required (user: nexshare, password: PIN)\n");
+
+        String hint;
+        if (Settings.MODE_PASSWORD.equals(mode)) {
+            hint = "Authentication required (user: " + configuredUser + ", password: your password)\n";
+        } else {
+            hint = "Authentication required (user: nexshare, password: PIN)\n";
+        }
+        res.text(401, "text/plain", hint);
         return false;
     }
 

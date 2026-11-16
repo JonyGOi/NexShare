@@ -89,7 +89,14 @@ public final class Settings {
 
     public static void setPassword(Context c, String plain) {
         String salt = randomHex(16);
-        prefs(c).edit().putString("passHash", salt + ":" + hash(salt, plain)).apply();
+        prefs(c).edit()
+            .putString("passHash", salt + ":" + hash(salt, plain))
+            .putString("plainPass", plain)
+            .apply();
+    }
+
+    public static String plainPassword(Context c) {
+        return prefs(c).getString("plainPass", null);
     }
 
     public static boolean checkPassword(Context c, String plain) {
@@ -99,7 +106,11 @@ public final class Settings {
         if (i < 0) return false;
         String salt = stored.substring(0, i);
         String expect = stored.substring(i + 1);
-        return constantEquals(expect, hash(salt, plain));
+        boolean ok = constantEquals(expect, hash(salt, plain));
+        if (ok) {
+            prefs(c).edit().putString("plainPass", plain).apply();
+        }
+        return ok;
     }
 
     private static String hash(String salt, String plain) {

@@ -37,7 +37,7 @@ import java.net.Inet4Address;
 public class MainActivity extends Activity {
 
     private static final int BLUE = 0xFF1E6FD9;
-    private TextView status, urlHost, urlIp, davUrl, permNote, bgStatus;
+    private TextView status, urlHost, urlIp, davUrl, davHint, permNote, bgStatus;
     private Button toggle, permBtn, bgBtn;
     private Switch davSwitch;
     private RadioGroup authGroup;
@@ -168,17 +168,12 @@ public class MainActivity extends Activity {
         davSwitch.setTextSize(15);
         davSwitch.setChecked(Settings.webdavEnabled(this));
         davSwitch.setOnCheckedChangeListener((v, on) -> {
-            if (on && !Settings.authRequired(this)) {
-                Settings.setAuthMode(this, Settings.MODE_PIN);
-                applyAuthMode();
-                Toast.makeText(this, "PIN enabled automatically for WebDAV security", Toast.LENGTH_SHORT).show();
-            }
             Settings.setWebdavEnabled(this, on);
             refresh();
         });
         davCard.addView(davSwitch);
         davUrl = link(davCard);
-        TextView davHint = text("Map as a network drive in Windows (net use Z: http://... /user:nexshare *)\nRun windows-webdav.reg or connect via RaiDrive", 12, 0xFF8A96A3, false);
+        davHint = text("", 12, 0xFF8A96A3, false);
         davHint.setPadding(0, dp(6), 0, 0);
         davCard.addView(davHint);
 
@@ -485,6 +480,19 @@ public class MainActivity extends Activity {
             davUrl.setText(dUrl);
             davUrl.setTag(dUrl);
             davUrl.setAlpha(davOn && on ? 1f : 0.4f);
+        }
+        if (davHint != null) {
+            String mode = Settings.authMode(this);
+            String ipOrHost = (ip != null ? ip.getHostAddress() : MdnsResponder.HOST) + ":" + ServerService.PORT;
+            if (Settings.MODE_PASSWORD.equals(mode)) {
+                String u = Settings.username(this);
+                davHint.setText("WebDAV: User: " + u + " | Password: (configured password)\nCommand: net use * http://" + ipOrHost + "/dav/ /user:" + u + " *");
+            } else if (Settings.MODE_PIN.equals(mode)) {
+                davHint.setText("WebDAV: User: nexshare | Password: PIN (" + Settings.pin(this) + ")\nCommand: net use * http://" + ipOrHost + "/dav/ /user:nexshare *");
+            } else {
+                davHint.setText("WebDAV: No login required (anonymous LAN access)\nCommand: net use * http://" + ipOrHost + "/dav/");
+            }
+            davHint.setAlpha(davOn && on ? 1f : 0.4f);
         }
 
         boolean access = hasFileAccess();

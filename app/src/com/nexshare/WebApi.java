@@ -839,9 +839,6 @@ public class WebApi implements HttpServer.Handler {
             body = new JSONObject();
         }
         boolean enable = body.optBoolean("enabled", !Settings.webdavEnabled(ctx));
-        if (enable && !Settings.authRequired(ctx)) {
-            Settings.setAuthMode(ctx, Settings.MODE_PIN);
-        }
         Settings.setWebdavEnabled(ctx, enable);
         webdavStatus(res);
     }
