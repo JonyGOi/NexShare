@@ -34,6 +34,15 @@ public class ServerService extends Service {
 
     public static volatile boolean running;
     public static volatile String lastError;
+    public static volatile long lastActivityTime = System.currentTimeMillis();
+
+    public static void markActivity() {
+        lastActivityTime = System.currentTimeMillis();
+    }
+
+    public static boolean isEcoMode() {
+        return (System.currentTimeMillis() - lastActivityTime) > 45000;
+    }
 
     private final HttpServer[] server = new HttpServer[1];
     private MdnsResponder mdns;
@@ -136,9 +145,10 @@ public class ServerService extends Service {
             }
 
             // Acquire Wi-Fi lock so Wi-Fi does not sleep or drop packets with screen off
+            // Using WIFI_MODE_FULL allows hardware 802.11 power saving when idle while keeping server reachable
             WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
             if (wm != null) {
-                wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "nexshare:wifi");
+                wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL, "nexshare:wifi");
                 wifiLock.setReferenceCounted(false);
                 wifiLock.acquire();
             }

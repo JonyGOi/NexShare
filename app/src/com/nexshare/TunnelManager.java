@@ -1,6 +1,9 @@
 package com.nexshare;
 
 import android.content.Context;
+import android.os.Build;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -66,7 +69,51 @@ public class TunnelManager {
 
     /** The bundled cloudflared binary, extracted to the app's native lib dir and executable. */
     public File binary() {
-        return new File(ctx.getApplicationInfo().nativeLibraryDir, "libcloudflared.so");
+        File f = new File(ctx.getApplicationInfo().nativeLibraryDir, "libcloudflared.so");
+        if (f.exists() && f.canExecute()) return f;
+
+        File local = new File(new File(ctx.getFilesDir(), "bin"), "cloudflared");
+        if (local.exists() && local.canExecute()) return local;
+
+        // Try extracting from APK if native library directory didn't extract it
+        tryExtractFromApk(local);
+        if (local.exists() && local.canExecute()) return local;
+
+        return f;
+    }
+
+    private void tryExtractFromApk(File target) {
+        try {
+            String apkPath = ctx.getApplicationInfo().sourceDir;
+            if (apkPath == null) return;
+            ZipFile zip = new ZipFile(apkPath);
+            String[] abis = Build.SUPPORTED_ABIS;
+            ZipEntry found = null;
+            if (abis != null) {
+                for (String abi : abis) {
+                    ZipEntry e = zip.getEntry("lib/" + abi + "/libcloudflared.so");
+                    if (e != null) {
+                        found = e;
+                        break;
+                    }
+                }
+            }
+            if (found == null) {
+                found = zip.getEntry("lib/arm64-v8a/libcloudflared.so");
+                if (found == null) found = zip.getEntry("lib/armeabi-v7a/libcloudflared.so");
+            }
+            if (found != null) {
+                target.getParentFile().mkdirs();
+                try (java.io.InputStream in = zip.getInputStream(found);
+                     java.io.OutputStream out = new java.io.FileOutputStream(target)) {
+                    byte[] buf = new byte[65536];
+                    int n;
+                    while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+                }
+                target.setExecutable(true, false);
+            }
+            zip.close();
+        } catch (Exception ignored) { }
     }
 
     public boolean supported() {

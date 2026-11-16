@@ -16,7 +16,49 @@ public final class ToolBox {
     /** The bundled busybox binary (extracted executable), or null if this build/ABI lacks it. */
     public static File busybox(Context ctx) {
         File f = new File(ctx.getApplicationInfo().nativeLibraryDir, "libbusybox.so");
+        if (f.exists() && f.canExecute()) return f;
+
+        File local = new File(new File(ctx.getFilesDir(), "bin"), "busybox");
+        if (local.exists() && local.canExecute()) return local;
+
+        tryExtractFromApk(ctx, local);
+        if (local.exists() && local.canExecute()) return local;
+
         return f.exists() ? f : null;
+    }
+
+    private static void tryExtractFromApk(Context ctx, File target) {
+        try {
+            String apkPath = ctx.getApplicationInfo().sourceDir;
+            if (apkPath == null) return;
+            java.util.zip.ZipFile zip = new java.util.zip.ZipFile(apkPath);
+            String[] abis = android.os.Build.SUPPORTED_ABIS;
+            java.util.zip.ZipEntry found = null;
+            if (abis != null) {
+                for (String abi : abis) {
+                    java.util.zip.ZipEntry e = zip.getEntry("lib/" + abi + "/libbusybox.so");
+                    if (e != null) {
+                        found = e;
+                        break;
+                    }
+                }
+            }
+            if (found == null) {
+                found = zip.getEntry("lib/arm64-v8a/libbusybox.so");
+                if (found == null) found = zip.getEntry("lib/armeabi-v7a/libbusybox.so");
+            }
+            if (found != null) {
+                target.getParentFile().mkdirs();
+                try (java.io.InputStream in = zip.getInputStream(found);
+                     java.io.OutputStream out = new java.io.FileOutputStream(target)) {
+                    byte[] buf = new byte[65536];
+                    int n;
+                    while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+                }
+                target.setExecutable(true, false);
+            }
+            zip.close();
+        } catch (Exception ignored) { }
     }
 
     public static boolean hasBusybox(Context ctx) {

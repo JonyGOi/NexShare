@@ -63,6 +63,8 @@ public class WebApi implements HttpServer.Handler {
     };
     private final SecureRandom rnd = new SecureRandom();
     private long[] lastCpu;
+    private long lastProcCpu = -1;
+    private long lastProcTime = -1;
 
     public WebApi(Context ctx, HttpServer[] serverRef) {
         this.ctx = ctx.getApplicationContext();
@@ -879,14 +881,26 @@ public class WebApi implements HttpServer.Handler {
         put(o, "diskTotal", st.getTotalBytes());
         put(o, "diskFree", st.getAvailableBytes());
 
+        double batTemp = -1;
         Intent bat = ctx.registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
         if (bat != null) {
             int level = bat.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
             int scale = bat.getIntExtra(BatteryManager.EXTRA_SCALE, 100);
             put(o, "battery", level < 0 ? -1 : Math.round(level * 100f / scale));
             put(o, "charging", bat.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) != 0);
-            put(o, "batteryTemp", bat.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) / 10.0);
+            batTemp = bat.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) / 10.0;
+            put(o, "batteryTemp", batTemp);
         }
+
+        double cpuTemp = readCpuTemp();
+        if (cpuTemp > 0) {
+            put(o, "cpuTemp", cpuTemp);
+            put(o, "temp", cpuTemp);
+        } else if (batTemp > 0) {
+            put(o, "temp", batTemp);
+        }
+
+        put(o, "eco", ServerService.isEcoMode());
         put(o, "rx", TrafficStats.getTotalRxBytes());
         put(o, "tx", TrafficStats.getTotalTxBytes());
         put(o, "time", System.currentTimeMillis());
@@ -895,31 +909,80 @@ public class WebApi implements HttpServer.Handler {
         res.json(200, o.toString());
     }
 
-    /** /proc/stat when readable; otherwise average current/max CPU frequency as a load estimate. */
+    /** Real CPU calculation: /proc/stat if readable or via root; otherwise process-level CPU usage. */
     private synchronized double cpuPercent() {
+        // 1. Try reading /proc/stat directly (works on Android <= 7 or permissive SELinux)
         try (RandomAccessFile r = new RandomAccessFile("/proc/stat", "r")) {
-            String[] t = r.readLine().trim().split("\\s+");
-            long idle = Long.parseLong(t[4]) + Long.parseLong(t[5]);
-            long total = 0;
-            for (int i = 1; i < t.length; i++) total += Long.parseLong(t[i]);
-            long[] cur = {total, idle};
-            double pct = -1;
-            if (lastCpu != null && cur[0] > lastCpu[0])
-                pct = 100.0 * (1 - (double) (cur[1] - lastCpu[1]) / (cur[0] - lastCpu[0]));
-            lastCpu = cur;
-            if (pct >= 0) return Math.round(pct * 10) / 10.0;
+            String line = r.readLine();
+            if (line != null && line.startsWith("cpu ")) {
+                double pct = parseCpuStat(line);
+                if (pct >= 0) return pct;
+            }
         } catch (Exception ignored) { }
-        double sum = 0;
-        int n = 0;
-        for (int i = 0; i < 16; i++) {
-            long c = readLong("/sys/devices/system/cpu/cpu" + i + "/cpufreq/scaling_cur_freq");
-            long m = readLong("/sys/devices/system/cpu/cpu" + i + "/cpufreq/cpuinfo_max_freq");
-            if (c > 0 && m > 0) {
-                sum += (double) c / m;
-                n++;
+
+        // 2. In Root edition, read /proc/stat via root shell if granted
+        if (Flavor.ROOT && RootShell.available()) {
+            try {
+                String out = RootShell.main().exec("head -n 1 /proc/stat", 600);
+                if (out != null && out.startsWith("cpu ")) {
+                    double pct = parseCpuStat(out);
+                    if (pct >= 0) return pct;
+                }
+            } catch (Exception ignored) { }
+        }
+
+        // 3. Process-level CPU from android.os.Process.getElapsedCpuTime()
+        try {
+            long procCpu = android.os.Process.getElapsedCpuTime();
+            long now = SystemClock.elapsedRealtime();
+            int cores = Math.max(1, Runtime.getRuntime().availableProcessors());
+            double pct = -1;
+            if (lastProcCpu > 0 && lastProcTime > 0 && now > lastProcTime) {
+                long dCpu = procCpu - lastProcCpu;
+                long dTime = now - lastProcTime;
+                pct = (dCpu * 100.0) / (dTime * cores);
+                pct = Math.min(100.0, Math.max(0.0, pct));
+            }
+            lastProcCpu = procCpu;
+            lastProcTime = now;
+            if (pct >= 0) return Math.round(pct * 10.0) / 10.0;
+        } catch (Exception ignored) { }
+
+        return 0.5;
+    }
+
+    private double parseCpuStat(String line) {
+        String[] t = line.trim().split("\\s+");
+        if (t.length < 5) return -1;
+        long idle = Long.parseLong(t[4]) + (t.length > 5 ? Long.parseLong(t[5]) : 0);
+        long total = 0;
+        for (int i = 1; i < t.length; i++) total += Long.parseLong(t[i]);
+        long[] cur = {total, idle};
+        double pct = -1;
+        if (lastCpu != null && cur[0] > lastCpu[0]) {
+            pct = 100.0 * (1 - (double) (cur[1] - lastCpu[1]) / (cur[0] - lastCpu[0]));
+        }
+        lastCpu = cur;
+        return pct >= 0 ? Math.round(pct * 10.0) / 10.0 : -1;
+    }
+
+    public static double readCpuTemp() {
+        for (int i = 0; i <= 24; i++) {
+            File f = new File("/sys/class/thermal/thermal_zone" + i + "/temp");
+            if (f.exists() && f.canRead()) {
+                try (RandomAccessFile r = new RandomAccessFile(f, "r")) {
+                    String line = r.readLine();
+                    if (line != null) {
+                        double t = Double.parseDouble(line.trim());
+                        if (t > 1000) t = t / 1000.0;
+                        if (t >= 15.0 && t <= 110.0) {
+                            return Math.round(t * 10.0) / 10.0;
+                        }
+                    }
+                } catch (Exception ignored) { }
             }
         }
-        return n == 0 ? -1 : Math.round(sum / n * 1000) / 10.0;
+        return -1;
     }
 
     private static long readLong(String path) {

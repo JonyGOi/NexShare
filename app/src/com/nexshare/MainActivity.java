@@ -6,11 +6,13 @@ import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
+import android.os.BatteryManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
@@ -430,7 +432,16 @@ public class MainActivity extends Activity {
     private void refresh() {
         boolean on = ServerService.running;
         Inet4Address ip = MdnsResponder.lanAddress();
-        if (on) status.setText("● Running");
+        if (on) {
+            boolean eco = ServerService.isEcoMode();
+            double temp = WebApi.readCpuTemp();
+            if (temp <= 0) {
+                Intent bat = registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+                if (bat != null) temp = bat.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) / 10.0;
+            }
+            String tempStr = temp > 0 ? " · " + (Math.round(temp * 10.0) / 10.0) + "°C" : "";
+            status.setText("● Running (" + (eco ? "🌱 Eco" : "⚡ Active") + tempStr + ")");
+        }
         else if (ServerService.lastError != null) status.setText("● Failed to start: " + ServerService.lastError);
         else status.setText("○ Stopped");
         toggle.setText(on ? "Stop Sharing" : "Start Sharing");

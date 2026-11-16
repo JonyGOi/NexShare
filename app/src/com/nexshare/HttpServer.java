@@ -232,6 +232,7 @@ public class HttpServer {
                 if (line.isEmpty()) continue;
                 String[] parts = line.split(" ");
                 if (parts.length < 3) break;
+                ServerService.markActivity();
                 Request req = new Request();
                 req.method = parts[0].toUpperCase(Locale.ROOT);
                 req.remote = remote;

@@ -59,7 +59,7 @@ const thumbUrl = (p, s = 240) => '/api/thumb' + qs({ path: p, s });
 
 function fmtSize(n) {
   if (n == null || n < 0) return '-';
-  if (n < 1024) return n + ' B';
+  if (n < 1024) return Math.round(n) + ' B';
   const u = ['KB', 'MB', 'GB', 'TB'];
   let i = -1;
   do { n /= 1024; i++; } while (n >= 1024 && i < u.length - 1);
@@ -1013,7 +1013,7 @@ function ResourceMonitor(body) {
     net.sub.textContent = 'Total RX ' + fmtSize(s.rx) + ' · Total TX ' + fmtSize(s.tx);
     drawChart(net.cv, [{ data: H.up, color: '#2a8cf0' }, { data: H.down, color: '#32b67a' }]);
     conn.val.textContent = s.connections;
-    conn.sub.textContent = 'Active HTTP connections · Battery ' + (s.battery >= 0 ? s.battery + '%' : '-') + (s.charging ? ' (Charging)' : '') + (s.batteryTemp ? ' · ' + s.batteryTemp + '°C' : '');
+    conn.sub.textContent = 'Active connections · ' + (s.eco ? '🌱 Eco (Idle)' : '⚡ Active') + (s.temp ? ' · Temp ' + s.temp + '°C' : (s.batteryTemp ? ' · Temp ' + s.batteryTemp + '°C' : '')) + (s.battery >= 0 ? ' · Battery ' + s.battery + '%' : '');
   };
   Stats.listeners.add(update);
   if (Stats.last) update(Stats.last);
@@ -1036,6 +1036,8 @@ function ControlPanel(body) {
         el('dt', { text: 'Server Name' }), el('dd', { text: s.name || '-' }),
         el('dt', { text: 'Model' }), el('dd', { text: s.model || '-' }),
         el('dt', { text: 'Android' }), el('dd', { text: s.android ? `${s.android} (API ${s.sdk})` : '-' }),
+        el('dt', { text: 'Temperature' }), el('dd', { text: (s.temp || s.batteryTemp) ? `${(s.temp || s.batteryTemp).toFixed(1)}°C${s.batteryTemp && s.temp && s.temp !== s.batteryTemp ? ` (Battery: ${s.batteryTemp}°C)` : ''}` : '-' }),
+        el('dt', { text: 'Power Mode' }), el('dd', { text: s.eco ? '🌱 Eco Mode (Power Saving / Idle)' : '⚡ Active Mode' }),
         el('dt', { text: 'Uptime' }), el('dd', { text: s.uptime ? fmtUptime(s.uptime) : '-' }))),
       el('div', { class: 'card' }, el('h3', { text: 'Network Access', style: { marginTop: 0 } }), el('dl', { class: 'kv' },
         ...urls.flatMap((u, i) => [el('dt', { text: i ? 'Via IP' : 'Local domain' }), el('dd', { class: 'mono', text: u })]),
@@ -1420,6 +1422,10 @@ async function poll() {
     $('#hIp').textContent = s.ip || '-';
     $('#hHost').textContent = s.host + ':' + s.port;
     $('#hUp').textContent = fmtUptime(s.uptime);
+    if ($('#hEco')) {
+      $('#hEco').textContent = s.eco ? '🌱 Eco (Idle)' : '⚡ Active';
+      $('#hEco').style.color = s.eco ? '#16a34a' : '#1e6fd9';
+    }
     const warn = (s.battery >= 0 && s.battery <= 15 && !s.charging) || s.diskFree / s.diskTotal < .05;
     $('#hState').textContent = warn ? 'Warning' : 'Good';
     $('#hState').style.color = warn ? '#e8742a' : '';
@@ -1428,6 +1434,13 @@ async function poll() {
     setBar('rCpuBar', Math.max(0, s.cpu));
     $('#rRam').textContent = ram.toFixed(0) + '%';
     setBar('rRamBar', ram);
+
+    const tempVal = s.temp != null && s.temp > 0 ? s.temp : (s.batteryTemp != null && s.batteryTemp > 0 ? s.batteryTemp : null);
+    if ($('#rTemp')) {
+      $('#rTemp').textContent = tempVal != null ? tempVal.toFixed(1) + '°C' : '-';
+      const tempPct = tempVal != null ? Math.max(0, Math.min(100, ((tempVal - 20) / 50) * 100)) : 0;
+      setBar('rTempBar', tempPct);
+    }
     $('#rUp').textContent = fmtRate(Stats.up);
     $('#rDown').textContent = fmtRate(Stats.down);
     drawChart($('#rChart'), [{ data: H.cpu, color: '#1e9ad6' }, { data: H.ram, color: '#2fb36b' }], 100, true);
@@ -2451,10 +2464,34 @@ async function start() {
   started = true;
   initWidgets();
   poll();
-  setInterval(poll, 2000);
+  schedulePoll();
   if (State.roots.length && !State.roots[0].readable) notify('Mobile app does not have storage access');
   if (innerWidth > 760) openApp('filestation');
 }
+
+let pollTimer = null;
+let lastUserAction = Date.now();
+['mousemove', 'keydown', 'scroll', 'touchstart'].forEach(ev => {
+  window.addEventListener(ev, () => { lastUserAction = Date.now(); }, { passive: true });
+});
+
+function schedulePoll() {
+  clearTimeout(pollTimer);
+  const isBackground = document.hidden;
+  const isIdle = (Date.now() - lastUserAction) > 40000;
+  const delay = isBackground ? 20000 : (isIdle ? 8000 : 3000);
+  pollTimer = setTimeout(async () => {
+    await poll();
+    schedulePoll();
+  }, delay);
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) {
+    poll();
+    schedulePoll();
+  }
+});
 
 (async function boot() {
   for (const n of document.querySelectorAll('[data-ico]')) n.innerHTML = APP_ICO[n.dataset.ico];
