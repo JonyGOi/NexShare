@@ -1098,7 +1098,7 @@ function ControlPanel(body) {
         el('h3', { text: 'App Updates', style: { marginTop: 0 } }),
         el('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' } },
           el('div', null,
-            el('b', { text: `NexShare v${s.version || '1.5.6'}` }),
+            el('b', { text: `NexShare v${s.version || '1.5.7'}` }),
             el('span', { style: { marginLeft: '8px', fontSize: '11px', textTransform: 'uppercase', background: '#eef3fb', color: '#1e6fd9', padding: '2px 6px', borderRadius: '4px' }, text: (s.flavor || 'normal') + ' edition' })
           ),
           el('button', {
@@ -1287,9 +1287,10 @@ const Viewer = {
     this.applyTransform();
   },
   applyTransform() {
-    if (!this.img) return;
-    this.img.style.transform = `translate(${this.panX}px, ${this.panY}px) rotate(${this.rot}deg) scale(${this.scale})`;
-    this.img.classList.toggle('zoomed', this.scale > 1);
+    const target = this.img || this.video;
+    if (!target) return;
+    target.style.transform = `translate(${this.panX}px, ${this.panY}px) rotate(${this.rot}deg) scale(${this.scale})`;
+    if (this.img) this.img.classList.toggle('zoomed', this.scale > 1);
   },
   zoom(delta) {
     this.scale = Math.min(6, Math.max(0.2, +(this.scale + delta).toFixed(2)));
@@ -1397,16 +1398,20 @@ const Viewer = {
     this.img = null;
 
     const isImg = k === 'image';
+    const isVid = k === 'video';
     this.btnZoomIn.classList.toggle('hidden', !isImg);
     this.btnZoomOut.classList.toggle('hidden', !isImg);
-    this.btnRotate.classList.toggle('hidden', !isImg);
-    this.btnFit.classList.toggle('hidden', !isImg);
+    this.btnRotate.classList.toggle('hidden', !isImg && !isVid);
+    this.btnFit.classList.toggle('hidden', !isImg && !isVid);
 
     if (isImg) {
       this.img = el('img', { src: url, alt: e.name });
       this.body.append(this.img);
     }
-    else if (k === 'video') this.body.append(el('video', { src: url, controls: true, autoplay: true, playsinline: true }));
+    else if (isVid) {
+      this.video = el('video', { src: url, controls: true, autoplay: true, playsinline: true });
+      this.body.append(this.video);
+    }
     else if (k === 'audio') this.body.append(el('div', { class: 'v-info' }, fileIcon('audio'), el('audio', { src: url, controls: true, autoplay: true })));
     else if (k === 'pdf') this.body.append(el('iframe', { src: url }));
     else if (k === 'text' && e.size < 4 * 1024 * 1024) {
@@ -1424,6 +1429,12 @@ const Viewer = {
   },
   close() {
     this.el.classList.add('hidden');
+    if (this.video) {
+      this.video.pause();
+      this.video.removeAttribute('src');
+      this.video.load();
+      this.video = null;
+    }
     this.body.replaceChildren();
     this.img = null;
     this.resetTransform();
@@ -1791,11 +1802,24 @@ function MediaPlayer(body, win) {
   const muteBtn = b(volIcon(), 'Mute (M)', () => { video.muted = !video.muted; });
   const speedBtn = el('button', { title: 'Playback Speed', text: '1x', onclick: e => menuAt(e.currentTarget, [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2].map(r => ({ label: (video.playbackRate === r ? '● ' : '') + r + 'x', run: () => setRate(r) }))) });
   const ccBtn = el('button', { title: 'Subtitles', text: 'CC', onclick: e => subMenu(e.currentTarget) });
+  let videoRot = 0;
+  function rotateVideo() {
+    videoRot = (videoRot + 90) % 360;
+    video.style.transform = videoRot ? `rotate(${videoRot}deg)` : '';
+    flash('Rotate ' + videoRot + '°');
+  }
+
   const loopBtn = b('refresh', 'Loop', () => cycleLoop());
   const shufBtn = el('button', { title: 'Shuffle', text: '⤮', style: { fontSize: '17px' }, onclick: () => { st.shuffle = !st.shuffle; shufBtn.classList.toggle('on', st.shuffle); flash(st.shuffle ? 'Shuffle: On' : 'Shuffle: Off'); } });
   const listBtn = b('list', 'Playlist', () => { listPane.classList.toggle('hidden'); listBtn.classList.toggle('on', !listPane.classList.contains('hidden')); });
-  listBtn.classList.add('on');
-  const more = b('link', 'Stream Link / Open in VLC', e => menuAt(e.currentTarget, [
+  if (window.innerWidth <= 760) {
+    listPane.classList.add('hidden');
+    listBtn.classList.remove('on');
+  } else {
+    listBtn.classList.add('on');
+  }
+  const more = b('link', 'Stream Link / Options', e => menuAt(e.currentTarget, [
+    { label: 'Rotate 90° (R)', ico: 'rotate', run: () => rotateVideo() },
     { label: 'Copy stream link (for VLC or external players)', ico: 'link', run: () => copyStream() },
     { label: 'Open in VLC app (Phone)', ico: 'open', run: () => { location.href = 'vlc://' + location.origin + fileUrl(cur().path); } },
     { label: 'Download this file', ico: 'download', run: () => { location.href = fileUrl(cur().path, true); } },
@@ -1875,6 +1899,8 @@ function MediaPlayer(body, win) {
     st.i = i;
     const e = cur();
     if (!e) return;
+    videoRot = 0;
+    video.style.transform = '';
     msg.classList.add('hidden');
     [...video.querySelectorAll('track')].forEach(t => t.remove());
     if (st.subUrl) { URL.revokeObjectURL(st.subUrl); st.subUrl = null; }
@@ -2022,6 +2048,7 @@ function MediaPlayer(body, win) {
     else if (k === 'arrowdown') { e.preventDefault(); video.volume = Math.max(0, video.volume - .05); flash('Volume ' + Math.round(video.volume * 100) + '%'); }
     else if (k === 'm') video.muted = !video.muted;
     else if (k === 'f') fullscreen();
+    else if (k === 'r') rotateVideo();
     else if (k === 'n') step(1);
     else if (k === 'p') step(-1);
     else if (k === '>' || k === '.') setRate(Math.min(2, video.playbackRate + .25));
