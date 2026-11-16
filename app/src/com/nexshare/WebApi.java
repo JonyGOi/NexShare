@@ -49,6 +49,7 @@ public class WebApi implements HttpServer.Handler {
     private final Context ctx;
     private final HttpServer[] serverRef;
     private final RootApi rootApi;
+    private final WebDavHandler webDavHandler;
     private final Set<String> tokens = Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>());
     private final Map<String, int[]> failures = new ConcurrentHashMap<>(); // ip -> {count, lockUntilSec}
     private final Map<String, byte[]> assetCache = new ConcurrentHashMap<>();
@@ -65,11 +66,22 @@ public class WebApi implements HttpServer.Handler {
         this.ctx = ctx.getApplicationContext();
         this.serverRef = serverRef;
         this.rootApi = new RootApi(ctx);
+        this.webDavHandler = new WebDavHandler(ctx);
     }
 
     @Override
     public void handle(HttpServer.Request req, HttpServer.Response res) throws IOException {
         String p = req.path;
+        if (p.equals("/dav") || p.startsWith("/dav/")) {
+            webDavHandler.handle(req, res);
+            return;
+        }
+        if ("OPTIONS".equals(req.method) && (p.equals("/") || p.isEmpty())) {
+            if (Settings.webdavEnabled(ctx)) {
+                webDavHandler.handle(req, res);
+                return;
+            }
+        }
         if (!p.startsWith("/api/")) {
             serveAsset(p, res);
             return;
@@ -92,7 +104,16 @@ public class WebApi implements HttpServer.Handler {
             put(o, "flavor", Flavor.ROOT ? "root" : "normal");
             put(o, "version", Flavor.VERSION);
             put(o, "root", Flavor.ROOT && RootShell.available());
+            put(o, "webdavEnabled", Settings.webdavEnabled(ctx));
             res.json(200, o.toString());
+            return;
+        }
+        if (p.equals("/api/webdav/status")) {
+            webdavStatus(res);
+            return;
+        }
+        if (p.equals("/api/webdav/toggle")) {
+            webdavToggle(req, res);
             return;
         }
         if (!authorized(req)) {
@@ -695,6 +716,35 @@ public class WebApi implements HttpServer.Handler {
             return;
         }
         tunnelStatus(res);
+    }
+
+    // ---------- webdav ----------
+
+    private void webdavStatus(HttpServer.Response res) throws IOException {
+        Inet4Address ip = MdnsResponder.lanAddress();
+        String ipStr = ip != null ? ip.getHostAddress() : "";
+        String url = ip != null ? "http://" + ipStr + ":" + ServerService.PORT + "/dav/" : "http://" + MdnsResponder.HOST + ":" + ServerService.PORT + "/dav/";
+        JSONObject o = new JSONObject();
+        put(o, "enabled", Settings.webdavEnabled(ctx));
+        put(o, "url", url);
+        put(o, "user", "nexshare");
+        put(o, "pin", Settings.pin(ctx));
+        res.json(200, o.toString());
+    }
+
+    private void webdavToggle(HttpServer.Request req, HttpServer.Response res) throws IOException {
+        JSONObject body;
+        try {
+            body = new JSONObject(req.bodyString(1024));
+        } catch (Exception e) {
+            body = new JSONObject();
+        }
+        boolean enable = body.optBoolean("enabled", !Settings.webdavEnabled(ctx));
+        if (enable && !Settings.authRequired(ctx)) {
+            Settings.setAuthMode(ctx, Settings.MODE_PIN);
+        }
+        Settings.setWebdavEnabled(ctx, enable);
+        webdavStatus(res);
     }
 
     // ---------- download station ----------

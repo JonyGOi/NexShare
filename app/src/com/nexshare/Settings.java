@@ -134,6 +134,14 @@ public final class Settings {
 
     // ---------- misc ----------
 
+    public static boolean webdavEnabled(Context c) {
+        return prefs(c).getBoolean("webdavEnabled", false);
+    }
+
+    public static void setWebdavEnabled(Context c, boolean on) {
+        prefs(c).edit().putBoolean("webdavEnabled", on).apply();
+    }
+
     public static String tunnelMode(Context c) {
         return prefs(c).getString("tunnelMode", "off");
     }

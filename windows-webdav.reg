@@ -1,0 +1,9 @@
+Windows Registry Editor Version 5.00
+
+; Configuração WebDAV para o cliente nativo do Windows (WebClient)
+; Permite autenticação HTTP Basic sem SSL/HTTPS (necessário para mapeamento em rede local)
+; e eleva o limite máximo de tamanho de arquivo de ~50MB para 4GB (0xffffffff).
+
+[HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\WebClient\Parameters]
+"BasicAuthLevel"=dword:00000002
+"FileSizeLimitInBytes"=dword:ffffffff

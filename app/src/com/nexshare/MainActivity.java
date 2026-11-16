@@ -35,8 +35,9 @@ import java.net.Inet4Address;
 public class MainActivity extends Activity {
 
     private static final int BLUE = 0xFF1E6FD9;
-    private TextView status, urlHost, urlIp, permNote;
+    private TextView status, urlHost, urlIp, davUrl, permNote;
     private Button toggle, permBtn;
+    private Switch davSwitch;
     private RadioGroup authGroup;
     private LinearLayout authDetail;
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -140,6 +141,27 @@ public class MainActivity extends Activity {
         });
         screenCard.addView(screenSwitch);
         screenCard.addView(text(Flavor.ROOT ? "รุ่น Root: จอจะติดตลอดแม้สลับไปแอปอื่น (ใช้ svc power stayon)" : "จอจะติดเฉพาะตอนเปิดหน้าแอปนี้", 12, 0xFF8A96A3, false));
+
+        LinearLayout davCard = card(body);
+        davCard.addView(text("WebDAV (ไดรฟ์เครือข่าย Windows)", 15, 0xFF1D2733, true));
+        davSwitch = new Switch(this);
+        davSwitch.setText("เปิดเซิร์ฟเวอร์ WebDAV");
+        davSwitch.setTextSize(15);
+        davSwitch.setChecked(Settings.webdavEnabled(this));
+        davSwitch.setOnCheckedChangeListener((v, on) -> {
+            if (on && !Settings.authRequired(this)) {
+                Settings.setAuthMode(this, Settings.MODE_PIN);
+                applyAuthMode();
+                Toast.makeText(this, "เปิดใช้ PIN อัตโนมัติเพื่อความปลอดภัยของ WebDAV", Toast.LENGTH_SHORT).show();
+            }
+            Settings.setWebdavEnabled(this, on);
+            refresh();
+        });
+        davCard.addView(davSwitch);
+        davUrl = link(davCard);
+        TextView davHint = text("สำหรับแมปไดรฟ์ใน Windows (net use Z: http://... /user:nexshare *)\nรัน windows-webdav.reg ก่อนเชื่อมต่อ", 12, 0xFF8A96A3, false);
+        davHint.setPadding(0, dp(6), 0, 0);
+        davCard.addView(davHint);
 
         LinearLayout permCard = card(body);
         permNote = text("", 14, 0xFF1D2733, false);
@@ -316,6 +338,15 @@ public class MainActivity extends Activity {
         }
         urlHost.setAlpha(on ? 1f : 0.4f);
         urlIp.setAlpha(on ? 1f : 0.4f);
+
+        boolean davOn = Settings.webdavEnabled(this);
+        if (davSwitch != null) davSwitch.setChecked(davOn);
+        if (davUrl != null) {
+            String dUrl = (ip != null ? "http://" + ip.getHostAddress() : "http://" + MdnsResponder.HOST) + ":" + ServerService.PORT + "/dav/";
+            davUrl.setText(dUrl);
+            davUrl.setTag(dUrl);
+            davUrl.setAlpha(davOn && on ? 1f : 0.4f);
+        }
 
         boolean access = hasFileAccess();
         permNote.setText(access ? "✓ ได้รับสิทธิ์เข้าถึงไฟล์แล้ว" : "ยังไม่ได้รับสิทธิ์เข้าถึงไฟล์ หน้าเว็บจะเปิดโฟลเดอร์ไม่ได้");

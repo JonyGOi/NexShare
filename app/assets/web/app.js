@@ -259,7 +259,7 @@ function fileIcon(kind) {
 
 // ---------------------------------------------------------------- state
 
-const State = { roots: [], sys: null, notes: [], clipboard: null, isRoot: false, flavor: 'normal', authMode: 'pin' };
+const State = { roots: [], sys: null, notes: [], clipboard: null, isRoot: false, flavor: 'normal', authMode: 'pin', webdavEnabled: false };
 
 function rootOf(p) {
   let best = null;
@@ -1034,6 +1034,29 @@ function ControlPanel(body) {
       el('div', { class: 'card' }, el('h3', { text: 'การเข้าถึงจากเครื่องอื่น', style: { marginTop: 0 } }), el('dl', { class: 'kv' },
         ...urls.flatMap((u, i) => [el('dt', { text: i ? 'ผ่าน IP' : 'Local domain' }), el('dd', { class: 'mono', text: u })]),
         el('dt', { text: 'ความปลอดภัย' }), el('dd', { text: State.authMode === 'password' ? 'ชื่อผู้ใช้ + รหัสผ่าน' : State.authMode === 'pin' ? 'ต้องใส่ PIN' : 'ไม่ต้องล็อกอิน' }))),
+      el('div', { class: 'card' },
+        el('h3', { text: 'ไดรฟ์เครือข่าย WebDAV (Windows Network Drive)', style: { marginTop: 0 } }),
+        el('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' } },
+          el('span', { text: 'สถานะ WebDAV: ' + (State.webdavEnabled ? 'เปิดใช้งาน' : 'ปิดอยู่') }),
+          el('button', {
+            class: 'btn' + (State.webdavEnabled ? ' danger' : ''),
+            onclick: async () => {
+              try {
+                const res = await api('webdav/toggle', null, { method: 'POST', body: JSON.stringify({ enabled: !State.webdavEnabled }) });
+                State.webdavEnabled = res.enabled;
+                toast(State.webdavEnabled ? 'เปิด WebDAV แล้ว' : 'ปิด WebDAV แล้ว');
+                render();
+              } catch (e) { toast('เปลี่ยนสถานะ WebDAV ไม่สำเร็จ'); }
+            }
+          }, State.webdavEnabled ? 'ปิด WebDAV' : 'เปิด WebDAV')
+        ),
+        State.webdavEnabled ? el('dl', { class: 'kv' },
+          el('dt', { text: 'URL WebDAV' }), el('dd', { class: 'mono', style: { cursor: 'pointer', color: '#1e6fd9' }, title: 'คลิกเพื่อคัดลอก', onclick: e => { navigator.clipboard?.writeText(e.target.textContent); toast('คัดลอก URL แล้ว'); }, text: (s.ip ? `http://${s.ip}:${s.port || 8080}/dav/` : `http://${s.host || 'nexshare.local'}:${s.port || 8080}/dav/`) }),
+          el('dt', { text: 'ชื่อผู้ใช้' }), el('dd', { class: 'mono', text: 'nexshare' }),
+          el('dt', { text: 'รหัสผ่าน' }), el('dd', { text: 'PIN 6 หลักของแอป' }),
+          el('dt', { text: 'คำสั่ง Windows' }), el('dd', { class: 'mono', style: { fontSize: '11px', wordBreak: 'break-all' }, text: `net use Z: http://${s.ip || 'IP'}:${s.port || 8080}/dav/ /user:nexshare *` })
+        ) : el('div', { class: 'hint', text: 'เปิดเพื่อแมปที่เก็บข้อมูลมือถือเป็นไดรฟ์ Z: ใน Windows (รัน windows-webdav.reg ก่อนเชื่อมต่อ)' })
+      ),
       el('div', { class: 'card' }, el('h3', { text: 'ที่เก็บข้อมูล', style: { marginTop: 0 } }),
         ...State.roots.map(r => el('div', { class: 'meter' },
           el('div', { class: 'row' }, el('span', { text: r.name }), el('b', { text: r.total ? `${fmtSize(r.total - r.free)} / ${fmtSize(r.total)}` : '-' })),
@@ -2294,6 +2317,7 @@ async function start() {
     State.authMode = Auth.mode;
     State.flavor = s.flavor || 'normal';
     State.isRoot = !!s.root;
+    State.webdavEnabled = !!s.webdavEnabled;
     if (!s.auth) { Auth.show(); return; }
     start();
   } catch { toast('เชื่อมต่อมือถือไม่ได้'); }

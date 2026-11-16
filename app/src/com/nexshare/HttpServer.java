@@ -312,16 +312,22 @@ public class HttpServer {
     static String statusText(int code) {
         switch (code) {
             case 200: return "OK";
+            case 201: return "Created";
             case 204: return "No Content";
             case 206: return "Partial Content";
+            case 207: return "Multi-Status";
             case 304: return "Not Modified";
             case 400: return "Bad Request";
             case 401: return "Unauthorized";
             case 403: return "Forbidden";
             case 404: return "Not Found";
+            case 405: return "Method Not Allowed";
             case 409: return "Conflict";
+            case 412: return "Precondition Failed";
             case 416: return "Range Not Satisfiable";
+            case 423: return "Locked";
             case 429: return "Too Many Requests";
+            case 507: return "Insufficient Storage";
             default: return code >= 500 ? "Internal Server Error" : "OK";
         }
     }

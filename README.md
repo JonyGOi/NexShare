@@ -54,6 +54,8 @@ root prompt.
   needed. Enabling a tunnel force-enables the PIN.
 - **Wallpaper** — generate NexOS-branded wallpapers and set them on the phone,
   or set any image in File Station as wallpaper.
+- **Network Drive (WebDAV)** — map your Android phone's storage directly as a Windows network
+  drive (e.g. `Z:`) over HTTP/WebDAV. Open, edit, copy, and stream files natively from File Explorer.
 - **System widgets** — System Health, Resource Monitor (CPU/RAM/network),
   Storage, battery.
 - Reachable at `nexshare.local` via a built-in mDNS responder, with IP fallback.
@@ -69,6 +71,58 @@ Grab the APK for your edition from the [Releases](../../releases) page:
 Enable "install from unknown sources", install, open the app, grant
 **All files access**, and the server starts. Open the shown URL from another
 device on the same Wi-Fi.
+
+## Network drive (WebDAV)
+
+You can mount your Android phone's storage as a network drive in Windows (e.g. `Z:`)
+using the built-in WebDAV server running at `http://<phone-ip>:8080/dav/`.
+
+### 1. Enable WebDAV on Android
+1. Open the **NexShare** app (or open Control Panel in the web desktop).
+2. Toggle the **WebDAV** switch to **ON**.
+   - Note: If login mode was set to "No login", NexShare automatically enforces a 6-digit PIN for security.
+3. Note the displayed URL and PIN (e.g., `http://192.168.1.100:8080/dav/` and PIN `123456`).
+
+### 2. Configure Windows (One-time setup)
+By default, Windows WebClient restricts HTTP Basic authentication over unencrypted connections
+and caps individual file transfers at ~50 MB.
+
+Run the provided script or import the registry file:
+
+**Option A (Automated):**
+Run `map-drive.ps1` in PowerShell as Administrator:
+```powershell
+.\map-drive.ps1 -PhoneIP 192.168.1.100 -Pin 123456 -Drive Z:
+```
+
+**Option B (Manual):**
+1. Double-click `windows-webdav.reg` and confirm the prompt to update the registry:
+   - Sets `BasicAuthLevel = 2` under `HKLM\SYSTEM\CurrentControlSet\Services\WebClient\Parameters` (allows Basic Auth over HTTP).
+   - Sets `FileSizeLimitInBytes = 0xffffffff` (increases file transfer size limit from 50 MB to 4 GB).
+2. Restart the Windows WebClient service (run in PowerShell as Admin):
+   ```powershell
+   Set-Service -Name WebClient -StartupType Automatic
+   Restart-Service -Name WebClient -Force
+   ```
+3. Map the drive via command prompt:
+   ```cmd
+   net use Z: http://192.168.1.100:8080/dav/ /user:nexshare *
+   ```
+   (Type the 6-digit PIN when prompted for password).
+
+### 3. Alternative UNC Path
+You can also access the drive directly from Windows File Explorer or the Run dialog (`Win + R`):
+```text
+\\192.168.1.100@8080\DavWWWRoot\dav
+```
+*(Always use the phone's IP address instead of `nexshare.local` because Windows WebClient does not reliably resolve mDNS `.local` hostnames).*
+
+## Known limitations
+
+- **HTTP without encryption**: WebDAV runs over plain HTTP on your local Wi-Fi network. Always keep PIN protection enabled, especially on shared Wi-Fi networks.
+- **No SMB**: Pure Java implementation without external native SMB/Samba libraries. WebDAV is used because it runs on standard HTTP/1.1 and integrates natively with Windows File Explorer.
+- **Windows WebClient file size limit**: The Windows WebClient service has a hard architectural cap of 4 GB (`0xffffffff` bytes) for single file transfers over WebDAV. For files larger than 4 GB, use the NexShare web interface (File Station).
+- **Small files performance**: Because WebDAV issues HTTP round-trips for metadata (`PROPFIND`) on each file/folder, browsing directories with thousands of small files will be slower than a local disk.
 
 ## Build from source (Windows)
 
