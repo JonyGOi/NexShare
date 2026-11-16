@@ -154,6 +154,7 @@ public class WebApi implements HttpServer.Handler {
             case "/api/update/check": checkUpdate(res); break;
             case "/api/update/install": installUpdate(req, res); break;
             case "/api/update/status": updateStatus(res); break;
+            case "/api/update/auto": updateAuto(req, res); break;
             default: res.error(404, "not found");
         }
     }
@@ -425,31 +426,36 @@ public class WebApi implements HttpServer.Handler {
         long count = end - start + 1;
         OutputStream out = res.begin(partial ? 206 : 200, mime(f.getName()), Math.max(count, 0));
         if ("HEAD".equals(req.method) || len == 0) return;
-        try (RandomAccessFile raf = new RandomAccessFile(f, "r")) {
-            raf.seek(start);
-            byte[] buf = new byte[65536];
-            long left = count;
-            while (left > 0) {
-                int n = raf.read(buf, 0, (int) Math.min(buf.length, left));
-                if (n < 0) break;
-                out.write(buf, 0, n);
-                left -= n;
-            }
-        } catch (IOException e) {
-            if (RootIo.isAvailable()) {
-                try (InputStream in = RootIo.openInputStream(f, start)) {
-                    byte[] buf = new byte[65536];
-                    long left = count;
-                    while (left > 0) {
-                        int n = in.read(buf, 0, (int) Math.min(buf.length, left));
-                        if (n < 0) break;
-                        out.write(buf, 0, n);
-                        left -= n;
-                    }
+        TransferTracker.onTransferStart();
+        try {
+            try (RandomAccessFile raf = new RandomAccessFile(f, "r")) {
+                raf.seek(start);
+                byte[] buf = new byte[65536];
+                long left = count;
+                while (left > 0) {
+                    int n = raf.read(buf, 0, (int) Math.min(buf.length, left));
+                    if (n < 0) break;
+                    out.write(buf, 0, n);
+                    left -= n;
                 }
-            } else {
-                throw e;
+            } catch (IOException e) {
+                if (RootIo.isAvailable()) {
+                    try (InputStream in = RootIo.openInputStream(f, start)) {
+                        byte[] buf = new byte[65536];
+                        long left = count;
+                        while (left > 0) {
+                            int n = in.read(buf, 0, (int) Math.min(buf.length, left));
+                            if (n < 0) break;
+                            out.write(buf, 0, n);
+                            left -= n;
+                        }
+                    }
+                } else {
+                    throw e;
+                }
             }
+        } finally {
+            TransferTracker.onTransferEnd();
         }
     }
 
@@ -507,12 +513,17 @@ public class WebApi implements HttpServer.Handler {
         }
         String name = items.size() == 1 ? items.get(0).getName() : "NexShare";
         res.header("Content-Disposition", "attachment; filename*=UTF-8''" + URLEncoder.encode(name + ".zip", "UTF-8").replace("+", "%20"));
-        OutputStream out = res.begin(200, "application/zip", -1);
-        ZipOutputStream z = new ZipOutputStream(new java.io.BufferedOutputStream(out, 65536));
-        z.setLevel(Deflater.BEST_SPEED);
-        for (File f : items) addZip(z, f, f.getName());
-        z.finish();
-        z.flush();
+        TransferTracker.onTransferStart();
+        try {
+            OutputStream out = res.begin(200, "application/zip", -1);
+            ZipOutputStream z = new ZipOutputStream(new java.io.BufferedOutputStream(out, 65536));
+            z.setLevel(Deflater.BEST_SPEED);
+            for (File f : items) addZip(z, f, f.getName());
+            z.finish();
+            z.flush();
+        } finally {
+            TransferTracker.onTransferEnd();
+        }
     }
 
     private void addZip(ZipOutputStream z, File f, String name) throws IOException {
@@ -560,13 +571,18 @@ public class WebApi implements HttpServer.Handler {
         File target = uniqueFile(dir, name);
         File tmp = new File(dir, "." + target.getName() + ".nexpart");
         boolean ok = false;
-        try (OutputStream out = new FileOutputStream(tmp)) {
-            byte[] buf = new byte[65536];
-            int n;
-            while ((n = req.body.read(buf)) > 0) out.write(buf, 0, n);
-            ok = req.body.remaining() == 0;
+        TransferTracker.onTransferStart();
+        try {
+            try (OutputStream out = new FileOutputStream(tmp)) {
+                byte[] buf = new byte[65536];
+                int n;
+                while ((n = req.body.read(buf)) > 0) out.write(buf, 0, n);
+                ok = req.body.remaining() == 0;
+            } finally {
+                if (!ok) tmp.delete();
+            }
         } finally {
-            if (!ok) tmp.delete();
+            TransferTracker.onTransferEnd();
         }
         if (!tmp.renameTo(target)) {
             tmp.delete();
@@ -1107,7 +1123,7 @@ public class WebApi implements HttpServer.Handler {
     }
 
     public static class UpdateTask {
-        public static volatile String state = "idle"; // idle, downloading, installing, prompt, done, error
+        public static volatile String state = "idle"; // idle, waiting_idle, downloading, installing, prompt, done, error
         public static volatile int progress = 0;
         public static volatile long downloaded = 0;
         public static volatile long total = 0;
@@ -1127,6 +1143,34 @@ public class WebApi implements HttpServer.Handler {
         put(o, "error", UpdateTask.error);
         put(o, "version", UpdateTask.version);
         put(o, "flavor", Flavor.ROOT ? "root" : "normal");
+        put(o, "autoUpdate", Settings.autoUpdateEnabled(ctx));
+        put(o, "activeTransfers", TransferTracker.getActiveCount());
+        put(o, "busy", TransferTracker.isBusy(ctx));
+        res.json(200, o.toString());
+    }
+
+    private void updateAuto(HttpServer.Request req, HttpServer.Response res) throws IOException {
+        if ("POST".equals(req.method)) {
+            String en = req.param("enabled");
+            if (en == null) {
+                try {
+                    JSONObject b = new JSONObject(req.bodyString(1024));
+                    if (b.has("enabled")) en = b.optBoolean("enabled") ? "1" : "0";
+                } catch (Exception ignored) { }
+            }
+            if (en != null) {
+                boolean on = "1".equals(en) || "true".equalsIgnoreCase(en);
+                Settings.setAutoUpdateEnabled(ctx, on);
+                if (on) {
+                    AutoUpdater.get(ctx).triggerCheck();
+                }
+            }
+        }
+        JSONObject o = new JSONObject();
+        put(o, "ok", true);
+        put(o, "autoUpdate", Settings.autoUpdateEnabled(ctx));
+        put(o, "busy", TransferTracker.isBusy(ctx));
+        put(o, "activeTransfers", TransferTracker.getActiveCount());
         res.json(200, o.toString());
     }
 
@@ -1197,6 +1241,16 @@ public class WebApi implements HttpServer.Handler {
                     }
 
                     UpdateTask.progress = 100;
+
+                    // Before applying the update, ensure no active transfers are in flight
+                    while (TransferTracker.isBusy(ctx)) {
+                        UpdateTask.state = "waiting_idle";
+                        UpdateTask.message = "Update downloaded. Waiting for active file transfers to complete before updating...";
+                        try {
+                            Thread.sleep(3000);
+                        } catch (InterruptedException ignored) { }
+                    }
+
                     if (Flavor.ROOT && RootShell.available()) {
                         UpdateTask.state = "installing";
                         UpdateTask.message = "Installing update via Root... NexShare will restart.";
@@ -1205,6 +1259,9 @@ public class WebApi implements HttpServer.Handler {
                         if (out.toLowerCase(Locale.ROOT).contains("success")) {
                             UpdateTask.state = "done";
                             UpdateTask.message = "Updated successfully! Server is restarting...";
+                            try {
+                                RootShell.main().exec("am start-foreground-service -n com.nexshare/.ServerService", 5000);
+                            } catch (Exception ignored) { }
                         } else {
                             UpdateTask.state = "error";
                             UpdateTask.error = "Root install failed: " + out.trim();

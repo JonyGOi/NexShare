@@ -158,6 +158,13 @@ public class DownloadManager {
         save();
     }
 
+    public synchronized boolean hasActiveTransfers() {
+        for (Task t : tasks.values()) {
+            if ("downloading".equals(t.status) || "queued".equals(t.status)) return true;
+        }
+        return false;
+    }
+
     public synchronized boolean torrentSupported() {
         try {
             torrents();

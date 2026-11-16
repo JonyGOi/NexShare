@@ -1020,11 +1020,26 @@ function ResourceMonitor(body) {
   return { destroy() { Stats.listeners.delete(update); } };
 }
 
-const updateState = { info: null, checking: false, installing: false, progress: 0, statusMsg: '', pollTimer: null };
+const updateState = { info: null, checking: false, installing: false, progress: 0, statusMsg: '', pollTimer: null, autoUpdate: true, activeTransfers: 0, busy: false };
 
 function ControlPanel(body) {
   const pane = el('div', { class: 'pane' });
   body.append(pane);
+  const fetchUpdateStatus = async () => {
+    try {
+      const st = await api('update/status');
+      if (st) {
+        updateState.autoUpdate = st.autoUpdate !== false;
+        updateState.activeTransfers = st.activeTransfers || 0;
+        updateState.busy = !!st.busy;
+        if (st.state === 'waiting_idle' || st.state === 'downloading' || st.state === 'installing') {
+          updateState.statusMsg = st.msg || updateState.statusMsg;
+          if (st.state === 'downloading') updateState.progress = st.progress || 0;
+        }
+      }
+    } catch (ignored) { }
+  };
+  fetchUpdateStatus();
   const render = () => {
     const s = Stats.last || {};
     const urls = [`http://${s.host || 'nexshare.local'}:${s.port || 8080}`, s.ip ? `http://${s.ip}:${s.port}` : null].filter(Boolean);
@@ -1069,7 +1084,7 @@ function ControlPanel(body) {
         el('h3', { text: 'App Updates', style: { marginTop: 0 } }),
         el('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' } },
           el('div', null,
-            el('b', { text: `NexShare v${s.version || '1.5.2'}` }),
+            el('b', { text: `NexShare v${s.version || '1.5.3'}` }),
             el('span', { style: { marginLeft: '8px', fontSize: '11px', textTransform: 'uppercase', background: '#eef3fb', color: '#1e6fd9', padding: '2px 6px', borderRadius: '4px' }, text: (s.flavor || 'normal') + ' edition' })
           ),
           el('button', {
@@ -1089,6 +1104,28 @@ function ControlPanel(body) {
             }
           }, updateState.checking ? 'Checking...' : 'Check for Updates')
         ),
+        el('label', { style: { display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', margin: '8px 0', fontSize: '13px' } },
+          el('input', {
+            type: 'checkbox',
+            checked: updateState.autoUpdate !== false,
+            onchange: async e => {
+              const on = e.target.checked;
+              updateState.autoUpdate = on;
+              try {
+                await api('update/auto', null, { method: 'POST', body: JSON.stringify({ enabled: on }) });
+                toast(on ? 'Auto-update enabled' : 'Auto-update disabled');
+              } catch { toast('Failed to update setting'); }
+              render();
+            }
+          }),
+          el('span', { text: 'Auto-update in background (only when no files are transferring)' })
+        ),
+        updateState.activeTransfers > 0
+          ? el('div', { style: { fontSize: '12px', color: '#d97706', marginBottom: '8px' }, text: `⏳ Active file transfers: ${updateState.activeTransfers} (updates will pause until transfers finish)` })
+          : el('div', { style: { fontSize: '12px', color: '#64748b', marginBottom: '8px' }, text: '✓ Transfer guard: Idle (safe to update)' }),
+        updateState.statusMsg && (updateState.statusMsg.includes('Waiting') || updateState.statusMsg.includes('transfer'))
+          ? el('div', { style: { background: '#fef3c7', color: '#92400e', padding: '8px 10px', borderRadius: '4px', fontSize: '12px', marginBottom: '8px', border: '1px solid #fde68a' }, text: updateState.statusMsg })
+          : null,
         updateState.info ? el('div', { style: { marginTop: '10px', padding: '10px', background: '#f8fafc', borderRadius: '6px', border: '1px solid #e2e8f0' } },
           updateState.info.hasUpdate ? [
             el('div', { style: { color: '#0d9488', fontWeight: 'bold', marginBottom: '6px' }, text: `🎉 New version available: v${updateState.info.latestVersion}` }),

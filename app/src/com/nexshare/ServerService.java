@@ -135,6 +135,7 @@ public class ServerService extends Service {
             DownloadManager.get(this).startup();
             applyStayOn();
             TunnelManager.get(this).restoreIfEnabled();
+            AutoUpdater.get(this).start();
 
             // Acquire CPU wake lock so the server executes continuously with screen off
             PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
@@ -177,6 +178,7 @@ public class ServerService extends Service {
                     if (mdns != null) mdns.onNetworkChanged();
                     registerNsd();
                     TunnelManager.get(ServerService.this).onNetworkAvailable();
+                    AutoUpdater.get(ServerService.this).triggerCheck();
                 }
 
                 @Override
@@ -260,6 +262,7 @@ public class ServerService extends Service {
     public void onDestroy() {
         running = false;
         unregisterNetworkMonitoring();
+        AutoUpdater.get(this).stop();
         if (server[0] != null) server[0].stop();
         server[0] = null;
         if (mdns != null) mdns.stop();

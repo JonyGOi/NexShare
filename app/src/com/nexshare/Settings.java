@@ -171,6 +171,14 @@ public final class Settings {
         prefs(c).edit().putBoolean("bootStart", on).apply();
     }
 
+    public static boolean autoUpdateEnabled(Context c) {
+        return prefs(c).getBoolean("autoUpdate", true);
+    }
+
+    public static void setAutoUpdateEnabled(Context c, boolean on) {
+        prefs(c).edit().putBoolean("autoUpdate", on).apply();
+    }
+
     public static String serverName(Context c) {
         return prefs(c).getString("name", "NexShare-" + Build.MODEL.replace(' ', '-'));
     }

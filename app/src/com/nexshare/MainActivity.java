@@ -217,6 +217,20 @@ public class MainActivity extends Activity {
         verText.setPadding(0, dp(2), 0, dp(6));
         updateCard.addView(verText);
 
+        Switch autoUpdateSwitch = new Switch(this);
+        autoUpdateSwitch.setText("Auto-update in background (idle only)");
+        autoUpdateSwitch.setChecked(Settings.autoUpdateEnabled(this));
+        autoUpdateSwitch.setPadding(0, dp(4), 0, dp(6));
+        autoUpdateSwitch.setOnCheckedChangeListener((btn, isChecked) -> {
+            Settings.setAutoUpdateEnabled(this, isChecked);
+            if (isChecked) AutoUpdater.get(this).triggerCheck();
+        });
+        updateCard.addView(autoUpdateSwitch);
+
+        TextView autoUpdateHint = text("Silently updates when no files are being transferred", 11, 0xFF8A95A5, false);
+        autoUpdateHint.setPadding(0, 0, 0, dp(8));
+        updateCard.addView(autoUpdateHint);
+
         TextView updateStatus = text("", 13, 0xFF1D2733, false);
         updateStatus.setVisibility(View.GONE);
         updateCard.addView(updateStatus);
@@ -563,6 +577,13 @@ public class MainActivity extends Activity {
         statusView.setText("Downloading update...");
 
         new Thread(() -> {
+            while (TransferTracker.isBusy(this)) {
+                runOnUiThread(() -> statusView.setText("Waiting for active file transfers to complete before updating..."));
+                try {
+                    Thread.sleep(3000);
+                } catch (InterruptedException ignored) { }
+            }
+
             java.io.File apkDir = new java.io.File(getCacheDir(), "apk");
             apkDir.mkdirs();
             java.io.File apk = new java.io.File(apkDir, "update.apk");
@@ -598,6 +619,9 @@ public class MainActivity extends Activity {
                         if (out.toLowerCase(java.util.Locale.ROOT).contains("success")) {
                             statusView.setText("✓ Updated successfully!");
                             Toast.makeText(this, "Updated successfully!", Toast.LENGTH_LONG).show();
+                            try {
+                                RootShell.main().exec("am start-foreground-service -n com.nexshare/.ServerService", 5000);
+                            } catch (Exception ignored) { }
                         } else {
                             statusView.setText("Root install failed: " + out.trim());
                         }

@@ -342,32 +342,37 @@ public class WebDavHandler implements HttpServer.Handler {
         OutputStream out = res.begin(partial ? 206 : 200, WebApi.mime(f.getName()), Math.max(count, 0));
         if (isHead || len == 0) return;
 
-        // Stream from disk without allocating large memory
-        try (RandomAccessFile raf = new RandomAccessFile(f, "r")) {
-            raf.seek(start);
-            byte[] buf = new byte[65536];
-            long left = count;
-            while (left > 0) {
-                int n = raf.read(buf, 0, (int) Math.min(buf.length, left));
-                if (n < 0) break;
-                out.write(buf, 0, n);
-                left -= n;
-            }
-        } catch (IOException e) {
-            if (RootIo.isAvailable()) {
-                try (InputStream in = RootIo.openInputStream(f, start)) {
-                    byte[] buf = new byte[65536];
-                    long left = count;
-                    while (left > 0) {
-                        int n = in.read(buf, 0, (int) Math.min(buf.length, left));
-                        if (n < 0) break;
-                        out.write(buf, 0, n);
-                        left -= n;
-                    }
+        TransferTracker.onTransferStart();
+        try {
+            // Stream from disk without allocating large memory
+            try (RandomAccessFile raf = new RandomAccessFile(f, "r")) {
+                raf.seek(start);
+                byte[] buf = new byte[65536];
+                long left = count;
+                while (left > 0) {
+                    int n = raf.read(buf, 0, (int) Math.min(buf.length, left));
+                    if (n < 0) break;
+                    out.write(buf, 0, n);
+                    left -= n;
                 }
-            } else {
-                throw e;
+            } catch (IOException e) {
+                if (RootIo.isAvailable()) {
+                    try (InputStream in = RootIo.openInputStream(f, start)) {
+                        byte[] buf = new byte[65536];
+                        long left = count;
+                        while (left > 0) {
+                            int n = in.read(buf, 0, (int) Math.min(buf.length, left));
+                            if (n < 0) break;
+                            out.write(buf, 0, n);
+                            left -= n;
+                        }
+                    }
+                } else {
+                    throw e;
+                }
             }
+        } finally {
+            TransferTracker.onTransferEnd();
         }
     }
 
@@ -389,15 +394,20 @@ public class WebDavHandler implements HttpServer.Handler {
         boolean existed = target.exists();
         File tmp = new File(parent, "." + target.getName() + ".nexdav");
         boolean ok = false;
-        try (OutputStream out = new FileOutputStream(tmp)) {
-            byte[] buf = new byte[65536];
-            int n;
-            while ((n = req.body.read(buf)) > 0) {
-                out.write(buf, 0, n);
+        TransferTracker.onTransferStart();
+        try {
+            try (OutputStream out = new FileOutputStream(tmp)) {
+                byte[] buf = new byte[65536];
+                int n;
+                while ((n = req.body.read(buf)) > 0) {
+                    out.write(buf, 0, n);
+                }
+                ok = req.body.remaining() == 0;
+            } finally {
+                if (!ok) tmp.delete();
             }
-            ok = req.body.remaining() == 0;
         } finally {
-            if (!ok) tmp.delete();
+            TransferTracker.onTransferEnd();
         }
 
         if (!ok) {
