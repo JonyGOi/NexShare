@@ -8,6 +8,7 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.media.ThumbnailUtils;
 import android.net.TrafficStats;
+import android.net.Uri;
 import android.os.BatteryManager;
 import android.os.Build;
 import android.os.Environment;
@@ -29,6 +30,7 @@ import java.io.OutputStream;
 import java.io.RandomAccessFile;
 import java.net.Inet4Address;
 import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -147,6 +149,8 @@ public class WebApi implements HttpServer.Handler {
             case "/api/dl/resume": DownloadManager.get(ctx).resume(req.param("id")); dlList(res); break;
             case "/api/dl/remove": DownloadManager.get(ctx).remove(req.param("id"), "1".equals(req.param("files"))); dlList(res); break;
             case "/api/dl/clear": DownloadManager.get(ctx).clearFinished(); dlList(res); break;
+            case "/api/update/check": checkUpdate(res); break;
+            case "/api/update/install": installUpdate(req, res); break;
             default: res.error(404, "not found");
         }
     }
@@ -886,6 +890,8 @@ public class WebApi implements HttpServer.Handler {
         put(o, "rx", TrafficStats.getTotalRxBytes());
         put(o, "tx", TrafficStats.getTotalTxBytes());
         put(o, "time", System.currentTimeMillis());
+        put(o, "version", Flavor.VERSION);
+        put(o, "flavor", Flavor.ROOT ? "root" : "normal");
         res.json(200, o.toString());
     }
 
@@ -963,5 +969,140 @@ public class WebApi implements HttpServer.Handler {
         int dot = name.lastIndexOf('.');
         String t = dot >= 0 ? MIME.get(name.substring(dot + 1).toLowerCase(Locale.ROOT)) : null;
         return t == null ? "application/octet-stream" : t;
+    }
+
+    private void checkUpdate(HttpServer.Response res) throws IOException {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    String apiUrl = "https://api.github.com/repos/JonyGOi/NexShare/releases/latest";
+                    java.net.HttpURLConnection conn = (java.net.HttpURLConnection) new java.net.URL(apiUrl).openConnection();
+                    conn.setRequestProperty("User-Agent", "NexShare/" + Flavor.VERSION);
+                    conn.setRequestProperty("Accept", "application/vnd.github+json");
+                    conn.setConnectTimeout(8000);
+                    conn.setReadTimeout(12000);
+                    int code = conn.getResponseCode();
+                    if (code != 200) {
+                        res.error(code, "GitHub returned " + code);
+                        return;
+                    }
+                    InputStream in = conn.getInputStream();
+                    ByteArrayOutputStream bo = new ByteArrayOutputStream();
+                    byte[] buf = new byte[8192];
+                    int n;
+                    while ((n = in.read(buf)) > 0) bo.write(buf, 0, n);
+                    String json = new String(bo.toByteArray(), StandardCharsets.UTF_8);
+                    JSONObject rel = new JSONObject(json);
+
+                    String tag = rel.optString("tag_name", "");
+                    String latestVer = tag.startsWith("v") ? tag.substring(1) : tag;
+                    String currentVer = Flavor.VERSION;
+                    boolean hasUpdate = !currentVer.equals(latestVer);
+
+                    JSONArray assets = rel.optJSONArray("assets");
+                    String downloadUrl = "";
+                    String assetName = "";
+                    long size = 0;
+                    if (assets != null) {
+                        for (int i = 0; i < assets.length(); i++) {
+                            JSONObject a = assets.getJSONObject(i);
+                            String aname = a.optString("name", "");
+                            if (aname.endsWith(".apk")) {
+                                boolean isRootAsset = aname.toLowerCase(Locale.ROOT).contains("root");
+                                if (Flavor.ROOT == isRootAsset) {
+                                    downloadUrl = a.optString("browser_download_url", "");
+                                    assetName = aname;
+                                    size = a.optLong("size", 0);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    JSONObject out = new JSONObject();
+                    put(out, "ok", true);
+                    put(out, "currentVersion", currentVer);
+                    put(out, "latestVersion", latestVer);
+                    put(out, "hasUpdate", hasUpdate);
+                    put(out, "title", rel.optString("name", tag));
+                    put(out, "notes", rel.optString("body", ""));
+                    put(out, "releaseUrl", rel.optString("html_url", ""));
+                    put(out, "downloadUrl", downloadUrl);
+                    put(out, "assetName", assetName);
+                    put(out, "size", size);
+                    put(out, "flavor", Flavor.ROOT ? "root" : "normal");
+                    res.json(200, out.toString());
+                } catch (Exception e) {
+                    try {
+                        res.error(500, "Failed to check update: " + e.getMessage());
+                    } catch (Exception ignored) { }
+                }
+            }
+        }, "update-check").start();
+    }
+
+    private void installUpdate(HttpServer.Request req, HttpServer.Response res) throws IOException {
+        String downloadUrl = req.param("url");
+        if (downloadUrl == null || downloadUrl.isEmpty()) {
+            try {
+                JSONObject b = new JSONObject(req.bodyString(4096));
+                downloadUrl = b.optString("url", null);
+            } catch (Exception ignored) { }
+        }
+        if (downloadUrl == null || downloadUrl.isEmpty()) {
+            res.error(400, "Missing download URL");
+            return;
+        }
+
+        final String targetUrl = downloadUrl;
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                File apkDir = new File(ctx.getCacheDir(), "apk");
+                apkDir.mkdirs();
+                File apk = new File(apkDir, "update.apk");
+
+                try {
+                    java.net.HttpURLConnection conn = (java.net.HttpURLConnection) new java.net.URL(targetUrl).openConnection();
+                    conn.setRequestProperty("User-Agent", "NexShare/" + Flavor.VERSION);
+                    conn.setInstanceFollowRedirects(true);
+                    conn.setConnectTimeout(10000);
+                    conn.setReadTimeout(45000);
+                    int code = conn.getResponseCode();
+                    if (code >= 400) {
+                        res.error(code, "Failed to download update APK (HTTP " + code + ")");
+                        return;
+                    }
+                    try (InputStream in = conn.getInputStream(); OutputStream out = new FileOutputStream(apk)) {
+                        byte[] buf = new byte[65536];
+                        int n;
+                        while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+                    }
+
+                    if (Flavor.ROOT && RootShell.available()) {
+                        String out = RootShell.main().exec("pm install -r -g " + RootShell.q(apk.getAbsolutePath()), 180000);
+                        apk.delete();
+                        if (out.toLowerCase(Locale.ROOT).contains("success")) {
+                            res.json(200, "{\"ok\":true,\"mode\":\"root\",\"msg\":\"App updated successfully via Root!\"}");
+                        } else {
+                            res.error(500, "Root installation failed: " + out.trim());
+                        }
+                    } else {
+                        Uri uri = NexFileProvider.uriFor(ctx, apk);
+                        Intent i = new Intent(Intent.ACTION_VIEW);
+                        i.setDataAndType(uri, "application/vnd.android.package-archive");
+                        i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+                        ctx.startActivity(i);
+                        res.json(200, "{\"ok\":true,\"mode\":\"prompt\",\"msg\":\"Update downloaded. Installer prompt opened on phone!\"}");
+                    }
+                } catch (Exception e) {
+                    apk.delete();
+                    try {
+                        res.error(500, "Update error: " + e.getMessage());
+                    } catch (Exception ignored) { }
+                }
+            }
+        }, "update-install").start();
     }
 }

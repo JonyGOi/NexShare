@@ -209,6 +209,102 @@ public class MainActivity extends Activity {
             }).start();
         }
 
+        LinearLayout updateCard = card(body);
+        updateCard.addView(text("App Version & Updates", 15, 0xFF1D2733, true));
+        TextView verText = text("Installed: v" + Flavor.VERSION + (Flavor.ROOT ? " (Root Edition)" : " (Standard)"), 13, 0xFF6B7785, false);
+        verText.setPadding(0, dp(2), 0, dp(6));
+        updateCard.addView(verText);
+
+        TextView updateStatus = text("", 13, 0xFF1D2733, false);
+        updateStatus.setVisibility(View.GONE);
+        updateCard.addView(updateStatus);
+
+        Button checkUpdateBtn = new Button(this);
+        checkUpdateBtn.setAllCaps(false);
+        checkUpdateBtn.setText("Check for updates");
+        updateCard.addView(checkUpdateBtn);
+
+        Button installUpdateBtn = new Button(this);
+        installUpdateBtn.setAllCaps(false);
+        installUpdateBtn.setText("Download & Install Update");
+        installUpdateBtn.setVisibility(View.GONE);
+        updateCard.addView(installUpdateBtn);
+
+        checkUpdateBtn.setOnClickListener(v -> {
+            checkUpdateBtn.setEnabled(false);
+            checkUpdateBtn.setText("Checking for updates...");
+            updateStatus.setVisibility(View.VISIBLE);
+            updateStatus.setText("Connecting to GitHub...");
+            new Thread(() -> {
+                try {
+                    String apiUrl = "https://api.github.com/repos/JonyGOi/NexShare/releases/latest";
+                    java.net.HttpURLConnection conn = (java.net.HttpURLConnection) new java.net.URL(apiUrl).openConnection();
+                    conn.setRequestProperty("User-Agent", "NexShare/" + Flavor.VERSION);
+                    conn.setRequestProperty("Accept", "application/vnd.github+json");
+                    conn.setConnectTimeout(8000);
+                    conn.setReadTimeout(12000);
+                    int code = conn.getResponseCode();
+                    if (code != 200) {
+                        runOnUiThread(() -> {
+                            checkUpdateBtn.setEnabled(true);
+                            checkUpdateBtn.setText("Check for updates");
+                            updateStatus.setText("Failed to check: HTTP " + code);
+                        });
+                        return;
+                    }
+                    java.io.InputStream in = conn.getInputStream();
+                    java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+                    byte[] buf = new byte[8192];
+                    int n;
+                    while ((n = in.read(buf)) > 0) bo.write(buf, 0, n);
+                    org.json.JSONObject rel = new org.json.JSONObject(bo.toString("UTF-8"));
+                    String tag = rel.optString("tag_name", "");
+                    String latestVer = tag.startsWith("v") ? tag.substring(1) : tag;
+                    boolean hasUpdate = !Flavor.VERSION.equals(latestVer);
+
+                    org.json.JSONArray assets = rel.optJSONArray("assets");
+                    String dlUrl = "";
+                    if (assets != null) {
+                        for (int i = 0; i < assets.length(); i++) {
+                            org.json.JSONObject a = assets.getJSONObject(i);
+                            String aname = a.optString("name", "");
+                            if (aname.endsWith(".apk")) {
+                                boolean isRootAsset = aname.toLowerCase(java.util.Locale.ROOT).contains("root");
+                                if (Flavor.ROOT == isRootAsset) {
+                                    dlUrl = a.optString("browser_download_url", "");
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    final String finalDlUrl = dlUrl;
+                    runOnUiThread(() -> {
+                        checkUpdateBtn.setEnabled(true);
+                        checkUpdateBtn.setText("Check for updates");
+                        if (hasUpdate && !finalDlUrl.isEmpty()) {
+                            updateStatus.setText("🎉 New version available: v" + latestVer);
+                            installUpdateBtn.setVisibility(View.VISIBLE);
+                            installUpdateBtn.setText("Download & Install v" + latestVer);
+                            installUpdateBtn.setOnClickListener(iv -> downloadAndInstall(finalDlUrl, installUpdateBtn, updateStatus));
+                        } else if (!finalDlUrl.isEmpty()) {
+                            updateStatus.setText("✓ App is up to date (v" + Flavor.VERSION + ")");
+                            installUpdateBtn.setVisibility(View.VISIBLE);
+                            installUpdateBtn.setText("Reinstall v" + Flavor.VERSION);
+                            installUpdateBtn.setOnClickListener(iv -> downloadAndInstall(finalDlUrl, installUpdateBtn, updateStatus));
+                        } else {
+                            updateStatus.setText("✓ App is up to date (v" + Flavor.VERSION + ")");
+                        }
+                    });
+                } catch (Exception e) {
+                    runOnUiThread(() -> {
+                        checkUpdateBtn.setEnabled(true);
+                        checkUpdateBtn.setText("Check for updates");
+                        updateStatus.setText("Error: " + e.getMessage());
+                    });
+                }
+            }).start();
+        });
+
         applyAuthMode();
         applyKeepScreen();
         setContentView(scroll);
@@ -448,5 +544,80 @@ public class MainActivity extends Activity {
 
     private int dp(int v) {
         return Math.round(v * getResources().getDisplayMetrics().density);
+    }
+
+    private void downloadAndInstall(String downloadUrl, Button btn, TextView statusView) {
+        btn.setEnabled(false);
+        btn.setText("Downloading APK...");
+        statusView.setText("Downloading update...");
+
+        new Thread(() -> {
+            java.io.File apkDir = new java.io.File(getCacheDir(), "apk");
+            apkDir.mkdirs();
+            java.io.File apk = new java.io.File(apkDir, "update.apk");
+
+            try {
+                java.net.HttpURLConnection conn = (java.net.HttpURLConnection) new java.net.URL(downloadUrl).openConnection();
+                conn.setRequestProperty("User-Agent", "NexShare/" + Flavor.VERSION);
+                conn.setInstanceFollowRedirects(true);
+                conn.setConnectTimeout(10000);
+                conn.setReadTimeout(45000);
+                int code = conn.getResponseCode();
+                if (code >= 400) {
+                    runOnUiThread(() -> {
+                        btn.setEnabled(true);
+                        btn.setText("Download & Install Update");
+                        statusView.setText("Download failed: HTTP " + code);
+                    });
+                    return;
+                }
+                try (java.io.InputStream in = conn.getInputStream(); java.io.OutputStream out = new java.io.FileOutputStream(apk)) {
+                    byte[] buf = new byte[65536];
+                    int n;
+                    while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+                }
+
+                if (Flavor.ROOT && RootShell.available()) {
+                    runOnUiThread(() -> statusView.setText("Installing via Root..."));
+                    String out = RootShell.main().exec("pm install -r -g " + RootShell.q(apk.getAbsolutePath()), 180000);
+                    apk.delete();
+                    runOnUiThread(() -> {
+                        btn.setEnabled(true);
+                        btn.setText("Download & Install Update");
+                        if (out.toLowerCase(java.util.Locale.ROOT).contains("success")) {
+                            statusView.setText("✓ Updated successfully!");
+                            Toast.makeText(this, "Updated successfully!", Toast.LENGTH_LONG).show();
+                        } else {
+                            statusView.setText("Root install failed: " + out.trim());
+                        }
+                    });
+                } else {
+                    runOnUiThread(() -> {
+                        btn.setEnabled(true);
+                        btn.setText("Download & Install Update");
+                        statusView.setText("Opening package installer...");
+                    });
+                    if (Build.VERSION.SDK_INT >= 26 && !getPackageManager().canRequestPackageInstalls()) {
+                        try {
+                            Intent allowIntent = new Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES);
+                            allowIntent.setData(Uri.parse("package:" + getPackageName()));
+                            startActivity(allowIntent);
+                        } catch (Exception ignored) { }
+                    }
+                    Uri uri = NexFileProvider.uriFor(this, apk);
+                    Intent i = new Intent(Intent.ACTION_VIEW);
+                    i.setDataAndType(uri, "application/vnd.android.package-archive");
+                    i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+                    startActivity(i);
+                }
+            } catch (Exception e) {
+                apk.delete();
+                runOnUiThread(() -> {
+                    btn.setEnabled(true);
+                    btn.setText("Download & Install Update");
+                    statusView.setText("Update error: " + e.getMessage());
+                });
+            }
+        }).start();
     }
 }

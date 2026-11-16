@@ -188,6 +188,10 @@ const G = {
   play: '<path d="M8 5v14l11-7z" fill="currentColor"/>',
   pause: '<rect x="6" y="5" width="4" height="14" rx="1" fill="currentColor"/><rect x="14" y="5" width="4" height="14" rx="1" fill="currentColor"/>',
   folderUp: '<path d="M3 6h6l2 2h10v11H3z"/><path d="M12 17v-6M9 14l3-3 3 3"/>',
+  zoomIn: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4M11 8v6M8 11h6"/>',
+  zoomOut: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4M8 11h6"/>',
+  rotate: '<path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-1.19"/>',
+  fit: '<path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/>',
 };
 function icon(name, cls) {
   const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -1016,6 +1020,8 @@ function ResourceMonitor(body) {
   return { destroy() { Stats.listeners.delete(update); } };
 }
 
+const updateState = { info: null, checking: false, installing: false };
+
 function ControlPanel(body) {
   const pane = el('div', { class: 'pane' });
   body.append(pane);
@@ -1057,6 +1063,63 @@ function ControlPanel(body) {
           el('dt', { text: 'Windows Command' }), el('dd', { class: 'mono', style: { fontSize: '11px', wordBreak: 'break-all' }, text: `net use Z: http://${s.ip || 'IP'}:${s.port || 8080}/dav/ /user:nexshare *` })
         ) : el('div', { class: 'hint', text: 'Enable to map phone storage as Z: drive in Windows (use RaiDrive or run windows-webdav.reg)' })
       ),
+      el('div', { class: 'card' },
+        el('h3', { text: 'App Updates', style: { marginTop: 0 } }),
+        el('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' } },
+          el('div', null,
+            el('b', { text: `NexShare v${s.version || '1.5.0'}` }),
+            el('span', { style: { marginLeft: '8px', fontSize: '11px', textTransform: 'uppercase', background: '#eef3fb', color: '#1e6fd9', padding: '2px 6px', borderRadius: '4px' }, text: (s.flavor || 'normal') + ' edition' })
+          ),
+          el('button', {
+            class: 'btn',
+            disabled: updateState.checking,
+            onclick: async () => {
+              updateState.checking = true;
+              render();
+              try {
+                updateState.info = await api('update/check');
+              } catch (err) {
+                toast('Failed to check for updates: ' + (err.message || err));
+              } finally {
+                updateState.checking = false;
+                render();
+              }
+            }
+          }, updateState.checking ? 'Checking...' : 'Check for Updates')
+        ),
+        updateState.info ? el('div', { style: { marginTop: '10px', padding: '10px', background: '#f8fafc', borderRadius: '6px', border: '1px solid #e2e8f0' } },
+          updateState.info.hasUpdate ? [
+            el('div', { style: { color: '#0d9488', fontWeight: 'bold', marginBottom: '6px' }, text: `🎉 New version available: v${updateState.info.latestVersion}` }),
+            updateState.info.title ? el('div', { style: { fontWeight: '600', fontSize: '13px' }, text: updateState.info.title }) : null,
+            updateState.info.notes ? el('pre', { style: { whiteSpace: 'pre-wrap', maxHeight: '100px', overflowY: 'auto', fontSize: '11px', background: '#fff', padding: '6px', border: '1px solid #cbd5e1', borderRadius: '4px', margin: '6px 0' }, text: updateState.info.notes }) : null,
+            el('div', { style: { display: 'flex', gap: '8px', marginTop: '8px', flexWrap: 'wrap' } },
+              el('button', {
+                class: 'btn primary',
+                disabled: updateState.installing,
+                onclick: async () => {
+                  updateState.installing = true;
+                  render();
+                  try {
+                    const res = await api('update/install', null, { method: 'POST', body: JSON.stringify({ url: updateState.info.downloadUrl }) });
+                    toast(res.msg || 'Update process started!');
+                  } catch (err) {
+                    toast('Failed to install update: ' + (err.message || err));
+                  } finally {
+                    updateState.installing = false;
+                    render();
+                  }
+                }
+              }, updateState.installing ? 'Updating on phone...' : (updateState.info.flavor === 'root' ? 'Install Update via Root' : 'Send & Install on Phone')),
+              el('a', { class: 'btn', href: updateState.info.downloadUrl, target: '_blank', text: 'Download APK' })
+            )
+          ] : [
+            el('div', { style: { color: '#16a34a', fontSize: '13px' }, text: `✓ NexShare is up to date (v${updateState.info.currentVersion})` }),
+            updateState.info.downloadUrl ? el('div', { style: { marginTop: '8px' } },
+              el('a', { class: 'btn', href: updateState.info.downloadUrl, target: '_blank', text: 'Re-download Current APK' })
+            ) : null
+          ]
+        ) : null
+      ),
       el('div', { class: 'card' }, el('h3', { text: 'Storage', style: { marginTop: 0 } }),
         ...State.roots.map(r => el('div', { class: 'meter' },
           el('div', { class: 'row' }, el('span', { text: r.name }), el('b', { text: r.total ? `${fmtSize(r.total - r.free)} / ${fmtSize(r.total)}` : '-' })),
@@ -1094,6 +1157,7 @@ function Help(body) {
 // ---------------------------------------------------------------- viewer
 
 const Viewer = {
+  scale: 1, rot: 0, panX: 0, panY: 0, img: null,
   open(entry, list) {
     this.list = list && list.length ? list : [entry];
     this.i = Math.max(0, this.list.findIndex(e => e.path === entry.path));
@@ -1101,31 +1165,103 @@ const Viewer = {
     this.el.classList.remove('hidden');
     this.show();
   },
+  resetTransform() {
+    this.scale = 1;
+    this.rot = 0;
+    this.panX = 0;
+    this.panY = 0;
+    this.applyTransform();
+  },
+  applyTransform() {
+    if (!this.img) return;
+    this.img.style.transform = `translate(${this.panX}px, ${this.panY}px) rotate(${this.rot}deg) scale(${this.scale})`;
+    this.img.classList.toggle('zoomed', this.scale > 1);
+  },
+  zoom(delta) {
+    this.scale = Math.min(6, Math.max(0.2, +(this.scale + delta).toFixed(2)));
+    if (this.scale <= 1) { this.panX = 0; this.panY = 0; }
+    this.applyTransform();
+  },
+  rotate(deg) {
+    this.rot = (this.rot + deg) % 360;
+    this.applyTransform();
+  },
   build() {
     this.title = el('div', { class: 'v-title' });
     this.body = el('div', { class: 'v-body' });
     this.prev = el('button', { class: 'v-nav prev', onclick: () => this.step(-1) }, icon('back'));
     this.next = el('button', { class: 'v-nav next', onclick: () => this.step(1) }, icon('fwd'));
+    this.btnZoomIn = el('button', { title: 'Zoom in (+)', onclick: () => this.zoom(0.25) }, icon('zoomIn'));
+    this.btnZoomOut = el('button', { title: 'Zoom out (-)', onclick: () => this.zoom(-0.25) }, icon('zoomOut'));
+    this.btnRotate = el('button', { title: 'Rotate 90°', onclick: () => this.rotate(90) }, icon('rotate'));
+    this.btnFit = el('button', { title: 'Reset zoom (fit)', onclick: () => this.resetTransform() }, icon('fit'));
+
     this.el = el('div', { id: 'viewer', class: 'hidden' },
       el('div', { class: 'v-top' }, this.title,
+        this.btnZoomIn, this.btnZoomOut, this.btnRotate, this.btnFit,
         el('button', { title: 'Open in new tab', onclick: () => window.open(fileUrl(this.cur.path), '_blank') }, icon('open')),
         el('button', { title: 'Download', onclick: () => { location.href = fileUrl(this.cur.path, true); } }, icon('download')),
         el('button', { title: 'Close', onclick: () => this.close() }, icon('x'))),
-      el('div', { style: { flex: 1, minHeight: 0, position: 'relative', display: 'flex' } }, this.body, this.prev, this.next));
-    this.body.style.flex = '1';
+      el('div', { style: { flex: 1, minHeight: 0, position: 'relative', display: 'flex', overflow: 'hidden' } }, this.body, this.prev, this.next));
+
     document.body.append(this.el);
+
+    // Mouse wheel zoom
+    this.body.addEventListener('wheel', e => {
+      if (!this.img || kindOf(this.cur) !== 'image') return;
+      e.preventDefault();
+      this.zoom(e.deltaY < 0 ? 0.25 : -0.25);
+    }, { passive: false });
+
+    // Drag pan when zoomed
+    let dragging = false, lx = 0, ly = 0;
+    this.body.addEventListener('mousedown', e => {
+      if (e.target !== this.img || this.scale <= 1) return;
+      dragging = true;
+      lx = e.clientX;
+      ly = e.clientY;
+      this.img.classList.add('dragging');
+      e.preventDefault();
+    });
+    window.addEventListener('mousemove', e => {
+      if (!dragging || !this.img) return;
+      this.panX += e.clientX - lx;
+      this.panY += e.clientY - ly;
+      lx = e.clientX;
+      ly = e.clientY;
+      this.applyTransform();
+    });
+    window.addEventListener('mouseup', () => {
+      if (dragging && this.img) {
+        dragging = false;
+        this.img.classList.remove('dragging');
+      }
+    });
+
+    // Double click to zoom in / fit
+    this.body.addEventListener('dblclick', e => {
+      if (e.target !== this.img) return;
+      if (this.scale > 1) this.resetTransform();
+      else { this.scale = 2; this.applyTransform(); }
+    });
+
     addEventListener('keydown', e => {
       if (this.el.classList.contains('hidden') || $('#modal')) return;
       if (e.key === 'Escape') this.close();
       if (e.key === 'ArrowLeft') this.step(-1);
       if (e.key === 'ArrowRight') this.step(1);
+      if (e.key === '+' || e.key === '=') this.zoom(0.25);
+      if (e.key === '-' || e.key === '_') this.zoom(-0.25);
+      if (e.key === '0') this.resetTransform();
+      if (e.key === 'r' || e.key === 'R') this.rotate(90);
     });
+
     let sx = null;
     this.body.addEventListener('touchstart', e => { sx = e.touches[0].clientX; }, { passive: true });
     this.body.addEventListener('touchend', e => {
       if (sx == null) return;
       const dx = e.changedTouches[0].clientX - sx;
-      if (Math.abs(dx) > 60 && kindOf(this.cur) === 'image') this.step(dx < 0 ? 1 : -1);
+      if (Math.abs(dx) > 60 && kindOf(this.cur) === 'image' && this.scale <= 1) this.step(dx < 0 ? 1 : -1);
       sx = null;
     });
   },
@@ -1136,6 +1272,7 @@ const Viewer = {
     this.show();
   },
   async show() {
+    this.resetTransform();
     const e = this.cur = this.list[this.i];
     this.title.textContent = `${e.name}  ·  ${fmtSize(e.size)}` + (this.list.length > 1 ? `  ·  ${this.i + 1}/${this.list.length}` : '');
     this.prev.classList.toggle('hidden', this.i === 0);
@@ -1143,7 +1280,18 @@ const Viewer = {
     const url = fileUrl(e.path);
     const k = kindOf(e);
     this.body.replaceChildren();
-    if (k === 'image') this.body.append(el('img', { src: url, alt: e.name }));
+    this.img = null;
+
+    const isImg = k === 'image';
+    this.btnZoomIn.classList.toggle('hidden', !isImg);
+    this.btnZoomOut.classList.toggle('hidden', !isImg);
+    this.btnRotate.classList.toggle('hidden', !isImg);
+    this.btnFit.classList.toggle('hidden', !isImg);
+
+    if (isImg) {
+      this.img = el('img', { src: url, alt: e.name });
+      this.body.append(this.img);
+    }
     else if (k === 'video') this.body.append(el('video', { src: url, controls: true, autoplay: true, playsinline: true }));
     else if (k === 'audio') this.body.append(el('div', { class: 'v-info' }, fileIcon('audio'), el('audio', { src: url, controls: true, autoplay: true })));
     else if (k === 'pdf') this.body.append(el('iframe', { src: url }));
@@ -1163,6 +1311,8 @@ const Viewer = {
   close() {
     this.el.classList.add('hidden');
     this.body.replaceChildren();
+    this.img = null;
+    this.resetTransform();
   },
 };
 
