@@ -83,32 +83,42 @@ using the built-in WebDAV server running at `http://<phone-ip>:8080/dav/`.
    - Note: If login mode was set to "No login", NexShare automatically enforces a 6-digit PIN for security.
 3. Note the displayed URL and PIN (e.g., `http://192.168.1.100:8080/dav/` and PIN `123456`).
 
-### 2. Configure Windows (One-time setup)
-By default, Windows WebClient restricts HTTP Basic authentication over unencrypted connections
-and caps individual file transfers at ~50 MB.
+### 2. Configure Windows
 
-Run the provided script or import the registry file:
+There are two ways to connect:
 
-**Option A (Automated):**
-Run `map-drive.ps1` in PowerShell as Administrator:
-```powershell
-.\map-drive.ps1 -PhoneIP 192.168.1.100 -Pin 123456 -Drive Z:
-```
+#### Option A: RaiDrive (Recommended — No 4 GB limit, faster, visual interface)
+Windows' built-in WebDAV driver caps transfers at 4 GB. **RaiDrive** bypasses this limit completely and provides a much faster and more reliable network drive experience.
 
-**Option B (Manual):**
-1. Double-click `windows-webdav.reg` and confirm the prompt to update the registry:
-   - Sets `BasicAuthLevel = 2` under `HKLM\SYSTEM\CurrentControlSet\Services\WebClient\Parameters` (allows Basic Auth over HTTP).
-   - Sets `FileSizeLimitInBytes = 0xffffffff` (increases file transfer size limit from 50 MB to 4 GB).
-2. Restart the Windows WebClient service (run in PowerShell as Admin):
+1. Download and install [RaiDrive](https://www.raidrive.com/) (free).
+2. Open RaiDrive and click **Add** ➔ select **WebDAV** (under the NAS tab).
+3. Configure the connection:
+   - **Drive**: choose a drive letter (e.g. `Z:`)
+   - **Address**: `http://` (uncheck HTTPS), enter phone IP (e.g. `192.168.1.100`), Port `8080`, Path `/dav/`
+   - **Account**: `nexshare`
+   - **Password**: your 6-digit PIN
+4. Click **Connect**. Your phone's storage will mount as a full network drive with **no file size limit**.
+
+#### Option B: Windows Native Client (`net use` / File Explorer)
+If you prefer not to install third-party software, you can use the built-in Windows WebClient (subject to the 4 GB file size limit).
+
+1. **Automated Setup:**
+   Run `map-drive.ps1` in PowerShell as Administrator:
    ```powershell
-   Set-Service -Name WebClient -StartupType Automatic
-   Restart-Service -Name WebClient -Force
+   .\map-drive.ps1 -PhoneIP 192.168.1.100 -Pin 123456 -Drive Z:
    ```
-3. Map the drive via command prompt:
-   ```cmd
-   net use Z: http://192.168.1.100:8080/dav/ /user:nexshare *
-   ```
-   (Type the 6-digit PIN when prompted for password).
+
+2. **Manual Setup:**
+   - Double-click `windows-webdav.reg` to set `BasicAuthLevel = 2` and `FileSizeLimitInBytes = 0xffffffff`.
+   - Restart the WebClient service (PowerShell as Admin):
+     ```powershell
+     Set-Service -Name WebClient -StartupType Automatic
+     Restart-Service -Name WebClient -Force
+     ```
+   - Map via command line:
+     ```cmd
+     net use Z: http://192.168.1.100:8080/dav/ /user:nexshare *
+     ```
 
 ### 3. Alternative UNC Path
 You can also access the drive directly from Windows File Explorer or the Run dialog (`Win + R`):
@@ -121,7 +131,7 @@ You can also access the drive directly from Windows File Explorer or the Run dia
 
 - **HTTP without encryption**: WebDAV runs over plain HTTP on your local Wi-Fi network. Always keep PIN protection enabled, especially on shared Wi-Fi networks.
 - **No SMB**: Pure Java implementation without external native SMB/Samba libraries. WebDAV is used because it runs on standard HTTP/1.1 and integrates natively with Windows File Explorer.
-- **Windows WebClient file size limit**: The Windows WebClient service has a hard architectural cap of 4 GB (`0xffffffff` bytes) for single file transfers over WebDAV. For files larger than 4 GB, use the NexShare web interface (File Station).
+- **Windows WebClient file size limit**: The native Windows WebClient service has a hard architectural cap of 4 GB (`0xffffffff` bytes) for single file transfers over WebDAV. To transfer files larger than 4 GB, use **RaiDrive** or the NexShare web interface (File Station).
 - **Small files performance**: Because WebDAV issues HTTP round-trips for metadata (`PROPFIND`) on each file/folder, browsing directories with thousands of small files will be slower than a local disk.
 
 ## Build from source (Windows)
