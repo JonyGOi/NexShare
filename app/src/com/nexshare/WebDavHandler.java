@@ -18,6 +18,7 @@ import java.text.SimpleDateFormat;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.Date;
+import java.util.List;
 import java.util.Locale;
 import java.util.TimeZone;
 import java.util.UUID;
@@ -178,7 +179,16 @@ public class WebDavHandler implements HttpServer.Handler {
         // Children if collection and Depth > 0
         if (depth > 0 && target.isDirectory()) {
             File[] children = target.listFiles();
-            if (children != null) {
+            if (children == null && RootIo.isAvailable()) {
+                List<RootIo.Entry> rootList = RootIo.listEntries(target);
+                if (rootList != null) {
+                    String basePath = req.path.endsWith("/") ? req.path : req.path + "/";
+                    for (RootIo.Entry re : rootList) {
+                        File child = new File(target, re.name);
+                        appendResourcePropWithRoot(xml, child, basePath + re.name, re);
+                    }
+                }
+            } else if (children != null) {
                 Arrays.sort(children, new Comparator<File>() {
                     public int compare(File a, File b) {
                         if (a.isDirectory() != b.isDirectory()) return a.isDirectory() ? -1 : 1;
@@ -223,6 +233,45 @@ public class WebDavHandler implements HttpServer.Handler {
         xml.append("        <D:getetag>\"").append(Long.toHexString(f.lastModified())).append('-').append(Long.toHexString(f.length())).append("\"</D:getetag>\n");
 
         // Disk Quota (RFC 4331) for Windows Explorer capacity bar
+        try {
+            StatFs st = new StatFs(storageRoot.getPath());
+            long available = st.getAvailableBytes();
+            long total = st.getTotalBytes();
+            long used = Math.max(0, total - available);
+            xml.append("        <D:quota-available-bytes>").append(available).append("</D:quota-available-bytes>\n");
+            xml.append("        <D:quota-used-bytes>").append(used).append("</D:quota-used-bytes>\n");
+        } catch (Exception ignored) { }
+
+        xml.append("      </D:prop>\n");
+        xml.append("      <D:status>HTTP/1.1 200 OK</D:status>\n");
+        xml.append("    </D:propstat>\n");
+        xml.append("  </D:response>\n");
+    }
+
+    private void appendResourcePropWithRoot(StringBuilder xml, File f, String davPath, RootIo.Entry re) {
+        String href = encodeUriPath(davPath);
+        if (re.isDir && !href.endsWith("/")) href += "/";
+
+        xml.append("  <D:response>\n");
+        xml.append("    <D:href>").append(href).append("</D:href>\n");
+        xml.append("    <D:propstat>\n");
+        xml.append("      <D:prop>\n");
+        xml.append("        <D:displayname>").append(xmlEscape(re.name)).append("</D:displayname>\n");
+
+        if (re.isDir) {
+            xml.append("        <D:resourcetype><D:collection/></D:resourcetype>\n");
+            xml.append("        <D:getcontenttype>httpd/unix-directory</D:getcontenttype>\n");
+        } else {
+            xml.append("        <D:resourcetype/>\n");
+            xml.append("        <D:getcontentlength>").append(re.size).append("</D:getcontentlength>\n");
+            xml.append("        <D:getcontenttype>").append(WebApi.mime(re.name)).append("</D:getcontenttype>\n");
+        }
+
+        long mtime = re.mtime > 0 ? re.mtime : System.currentTimeMillis();
+        xml.append("        <D:getlastmodified>").append(HttpServer.httpDate(mtime)).append("</D:getlastmodified>\n");
+        xml.append("        <D:creationdate>").append(isoDate(mtime)).append("</D:creationdate>\n");
+        xml.append("        <D:getetag>\"").append(Long.toHexString(mtime)).append('-').append(Long.toHexString(re.size)).append("\"</D:getetag>\n");
+
         try {
             StatFs st = new StatFs(storageRoot.getPath());
             long available = st.getAvailableBytes();
@@ -303,6 +352,21 @@ public class WebDavHandler implements HttpServer.Handler {
                 if (n < 0) break;
                 out.write(buf, 0, n);
                 left -= n;
+            }
+        } catch (IOException e) {
+            if (RootIo.isAvailable()) {
+                try (InputStream in = RootIo.openInputStream(f, start)) {
+                    byte[] buf = new byte[65536];
+                    long left = count;
+                    while (left > 0) {
+                        int n = in.read(buf, 0, (int) Math.min(buf.length, left));
+                        if (n < 0) break;
+                        out.write(buf, 0, n);
+                        left -= n;
+                    }
+                }
+            } else {
+                throw e;
             }
         }
     }
@@ -397,7 +461,7 @@ public class WebDavHandler implements HttpServer.Handler {
             return;
         }
 
-        if (target.mkdir()) {
+        if (target.mkdir() || (RootIo.isAvailable() && RootIo.mkdir(target))) {
             res.begin(201, null, 0);
         } else {
             res.begin(500, null, 0);
@@ -572,7 +636,9 @@ public class WebDavHandler implements HttpServer.Handler {
                 for (File k : kids) deleteRec(k);
             }
         }
-        return f.delete();
+        boolean ok = f.delete();
+        if (!ok && RootIo.isAvailable()) ok = RootIo.delete(f);
+        return ok;
     }
 
     private boolean copyRec(File src, File dst) {
@@ -687,6 +753,7 @@ public class WebDavHandler implements HttpServer.Handler {
         }
 
         File[] files = dir.listFiles();
+        List<RootIo.Entry> rootList = (files == null && RootIo.isAvailable()) ? RootIo.listEntries(dir) : null;
         if (files != null) {
             Arrays.sort(files, new Comparator<File>() {
                 @Override
@@ -706,6 +773,23 @@ public class WebDavHandler implements HttpServer.Handler {
                 String icon = isDir ? "📁" : "📄";
                 String sizeStr = isDir ? "-" : formatSize(file.length());
                 String dateStr = sdf.format(new Date(file.lastModified()));
+
+                html.append("<tr>")
+                    .append("<td><span class=\"icon\">").append(icon).append("</span>")
+                    .append("<a href=\"").append(xmlEscape(itemHref)).append("\">").append(xmlEscape(name)).append(isDir ? "/" : "").append("</a></td>")
+                    .append("<td class=\"size\">").append(sizeStr).append("</td>")
+                    .append("<td class=\"date\">").append(dateStr).append("</td>")
+                    .append("</tr>");
+            }
+        } else if (rootList != null) {
+            SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US);
+            for (RootIo.Entry re : rootList) {
+                boolean isDir = re.isDir;
+                String name = re.name;
+                String itemHref = encodeUriPath(normPath + name + (isDir ? "/" : ""));
+                String icon = isDir ? "📁" : "📄";
+                String sizeStr = isDir ? "-" : formatSize(re.size);
+                String dateStr = re.mtime > 0 ? sdf.format(new Date(re.mtime)) : "-";
 
                 html.append("<tr>")
                     .append("<td><span class=\"icon\">").append(icon).append("</span>")

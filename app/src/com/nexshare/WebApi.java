@@ -298,6 +298,26 @@ public class WebApi implements HttpServer.Handler {
         }
         File[] files = dir.listFiles();
         if (files == null) {
+            List<RootIo.Entry> rootEntries = RootIo.listEntries(dir);
+            if (rootEntries != null) {
+                JSONArray arr = new JSONArray();
+                for (RootIo.Entry re : rootEntries) {
+                    JSONObject o = new JSONObject();
+                    put(o, "name", re.name);
+                    put(o, "path", new File(dir, re.name).getAbsolutePath());
+                    put(o, "dir", re.isDir);
+                    put(o, "size", re.isDir ? 0 : re.size);
+                    put(o, "mtime", re.mtime);
+                    put(o, "hidden", re.name.startsWith("."));
+                    arr.put(o);
+                }
+                JSONObject o = new JSONObject();
+                put(o, "path", dir.getPath());
+                put(o, "parent", isRoot(dir) ? JSONObject.NULL : dir.getParent());
+                put(o, "entries", arr);
+                res.json(200, o.toString());
+                return;
+            }
             res.error(403, "no_permission");
             return;
         }
@@ -407,6 +427,21 @@ public class WebApi implements HttpServer.Handler {
                 if (n < 0) break;
                 out.write(buf, 0, n);
                 left -= n;
+            }
+        } catch (IOException e) {
+            if (RootIo.isAvailable()) {
+                try (InputStream in = RootIo.openInputStream(f, start)) {
+                    byte[] buf = new byte[65536];
+                    long left = count;
+                    while (left > 0) {
+                        int n = in.read(buf, 0, (int) Math.min(buf.length, left));
+                        if (n < 0) break;
+                        out.write(buf, 0, n);
+                        left -= n;
+                    }
+                }
+            } else {
+                throw e;
             }
         }
     }
@@ -550,7 +585,7 @@ public class WebApi implements HttpServer.Handler {
             res.error(409, "exists");
             return;
         }
-        if (!nd.mkdirs()) {
+        if (!nd.mkdirs() && (!RootIo.isAvailable() || !RootIo.mkdir(nd))) {
             res.error(500, "cannot create");
             return;
         }
@@ -569,7 +604,7 @@ public class WebApi implements HttpServer.Handler {
             res.error(409, "exists");
             return;
         }
-        if (!f.renameTo(nf)) {
+        if (!f.renameTo(nf) && (!RootIo.isAvailable() || !RootIo.move(f, nf))) {
             res.error(500, "cannot rename");
             return;
         }
@@ -591,7 +626,9 @@ public class WebApi implements HttpServer.Handler {
             File[] kids = f.listFiles();
             if (kids != null) for (File k : kids) deleteRec(k);
         }
-        return f.delete();
+        boolean ok = f.delete();
+        if (!ok && RootIo.isAvailable()) ok = RootIo.delete(f);
+        return ok;
     }
 
     private void copyMove(HttpServer.Request req, HttpServer.Response res, boolean move) throws IOException {
