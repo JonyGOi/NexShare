@@ -153,6 +153,7 @@ public class WebApi implements HttpServer.Handler {
             case "/api/dl/clear": DownloadManager.get(ctx).clearFinished(); dlList(res); break;
             case "/api/update/check": checkUpdate(res); break;
             case "/api/update/install": installUpdate(req, res); break;
+            case "/api/update/status": updateStatus(res); break;
             default: res.error(404, "not found");
         }
     }
@@ -1105,6 +1106,30 @@ public class WebApi implements HttpServer.Handler {
         }, "update-check").start();
     }
 
+    public static class UpdateTask {
+        public static volatile String state = "idle"; // idle, downloading, installing, prompt, done, error
+        public static volatile int progress = 0;
+        public static volatile long downloaded = 0;
+        public static volatile long total = 0;
+        public static volatile String message = "";
+        public static volatile String error = "";
+        public static volatile String version = "";
+    }
+
+    private void updateStatus(HttpServer.Response res) throws IOException {
+        JSONObject o = new JSONObject();
+        put(o, "ok", true);
+        put(o, "state", UpdateTask.state);
+        put(o, "progress", UpdateTask.progress);
+        put(o, "downloaded", UpdateTask.downloaded);
+        put(o, "total", UpdateTask.total);
+        put(o, "msg", UpdateTask.message);
+        put(o, "error", UpdateTask.error);
+        put(o, "version", UpdateTask.version);
+        put(o, "flavor", Flavor.ROOT ? "root" : "normal");
+        res.json(200, o.toString());
+    }
+
     private void installUpdate(HttpServer.Request req, HttpServer.Response res) throws IOException {
         String downloadUrl = req.param("url");
         if (downloadUrl == null || downloadUrl.isEmpty()) {
@@ -1118,6 +1143,21 @@ public class WebApi implements HttpServer.Handler {
             return;
         }
 
+        if ("downloading".equals(UpdateTask.state) || "installing".equals(UpdateTask.state)) {
+            res.json(200, "{\"ok\":true,\"status\":\"already_running\",\"msg\":\"Update already in progress\"}");
+            return;
+        }
+
+        UpdateTask.state = "downloading";
+        UpdateTask.progress = 0;
+        UpdateTask.downloaded = 0;
+        UpdateTask.total = 0;
+        UpdateTask.message = "Starting download...";
+        UpdateTask.error = "";
+
+        // Respond immediately to prevent HTTP timeouts and Failed to fetch!
+        res.json(200, "{\"ok\":true,\"status\":\"started\",\"msg\":\"Update download started in background\"}");
+
         final String targetUrl = downloadUrl;
         new Thread(new Runnable() {
             @Override
@@ -1130,40 +1170,58 @@ public class WebApi implements HttpServer.Handler {
                     java.net.HttpURLConnection conn = (java.net.HttpURLConnection) new java.net.URL(targetUrl).openConnection();
                     conn.setRequestProperty("User-Agent", "NexShare/" + Flavor.VERSION);
                     conn.setInstanceFollowRedirects(true);
-                    conn.setConnectTimeout(10000);
-                    conn.setReadTimeout(45000);
+                    conn.setConnectTimeout(15000);
+                    conn.setReadTimeout(60000);
                     int code = conn.getResponseCode();
                     if (code >= 400) {
-                        res.error(code, "Failed to download update APK (HTTP " + code + ")");
+                        UpdateTask.state = "error";
+                        UpdateTask.error = "HTTP error " + code + " downloading update";
                         return;
                     }
+                    long len = conn.getContentLengthLong();
+                    UpdateTask.total = len > 0 ? len : 48000000;
+                    UpdateTask.message = "Downloading update...";
+
                     try (InputStream in = conn.getInputStream(); OutputStream out = new FileOutputStream(apk)) {
                         byte[] buf = new byte[65536];
                         int n;
-                        while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+                        long done = 0;
+                        while ((n = in.read(buf)) > 0) {
+                            out.write(buf, 0, n);
+                            done += n;
+                            UpdateTask.downloaded = done;
+                            if (UpdateTask.total > 0) {
+                                UpdateTask.progress = (int) Math.min(99, (done * 100) / UpdateTask.total);
+                            }
+                        }
                     }
 
+                    UpdateTask.progress = 100;
                     if (Flavor.ROOT && RootShell.available()) {
+                        UpdateTask.state = "installing";
+                        UpdateTask.message = "Installing update via Root... NexShare will restart.";
                         String out = RootShell.main().exec("pm install -r -g " + RootShell.q(apk.getAbsolutePath()), 180000);
                         apk.delete();
                         if (out.toLowerCase(Locale.ROOT).contains("success")) {
-                            res.json(200, "{\"ok\":true,\"mode\":\"root\",\"msg\":\"App updated successfully via Root!\"}");
+                            UpdateTask.state = "done";
+                            UpdateTask.message = "Updated successfully! Server is restarting...";
                         } else {
-                            res.error(500, "Root installation failed: " + out.trim());
+                            UpdateTask.state = "error";
+                            UpdateTask.error = "Root install failed: " + out.trim();
                         }
                     } else {
+                        UpdateTask.state = "prompt";
+                        UpdateTask.message = "Update downloaded. Installer prompt opened on your phone screen.";
                         Uri uri = NexFileProvider.uriFor(ctx, apk);
                         Intent i = new Intent(Intent.ACTION_VIEW);
                         i.setDataAndType(uri, "application/vnd.android.package-archive");
                         i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
                         ctx.startActivity(i);
-                        res.json(200, "{\"ok\":true,\"mode\":\"prompt\",\"msg\":\"Update downloaded. Installer prompt opened on phone!\"}");
                     }
                 } catch (Exception e) {
                     apk.delete();
-                    try {
-                        res.error(500, "Update error: " + e.getMessage());
-                    } catch (Exception ignored) { }
+                    UpdateTask.state = "error";
+                    UpdateTask.error = "Update failed: " + e.getMessage();
                 }
             }
         }, "update-install").start();

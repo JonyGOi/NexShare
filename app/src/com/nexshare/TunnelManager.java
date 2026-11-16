@@ -120,10 +120,29 @@ public class TunnelManager {
         return binary().exists();
     }
 
+    public static String sanitizeToken(String raw) {
+        if (raw == null) return "";
+        raw = raw.trim();
+        if (raw.startsWith("\"") && raw.endsWith("\"") && raw.length() > 2) raw = raw.substring(1, raw.length() - 1);
+        if (raw.startsWith("'") && raw.endsWith("'") && raw.length() > 2) raw = raw.substring(1, raw.length() - 1);
+        int idx = raw.indexOf("eyJh");
+        if (idx >= 0) {
+            String sub = raw.substring(idx).trim();
+            int space = sub.indexOf(' ');
+            if (space > 0) sub = sub.substring(0, space);
+            int quote = sub.indexOf('"');
+            if (quote > 0) sub = sub.substring(0, quote);
+            int singleQuote = sub.indexOf('\'');
+            if (singleQuote > 0) sub = sub.substring(0, singleQuote);
+            return sub.trim();
+        }
+        return raw.trim();
+    }
+
     public synchronized void start(String mode, String token) throws Exception {
         if (!supported()) throw new Exception("This device is not supported (no cloudflared binary for this CPU architecture)");
         desiredMode = mode == null ? "off" : mode;
-        desiredToken = token == null ? "" : token.trim();
+        desiredToken = token == null ? "" : sanitizeToken(token);
         Settings.setTunnel(ctx, desiredMode, desiredToken);
 
         stopProcess();
@@ -215,6 +234,13 @@ public class TunnelManager {
 
     private void runProcessOnce() throws Exception {
         File cf = binary();
+        if (!cf.canExecute()) cf.setExecutable(true, false);
+        if (Flavor.ROOT && RootShell.available()) {
+            try {
+                RootShell.main().exec("chmod 755 " + RootShell.q(cf.getAbsolutePath()), 3000);
+            } catch (Exception ignored) { }
+        }
+
         File home = new File(ctx.getFilesDir(), "cloudflared");
         home.mkdirs();
 
@@ -222,15 +248,14 @@ public class TunnelManager {
         cmd.add(cf.getAbsolutePath());
         cmd.add("tunnel");
         cmd.add("--no-autoupdate");
-        cmd.add("--edge-ip-version");
-        cmd.add("auto");
 
         final boolean named = "named".equals(desiredMode);
+        final String token = sanitizeToken(desiredToken);
         if (named) {
-            if (desiredToken.isEmpty()) throw new Exception("Tunnel token is required");
+            if (token.isEmpty()) throw new Exception("Tunnel token is required");
             cmd.add("run");
             cmd.add("--token");
-            cmd.add(desiredToken);
+            cmd.add(token);
         } else {
             cmd.add("--url");
             cmd.add("http://127.0.0.1:" + ServerService.PORT);
@@ -241,6 +266,13 @@ public class TunnelManager {
         pb.directory(home);
         pb.environment().put("HOME", home.getAbsolutePath());
         pb.environment().put("TMPDIR", ctx.getCacheDir().getAbsolutePath());
+        pb.environment().put("TUNNEL_DNS_RESOLVER_ADDRS", "1.1.1.1:53,8.8.8.8:53,1.0.0.1:53");
+        pb.environment().put("TUNNEL_EDGE_IP_VERSION", "auto");
+        pb.environment().put("TUNNEL_POST_QUANTUM", "false");
+        pb.environment().put("TUNNEL_TRANSPORT_PROTOCOL", "auto");
+        if (named) {
+            pb.environment().put("TUNNEL_TOKEN", token);
+        }
 
         final Process p = pb.start();
         synchronized (this) {
@@ -268,7 +300,7 @@ public class TunnelManager {
                                 error = "";
                             }
                             String low = line.toLowerCase(Locale.ROOT);
-                            if (low.contains("error") && (low.contains("unauthorized") || low.contains("invalid") || low.contains("failed to"))) {
+                            if (low.contains("error") || low.contains("failed") || low.contains("unauthorized") || low.contains("invalid") || low.contains("incorrect usage")) {
                                 if (state != State.CONNECTED) {
                                     error = line;
                                     state = State.ERROR;
@@ -282,18 +314,26 @@ public class TunnelManager {
         reader.setDaemon(true);
         reader.start();
 
+        int exitCode = -1;
         try {
-            p.waitFor();
+            exitCode = p.waitFor();
         } catch (InterruptedException ignored) { }
 
         stopProcess();
 
         synchronized (this) {
             if (!"off".equals(desiredMode)) {
-                if (state != State.ERROR) {
+                if (state != State.ERROR && exitCode != 0) {
+                    if (!log.isEmpty()) {
+                        error = log.get(log.size() - 1);
+                    } else {
+                        error = "Process exited with code " + exitCode;
+                    }
+                    state = State.ERROR;
+                } else if (state != State.ERROR) {
                     error = "Connection lost. Reconnecting...";
+                    state = State.STARTING;
                 }
-                state = State.STARTING;
                 url = "";
             }
         }

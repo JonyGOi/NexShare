@@ -1020,7 +1020,7 @@ function ResourceMonitor(body) {
   return { destroy() { Stats.listeners.delete(update); } };
 }
 
-const updateState = { info: null, checking: false, installing: false };
+const updateState = { info: null, checking: false, installing: false, progress: 0, statusMsg: '', pollTimer: null };
 
 function ControlPanel(body) {
   const pane = el('div', { class: 'pane' });
@@ -1069,12 +1069,12 @@ function ControlPanel(body) {
         el('h3', { text: 'App Updates', style: { marginTop: 0 } }),
         el('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' } },
           el('div', null,
-            el('b', { text: `NexShare v${s.version || '1.5.1'}` }),
+            el('b', { text: `NexShare v${s.version || '1.5.2'}` }),
             el('span', { style: { marginLeft: '8px', fontSize: '11px', textTransform: 'uppercase', background: '#eef3fb', color: '#1e6fd9', padding: '2px 6px', borderRadius: '4px' }, text: (s.flavor || 'normal') + ' edition' })
           ),
           el('button', {
             class: 'btn',
-            disabled: updateState.checking,
+            disabled: updateState.checking || updateState.installing,
             onclick: async () => {
               updateState.checking = true;
               render();
@@ -1094,25 +1094,86 @@ function ControlPanel(body) {
             el('div', { style: { color: '#0d9488', fontWeight: 'bold', marginBottom: '6px' }, text: `🎉 New version available: v${updateState.info.latestVersion}` }),
             updateState.info.title ? el('div', { style: { fontWeight: '600', fontSize: '13px' }, text: updateState.info.title }) : null,
             updateState.info.notes ? el('pre', { style: { whiteSpace: 'pre-wrap', maxHeight: '100px', overflowY: 'auto', fontSize: '11px', background: '#fff', padding: '6px', border: '1px solid #cbd5e1', borderRadius: '4px', margin: '6px 0' }, text: updateState.info.notes }) : null,
+
+            updateState.installing ? el('div', { style: { margin: '10px 0' } },
+              el('div', { style: { fontSize: '12px', fontWeight: 'bold', marginBottom: '4px', color: '#1e6fd9' }, text: updateState.statusMsg || 'Updating...' }),
+              el('div', { style: { height: '8px', background: '#e2e8f0', borderRadius: '4px', overflow: 'hidden' } },
+                el('div', { style: { height: '100%', background: '#1e6fd9', width: (updateState.progress || 0) + '%', transition: 'width 0.3s ease' } })
+              )
+            ) : null,
+
             el('div', { style: { display: 'flex', gap: '8px', marginTop: '8px', flexWrap: 'wrap' } },
               el('button', {
                 class: 'btn primary',
                 disabled: updateState.installing,
                 onclick: async () => {
                   updateState.installing = true;
+                  updateState.progress = 0;
+                  updateState.statusMsg = 'Initiating download on phone...';
                   render();
                   try {
-                    const res = await api('update/install', null, { method: 'POST', body: JSON.stringify({ url: updateState.info.downloadUrl }) });
-                    toast(res.msg || 'Update process started!');
+                    await api('update/install', null, { method: 'POST', body: JSON.stringify({ url: updateState.info.downloadUrl }) });
+                    
+                    const pollStatus = async () => {
+                      if (!updateState.installing) return;
+                      try {
+                        const st = await api('update/status');
+                        if (st.state === 'downloading') {
+                          updateState.progress = st.progress;
+                          updateState.statusMsg = `Downloading APK: ${st.progress}% (${fmtSize(st.downloaded)} / ${fmtSize(st.total)})`;
+                          render();
+                          updateState.pollTimer = setTimeout(pollStatus, 800);
+                        } else if (st.state === 'installing') {
+                          updateState.progress = 100;
+                          updateState.statusMsg = 'Installing via Root... NexShare will restart in a few seconds.';
+                          render();
+                          setTimeout(waitForRestart, 3000);
+                        } else if (st.state === 'prompt') {
+                          updateState.installing = false;
+                          updateState.statusMsg = '✓ APK downloaded. Installer prompt opened on your phone screen!';
+                          toast('Check your phone screen to confirm installation!');
+                          render();
+                        } else if (st.state === 'error') {
+                          updateState.installing = false;
+                          updateState.statusMsg = '❌ ' + (st.error || 'Update failed');
+                          toast('Update error: ' + (st.error || 'Failed'));
+                          render();
+                        } else if (st.state === 'done') {
+                          updateState.progress = 100;
+                          updateState.statusMsg = 'Update applied! Server restarting...';
+                          render();
+                          setTimeout(waitForRestart, 2000);
+                        }
+                      } catch (err) {
+                        if (updateState.installing) {
+                          updateState.statusMsg = 'Server restarting with new version... Reconnecting...';
+                          render();
+                          setTimeout(waitForRestart, 2500);
+                        }
+                      }
+                    };
+
+                    const waitForRestart = async () => {
+                      try {
+                        const sess = await api('session');
+                        if (sess) {
+                          toast('🎉 NexShare updated successfully! Reloading...');
+                          setTimeout(() => location.reload(), 1200);
+                          return;
+                        }
+                      } catch (ignored) { }
+                      setTimeout(waitForRestart, 2000);
+                    };
+
+                    pollStatus();
                   } catch (err) {
-                    toast('Failed to install update: ' + (err.message || err));
-                  } finally {
                     updateState.installing = false;
+                    toast('Failed to start update: ' + (err.message || err));
                     render();
                   }
                 }
               }, updateState.installing ? 'Updating on phone...' : (updateState.info.flavor === 'root' ? 'Install Update via Root' : 'Send & Install on Phone')),
-              el('a', { class: 'btn', href: updateState.info.downloadUrl, target: '_blank', text: 'Download APK' })
+              el('a', { class: 'btn', href: updateState.info.downloadUrl, target: '_blank', text: 'Download APK to PC' })
             )
           ] : [
             el('div', { style: { color: '#16a34a', fontSize: '13px' }, text: `✓ NexShare is up to date (v${updateState.info.currentVersion})` }),
@@ -2317,6 +2378,14 @@ function RemoteAccess(body, win) {
   body.append(pane);
   let timer, lastState = null, logOpen = false;
 
+  const tokenInput = el('input', {
+    type: 'text',
+    placeholder: 'Paste tunnel token (eyJh...) here',
+    style: { fontFamily: 'monospace', flex: '1', minWidth: '220px', padding: '8px 10px', borderRadius: '6px', border: '1px solid #cbd5e1' }
+  });
+  let userEdited = false;
+  tokenInput.addEventListener('input', () => { userEdited = true; });
+
   async function act(path, payload) {
     try {
       const r = await api('tunnel/' + path, null, payload ? { method: 'POST', body: JSON.stringify(payload) } : { method: 'POST' });
@@ -2328,6 +2397,13 @@ function RemoteAccess(body, win) {
     lastState = s;
     const connected = s.state === 'connected';
     const dotColor = { off: '#9aa6b2', starting: '#f0a020', connected: '#2fb36b', error: '#e5484d' }[s.state];
+
+    if (!userEdited && !tokenInput.value && s.hasToken) {
+      tokenInput.placeholder = 'Token is saved on device (paste new to overwrite)';
+    }
+
+    const showLogs = logOpen || s.state === 'error';
+
     fill(pane,
       el('h2', null, 'Remote Access (Cloudflare Tunnel)'),
       !s.supported ? el('div', { class: 'notice', text: 'This device is not supported (no cloudflared binary for this CPU) — local Wi-Fi only' }) : null,
@@ -2342,7 +2418,7 @@ function RemoteAccess(body, win) {
             el('a', { class: 'mono', href: s.url, target: '_blank', style: { fontSize: '16px', color: 'var(--accent)', wordBreak: 'break-all' }, text: s.url }),
             el('button', { class: 'btn', onclick: () => copy(s.url) }, icon('link'), 'Copy'))) : null,
         connected && s.mode === 'named' && !s.url ? el('div', { class: 'mono', style: { color: 'var(--text-2)' }, text: 'Connected — accessible via your configured domain in Cloudflare' }) : null,
-        s.state === 'error' ? el('div', { class: 'notice', style: { margin: '0' }, text: s.error || 'Connection failed' }) : null),
+        s.state === 'error' ? el('div', { class: 'notice danger', style: { margin: '0', color: '#e5484d' }, text: s.error || 'Connection failed' }) : null),
 
       s.state === 'off' || s.state === 'error'
         ? el('div', { class: 'card' },
@@ -2352,11 +2428,20 @@ function RemoteAccess(body, win) {
               el('button', { class: 'btn primary', disabled: !s.supported, onclick: () => act('start', { mode: 'quick' }) }, icon('link'), 'Quick Tunnel (trycloudflare.com)')),
             el('h3', { text: 'Or use your own domain (Named Tunnel)' }),
             el('div', { class: 'hint', style: { marginBottom: '8px' }, html: 'Go to Cloudflare Zero Trust → Networks → Tunnels → Create tunnel → paste token below, and set Public hostname pointing to <span class="mono">http://localhost:' + (Stats.last ? Stats.last.port : 8080) + '</span>' }),
-            (() => {
-              const t = el('input', { placeholder: 'Paste tunnel token here', value: s.hasToken ? '••••••••••••••••' : '', style: { fontFamily: 'monospace' }, onfocus: e => { if (e.target.value.startsWith('•')) e.target.value = ''; } });
-              return el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } }, t,
-                el('button', { class: 'btn', disabled: !s.supported, onclick: () => act('start', { mode: 'named', token: t.value.startsWith('•') ? undefined : t.value }) }, icon('link'), 'Connect with token'));
-            })())
+            el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' } },
+              tokenInput,
+              el('button', {
+                class: 'btn',
+                disabled: !s.supported,
+                onclick: () => {
+                  const val = tokenInput.value.trim();
+                  act('start', { mode: 'named', token: val || undefined });
+                }
+              }, icon('link'), 'Connect with token'),
+              s.hasToken ? el('button', {
+                class: 'btn',
+                onclick: () => { tokenInput.value = ''; userEdited = true; tokenInput.placeholder = 'Paste token here'; tokenInput.focus(); }
+              }, 'Clear') : null))
         : el('div', { class: 'card' },
             el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
               el('button', { class: 'btn danger', onclick: () => act('stop') }, icon('x'), 'Stop Tunnel'),
@@ -2364,8 +2449,8 @@ function RemoteAccess(body, win) {
 
       el('div', { class: 'card' },
         el('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }, onclick: () => { logOpen = !logOpen; render(lastState); } },
-          el('h3', { style: { margin: 0 }, text: 'Process Logs' }), icon(logOpen ? 'min' : 'chev')),
-        logOpen ? el('pre', { class: 'mono', style: { marginTop: '10px', maxHeight: '220px', overflow: 'auto', background: '#0d1117', color: '#c9d1d9', padding: '12px', borderRadius: '8px', fontSize: '12px', whiteSpace: 'pre-wrap', userSelect: 'text' }, text: s.log || '(No logs yet)' }) : null));
+          el('h3', { style: { margin: 0 }, text: 'Process Logs' }), icon(showLogs ? 'min' : 'chev')),
+        showLogs ? el('pre', { class: 'mono', style: { marginTop: '10px', maxHeight: '220px', overflow: 'auto', background: '#0d1117', color: '#c9d1d9', padding: '12px', borderRadius: '8px', fontSize: '11px', whiteSpace: 'pre-wrap', userSelect: 'text' }, text: s.log || '(No logs yet)' }) : null));
   }
   function copy(url) {
     if (navigator.clipboard && isSecureContext) navigator.clipboard.writeText(url).then(() => toast('Link copied to clipboard'));
