@@ -1082,10 +1082,10 @@ function ControlPanel(body) {
           el('dl', { class: 'kv' },
             el('dt', { text: 'HTTPS WebDAV (Recomendado)' }), el('dd', { class: 'mono', style: { cursor: 'pointer', color: '#16a34a', fontWeight: 'bold' }, title: 'Click to copy', onclick: e => { navigator.clipboard?.writeText(e.target.textContent); toast('HTTPS WebDAV URL copied'); }, text: (s.ip ? `https://${s.ip}:${s.httpsPort || 8443}/dav/` : `https://${s.host || 'nexshare.local'}:${s.httpsPort || 8443}/dav/`) }),
             el('dt', { text: 'HTTP WebDAV' }), el('dd', { class: 'mono', style: { cursor: 'pointer', color: '#1e6fd9' }, title: 'Click to copy', onclick: e => { navigator.clipboard?.writeText(e.target.textContent); toast('HTTP WebDAV URL copied'); }, text: (s.ip ? `http://${s.ip}:${s.port || 8080}/dav/` : `http://${s.host || 'nexshare.local'}:${s.port || 8080}/dav/`) }),
-            el('dt', { text: 'Username' }), el('dd', { class: 'mono', text: 'nexshare (ou o seu usuário do Windows)' }),
-            el('dt', { text: 'Password' }), el('dd', { text: 'PIN de 6 dígitos exibido no app' }),
-            el('dt', { text: 'Windows CMD (HTTPS)' }), el('dd', { class: 'mono', style: { fontSize: '11px', wordBreak: 'break-all' }, text: `net use Z: https://${s.ip || 'IP'}:${s.httpsPort || 8443}/dav/ /user:nexshare *` }),
-            el('dt', { text: 'Windows CMD (HTTP)' }), el('dd', { class: 'mono', style: { fontSize: '11px', wordBreak: 'break-all' }, text: `net use Z: http://${s.ip || 'IP'}:${s.port || 8080}/dav/ /user:nexshare *` })
+            el('dt', { text: 'Username' }), el('dd', { class: 'mono', text: (s.authMode === 'password' && s.username ? s.username : 'nexshare') + ' (ou qualquer usuário)' }),
+            el('dt', { text: 'Password' }), el('dd', { text: (s.authMode === 'password' ? 'Sua senha ou o PIN de 6 dígitos' : 'PIN de 6 dígitos exibido no app') }),
+            el('dt', { text: 'Windows CMD (HTTPS)' }), el('dd', { class: 'mono', style: { fontSize: '11px', wordBreak: 'break-all' }, text: `net use * https://${s.ip || 'IP'}:${s.httpsPort || 8443}/dav/ /user:nexshare *` }),
+            el('dt', { text: 'Windows CMD (HTTP)' }), el('dd', { class: 'mono', style: { fontSize: '11px', wordBreak: 'break-all' }, text: `net use * http://${s.ip || 'IP'}:${s.port || 8080}/dav/ /user:nexshare *` })
           ),
           el('div', { style: { display: 'flex', gap: '8px', marginTop: '10px', flexWrap: 'wrap' } },
             el('a', { class: 'btn', href: '/api/cert', download: 'nexshare-ca.crt' }, icon('download'), 'Baixar Certificado SSL (nexshare-ca.crt)'),
@@ -1098,7 +1098,7 @@ function ControlPanel(body) {
         el('h3', { text: 'App Updates', style: { marginTop: 0 } }),
         el('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' } },
           el('div', null,
-            el('b', { text: `NexShare v${s.version || '1.5.4'}` }),
+            el('b', { text: `NexShare v${s.version || '1.5.5'}` }),
             el('span', { style: { marginLeft: '8px', fontSize: '11px', textTransform: 'uppercase', background: '#eef3fb', color: '#1e6fd9', padding: '2px 6px', borderRadius: '4px' }, text: (s.flavor || 'normal') + ' edition' })
           ),
           el('button', {

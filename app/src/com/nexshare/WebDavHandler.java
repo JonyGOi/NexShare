@@ -14,6 +14,7 @@ import java.io.OutputStream;
 import java.io.RandomAccessFile;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.text.SimpleDateFormat;
 import java.util.Arrays;
 import java.util.Comparator;
@@ -92,34 +93,107 @@ public class WebDavHandler implements HttpServer.Handler {
 
     private boolean authenticate(HttpServer.Request req, HttpServer.Response res) throws IOException {
         String auth = req.header("authorization");
-        if (auth != null && auth.toLowerCase(Locale.ROOT).startsWith("basic ")) {
-            try {
-                String b64 = auth.substring(6).trim();
-                byte[] decoded = Base64.decode(b64, Base64.DEFAULT);
-                String creds = new String(decoded, StandardCharsets.UTF_8);
-                int colon = creds.indexOf(':');
-                if (colon >= 0) {
-                    String user = creds.substring(0, colon).trim();
-                    String pass = creds.substring(colon + 1);
+        if (auth != null) {
+            String lower = auth.toLowerCase(Locale.ROOT);
+            if (lower.startsWith("basic ")) {
+                try {
+                    String b64 = auth.substring(6).trim();
+                    byte[] decoded = Base64.decode(b64, Base64.DEFAULT);
+                    String creds = new String(decoded, StandardCharsets.UTF_8);
+                    int colon = creds.indexOf(':');
+                    if (colon >= 0) {
+                        String user = creds.substring(0, colon).trim();
+                        String pass = creds.substring(colon + 1).trim();
 
-                    // Strip Windows machine/domain prefix (e.g. WORKGROUP\nexshare, DESKTOP-XYZ\Jony)
-                    int slash = user.lastIndexOf('\\');
-                    if (slash >= 0) user = user.substring(slash + 1);
+                        // Strip Windows machine/domain prefix (e.g. WORKGROUP\nexshare, DESKTOP-XYZ\Jony)
+                        int slash = user.lastIndexOf('\\');
+                        if (slash >= 0) user = user.substring(slash + 1);
 
-                    String currentPin = Settings.pin(ctx);
-                    boolean pinMatches = currentPin != null && currentPin.equals(pass);
-                    boolean passMatches = Settings.hasPassword(ctx) && Settings.checkPassword(ctx, pass);
+                        String currentPin = Settings.pin(ctx);
+                        boolean pinMatches = currentPin != null && currentPin.equals(pass);
+                        boolean passMatches = Settings.hasPassword(ctx) && Settings.checkPassword(ctx, pass);
 
-                    // Accept login if PIN/password matches, regardless of what username Windows auto-fills
-                    if (pinMatches || passMatches) {
-                        return true;
+                        // Accept login if PIN/password matches, regardless of what username Windows auto-fills
+                        if (pinMatches || passMatches) {
+                            return true;
+                        }
                     }
-                }
-            } catch (Exception ignored) { }
+                } catch (Exception ignored) { }
+            } else if (lower.startsWith("digest ")) {
+                try {
+                    String params = auth.substring(7);
+                    String username = getHeaderParam(params, "username");
+                    String realm = getHeaderParam(params, "realm");
+                    String nonce = getHeaderParam(params, "nonce");
+                    String uri = getHeaderParam(params, "uri");
+                    String response = getHeaderParam(params, "response");
+                    String cnonce = getHeaderParam(params, "cnonce");
+                    String nc = getHeaderParam(params, "nc");
+                    String qop = getHeaderParam(params, "qop");
+
+                    if (username != null && response != null && uri != null) {
+                        String cleanUser = username;
+                        int slash = cleanUser.lastIndexOf('\\');
+                        if (slash >= 0) cleanUser = cleanUser.substring(slash + 1);
+
+                        String currentPin = Settings.pin(ctx);
+                        if (currentPin != null) {
+                            if (checkDigest(req.method, uri, realm, nonce, nc, cnonce, qop, response, username, currentPin)
+                             || checkDigest(req.method, uri, realm, nonce, nc, cnonce, qop, response, cleanUser, currentPin)
+                             || checkDigest(req.method, uri, realm, nonce, nc, cnonce, qop, response, "nexshare", currentPin)
+                             || checkDigest(req.method, uri, realm, nonce, nc, cnonce, qop, response, Settings.username(ctx), currentPin)) {
+                                return true;
+                            }
+                        }
+                    }
+                } catch (Exception ignored) { }
+            }
         }
-        res.header("WWW-Authenticate", "Basic realm=\"NexShare\"");
+        String nonce = Long.toHexString(System.currentTimeMillis()) + Integer.toHexString(new java.util.Random().nextInt());
+        res.header("WWW-Authenticate", "Digest realm=\"NexShare\", nonce=\"" + nonce + "\", qop=\"auth\", algorithm=MD5");
+        res.header("WWW-Authenticate", "Basic realm=\"NexShare\", charset=\"UTF-8\"");
         res.text(401, "text/plain", "Authentication required (user: nexshare, password: PIN)\n");
         return false;
+    }
+
+    private static String getHeaderParam(String headerValue, String key) {
+        if (headerValue == null) return null;
+        int idx = headerValue.indexOf(key + "=");
+        if (idx < 0) return null;
+        int start = idx + key.length() + 1;
+        if (start >= headerValue.length()) return null;
+        if (headerValue.charAt(start) == '"') {
+            start++;
+            int end = headerValue.indexOf('"', start);
+            return end >= 0 ? headerValue.substring(start, end) : headerValue.substring(start);
+        } else {
+            int end = headerValue.indexOf(',', start);
+            return end >= 0 ? headerValue.substring(start, end).trim() : headerValue.substring(start).trim();
+        }
+    }
+
+    private static boolean checkDigest(String method, String uri, String realm, String nonce, String nc, String cnonce, String qop, String response, String user, String pass) {
+        String ha1 = md5Hex(user + ":" + (realm != null ? realm : "NexShare") + ":" + pass);
+        String ha2 = md5Hex(method + ":" + uri);
+        String expected;
+        if ("auth".equalsIgnoreCase(qop) && nc != null && cnonce != null) {
+            expected = md5Hex(ha1 + ":" + nonce + ":" + nc + ":" + cnonce + ":" + qop + ":" + ha2);
+        } else {
+            expected = md5Hex(ha1 + ":" + nonce + ":" + ha2);
+        }
+        return expected.equalsIgnoreCase(response);
+    }
+
+    private static String md5Hex(String str) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("MD5");
+            byte[] d = md.digest(str.getBytes(StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder(d.length * 2);
+            for (byte b : d) sb.append(String.format(Locale.ROOT, "%02x", b & 0xff));
+            return sb.toString();
+        } catch (Exception e) {
+            return "";
+        }
     }
 
     // ---------- path resolution ----------

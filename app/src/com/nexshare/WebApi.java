@@ -826,7 +826,7 @@ public class WebApi implements HttpServer.Handler {
         put(o, "enabled", Settings.webdavEnabled(ctx));
         put(o, "url", url);
         put(o, "httpsUrl", httpsUrl);
-        put(o, "user", "nexshare");
+        put(o, "user", Settings.authMode(ctx).equals("password") ? Settings.username(ctx) : "nexshare");
         put(o, "pin", Settings.pin(ctx));
         res.json(200, o.toString());
     }

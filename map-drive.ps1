@@ -56,6 +56,18 @@ if (-not $Drive.EndsWith(":")) {
     $Drive = "$Drive`:"
 }
 
+# Se a letra solicitada ja estiver em uso (ex: Z: ocupada pelo RaiDrive), seleciona uma letra livre
+$requestedLetter = $Drive.Substring(0, 1).ToUpper()
+$usedDrives = (Get-PSDrive -PSProvider FileSystem).Name
+if ($usedDrives -contains $requestedLetter) {
+    Write-Host "Aviso: A unidade $Drive ja esta em uso no Windows." -ForegroundColor Yellow
+    $freeLetter = [char[]]([char]'N'..[char]'Z') | Where-Object { $usedDrives -notcontains [string]$_ } | Select-Object -First 1
+    if ($freeLetter) {
+        $Drive = "$freeLetter`:"
+        Write-Host "Selecionando automaticamente a unidade livre: $Drive" -ForegroundColor Cyan
+    }
+}
+
 $webdavUrl = "http://${PhoneIP}:8080/dav/"
 Write-Host "[3/3] Conectando unidade $Drive a $webdavUrl ..." -ForegroundColor Cyan
 
