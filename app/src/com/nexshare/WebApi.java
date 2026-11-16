@@ -189,7 +189,7 @@ public class WebApi implements HttpServer.Handler {
                 f[1] = now + 60;
             }
             failures.put(req.remote, f);
-            res.error(401, Settings.MODE_PASSWORD.equals(mode) ? "ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง" : "wrong pin");
+            res.error(401, Settings.MODE_PASSWORD.equals(mode) ? "invalid username or password" : "wrong pin");
             return;
         }
         failures.remove(req.remote);
@@ -668,7 +668,7 @@ public class WebApi implements HttpServer.Handler {
             while (off < data.length && (n = req.body.read(data, off, data.length - off)) > 0) off += n;
             bmp = android.graphics.BitmapFactory.decodeByteArray(data, 0, data.length);
         }
-        if (bmp == null) { res.error(400, "ไม่ใช่รูปภาพ"); return; }
+        if (bmp == null) { res.error(400, "not an image"); return; }
         try {
             android.app.WallpaperManager wm = android.app.WallpaperManager.getInstance(ctx);
             String which = req.param("which");

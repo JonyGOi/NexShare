@@ -71,7 +71,7 @@ public class TunnelManager {
 
     public synchronized void start(String mode, String token) throws Exception {
         stop();
-        if (!supported()) throw new Exception("อุปกรณ์นี้ไม่รองรับ (ไม่มีไฟล์ cloudflared สำหรับ CPU นี้)");
+        if (!supported()) throw new Exception("This device is not supported (no cloudflared binary for this CPU architecture)");
         File cf = binary();
         File home = new File(ctx.getFilesDir(), "cloudflared");
         home.mkdirs();
@@ -83,7 +83,7 @@ public class TunnelManager {
         cmd.add("--edge-ip-version");
         cmd.add("auto");
         if ("named".equals(mode)) {
-            if (token == null || token.trim().isEmpty()) throw new Exception("ต้องใส่ token ของ tunnel");
+            if (token == null || token.trim().isEmpty()) throw new Exception("Tunnel token is required");
             cmd.add("run");
             cmd.add("--token");
             cmd.add(token.trim());
@@ -138,7 +138,7 @@ public class TunnelManager {
                 }
                 synchronized (TunnelManager.this) {
                     if (state != State.OFF && state != State.ERROR) {
-                        if (state != State.CONNECTED) error = "cloudflared หยุดทำงาน";
+                        if (state != State.CONNECTED) error = "cloudflared stopped working";
                         state = state == State.CONNECTED ? State.OFF : State.ERROR;
                         url = "";
                     }

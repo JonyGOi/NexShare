@@ -64,11 +64,11 @@ public class ServerService extends Service {
         PendingIntent stop = PendingIntent.getService(this, 1, new Intent(this, ServerService.class).setAction(ACTION_STOP), piFlags);
         Inet4Address ip = MdnsResponder.lanAddress();
         b.setSmallIcon(R.drawable.ic_notify)
-            .setContentTitle("NexShare กำลังแชร์ไฟล์")
+            .setContentTitle("NexShare is sharing files")
             .setContentText("http://" + MdnsResponder.HOST + ":" + PORT + (ip != null ? "  •  " + ip.getHostAddress() + ":" + PORT : ""))
             .setContentIntent(open)
             .setOngoing(true)
-            .addAction(new Notification.Action.Builder(null, "หยุด", stop).build());
+            .addAction(new Notification.Action.Builder(null, "Stop", stop).build());
         Notification n = b.build();
         if (Build.VERSION.SDK_INT >= 34) startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
         else startForeground(1, n);

@@ -61,8 +61,8 @@ public class RootApi {
     }
 
     private void requireRoot() throws IOException {
-        if (!Flavor.ROOT) throw new IOException("ต้องใช้ NexShare รุ่น Root");
-        if (!RootShell.available()) throw new IOException("ไม่ได้รับสิทธิ์ root (กด Grant ในแอป Magisk/SuperSU)");
+        if (!Flavor.ROOT) throw new IOException("Requires NexShare Root edition");
+        if (!RootShell.available()) throw new IOException("Root permission not granted (grant in Magisk/SuperSU)");
     }
 
     // ---------- terminal ----------
@@ -117,7 +117,7 @@ public class RootApi {
             return;
         }
         if (png.length < 8 || (png[0] & 0xff) != 0x89 || png[1] != 'P') {
-            res.error(500, "จับภาพหน้าจอไม่ได้");
+            res.error(500, "Failed to capture screen");
             return;
         }
         res.header("Cache-Control", "no-store");
@@ -213,7 +213,7 @@ public class RootApi {
     /** Upload an APK and install it. With root it is silent; otherwise it opens the installer prompt. */
     private void install(HttpServer.Request req, HttpServer.Response res) throws IOException {
         if (req.contentLength <= 0 || req.contentLength > 2L * 1024 * 1024 * 1024) {
-            res.error(400, "ไฟล์ APK ไม่ถูกต้อง");
+            res.error(400, "Invalid APK file");
             return;
         }
         File dir = new File(ctx.getCacheDir(), "apk");
@@ -228,7 +228,7 @@ public class RootApi {
         }
         if (!ok) {
             apk.delete();
-            res.error(400, "อัปโหลดไม่ครบ");
+            res.error(400, "Incomplete upload");
             return;
         }
         if (RootShell.available()) {
@@ -242,7 +242,7 @@ public class RootApi {
             }
             apk.delete();
             if (out.toLowerCase().contains("success")) res.json(200, "{\"ok\":true,\"mode\":\"root\"}");
-            else res.error(500, "ติดตั้งไม่สำเร็จ: " + out.trim());
+            else res.error(500, "Installation failed: " + out.trim());
         } else {
             // Non-root: hand the APK to the system installer via a content URI.
             try {
@@ -253,7 +253,7 @@ public class RootApi {
                 ctx.startActivity(i);
                 res.json(200, "{\"ok\":true,\"mode\":\"prompt\"}");
             } catch (Exception e) {
-                res.error(500, "เปิดตัวติดตั้งไม่ได้: " + e.getMessage());
+                res.error(500, "Cannot open installer: " + e.getMessage());
             }
         }
     }
@@ -262,13 +262,13 @@ public class RootApi {
         String pkg = req.param("pkg");
         String action = req.param("action");
         if (pkg == null || pkg.equals(ctx.getPackageName())) {
-            res.error(400, "ไม่อนุญาต");
+            res.error(400, "Not allowed");
             return;
         }
         if (action.equals("open")) {
             Intent i = ctx.getPackageManager().getLaunchIntentForPackage(pkg);
             if (i == null) {
-                res.error(404, "เปิดแอปนี้ไม่ได้");
+                res.error(404, "Cannot launch this app");
                 return;
             }
             i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);

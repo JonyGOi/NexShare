@@ -76,7 +76,7 @@ function fmtUptime(ms) {
   const d = Math.floor(s / 86400); s %= 86400;
   const h = Math.floor(s / 3600); s %= 3600;
   const m = Math.floor(s / 60);
-  return (d ? d + ' วัน ' : '') + h + ' ชม. ' + m + ' นาที';
+  return ((d ? d + 'd ' : '') + h + 'h ' + m + 'm';
 }
 const extOf = n => { const i = n.lastIndexOf('.'); return i > 0 ? n.slice(i + 1).toLowerCase() : ''; };
 
@@ -94,7 +94,7 @@ for (const [k, list] of Object.entries({
   slide: 'ppt pptx odp',
 })) for (const e of list.split(' ')) KIND[e] = k;
 const kindOf = entry => entry.dir ? 'folder' : (KIND[extOf(entry.name)] || 'file');
-const KIND_LABEL = { folder: 'โฟลเดอร์', image: 'รูปภาพ', video: 'วิดีโอ', audio: 'เสียง', pdf: 'PDF', text: 'ข้อความ', archive: 'ไฟล์บีบอัด', apk: 'แอป Android', doc: 'เอกสาร', sheet: 'สเปรดชีต', slide: 'งานนำเสนอ', file: 'ไฟล์' };
+const KIND_LABEL = { folder: 'Folder', image: 'Image', video: 'Video', audio: 'Audio', pdf: 'PDF', text: 'Text', archive: 'Archive', apk: 'Android App', doc: 'Document', sheet: 'Spreadsheet', slide: 'Presentation', file: 'File' };
 
 function toast(msg, ms = 2600) {
   const t = el('div', { class: 'toast', text: msg });
@@ -102,7 +102,7 @@ function toast(msg, ms = 2600) {
   setTimeout(() => t.remove(), ms);
 }
 
-function dialog({ title, message, input, okText = 'ตกลง', danger, cancel = true }) {
+function dialog({ title, message, input, okText = 'OK', danger, cancel = true }) {
   return new Promise(resolve => {
     const field = input != null ? el('input', { value: input, spellcheck: 'false' }) : null;
     const close = v => { wrap.remove(); resolve(v); };
@@ -111,7 +111,7 @@ function dialog({ title, message, input, okText = 'ตกลง', danger, cancel
       el('div', { class: 'dialog' },
         el('div', { class: 'd-head', text: title }),
         el('div', { class: 'd-body' }, message ? el('div', { text: message, style: { marginBottom: field ? '10px' : 0 } }) : null, field),
-        el('div', { class: 'd-foot' }, cancel ? el('button', { class: 'btn', text: 'ยกเลิก', onclick: () => close(null) }) : null, ok)));
+        el('div', { class: 'd-foot' }, cancel ? el('button', { class: 'btn', text: 'Cancel', onclick: () => close(null) }) : null, ok)));
     wrap.addEventListener('keydown', e => {
       if (e.key === 'Enter') { e.preventDefault(); ok.click(); }
       if (e.key === 'Escape' && cancel) close(null);
@@ -300,13 +300,13 @@ class Win {
     const x = Math.max(10, Math.min(130 + n * 32, vw - w - 10));
     const y = Math.max(54, Math.min(64 + n * 28, vh - h - 10));
     this.body = el('div', { class: 'win-body' });
-    this.maxBtn = el('button', { class: 'win-btn', title: 'ขยาย', onclick: () => this.toggleMax() }, icon('max'));
+    this.maxBtn = el('button', { class: 'win-btn', title: 'Maximize', onclick: () => this.toggleMax() }, icon('max'));
     this.titleEl = el('div', { class: 'title', text: app.name });
     this.bar = el('div', { class: 'titlebar', ondblclick: e => { if (!e.target.closest('button')) this.toggleMax(); } },
       appIco(app.ico), this.titleEl,
-      el('button', { class: 'win-btn', title: 'ย่อ', onclick: () => this.minimize() }, icon('min')),
+      el('button', { class: 'win-btn', title: 'Minimize', onclick: () => this.minimize() }, icon('min')),
       this.maxBtn,
-      el('button', { class: 'win-btn close', title: 'ปิด', onclick: () => this.close() }, icon('x')));
+      el('button', { class: 'win-btn close', title: 'Close', onclick: () => this.close() }, icon('x')));
     this.grip = el('div', { class: 'resize' });
     this.el = el('section', { class: 'window', style: { left: x + 'px', top: y + 'px', width: w + 'px', height: h + 'px' } }, this.bar, this.body, this.grip);
     this.el.addEventListener('pointerdown', () => this.focus(), true);
@@ -455,7 +455,7 @@ function appGridPopover(anchorBtn, ids, title, three) {
       grid.append(el('button', { class: 'pop-tile', onclick: () => openApp(id) }, appIco(a.ico), a.name));
     }
   };
-  const search = el('input', { class: 'search', placeholder: title || 'ค้นหา', oninput: e => fill(e.target.value) });
+  const search = el('input', { class: 'search', placeholder: title || 'Search', oninput: e => fill(e.target.value) });
   const pop = el('div', { class: 'popover' }, search, grid);
   fill('');
   document.body.append(pop);
@@ -468,7 +468,7 @@ function appGridPopover(anchorBtn, ids, title, three) {
   openPop = { el: pop, btn: anchorBtn };
   if (innerWidth > 760) search.focus();
 }
-function groupPopover(btn, it) { appGridPopover(btn, it.apps, 'ค้นหาใน ' + it.group, true); }
+function groupPopover(btn, it) { appGridPopover(btn, it.apps, 'Search in ' + it.group, true); }
 
 // ---------------------------------------------------------------- File Station
 
@@ -479,29 +479,29 @@ function FileStation(body, win) {
     hidden: store.get('hidden', false), searching: null,
   };
 
-  const backBtn = el('button', { class: 'icon-btn', title: 'ย้อนกลับ', onclick: () => history(-1) }, icon('back'));
-  const fwdBtn = el('button', { class: 'icon-btn', title: 'ไปข้างหน้า', onclick: () => history(1) }, icon('fwd'));
-  const upBtn = el('button', { class: 'icon-btn hide-sm', title: 'โฟลเดอร์แม่', onclick: () => st.parent && go(st.parent) }, icon('up'));
+  const backBtn = el('button', { class: 'icon-btn', title: 'Back', onclick: () => history(-1) }, icon('back'));
+  const fwdBtn = el('button', { class: 'icon-btn', title: 'Forward', onclick: () => history(1) }, icon('fwd'));
+  const upBtn = el('button', { class: 'icon-btn hide-sm', title: 'Parent Folder', onclick: () => st.parent && go(st.parent) }, icon('up'));
   const crumbs = el('div', { class: 'crumbs' });
-  const searchIn = el('input', { placeholder: 'ค้นหาในโฟลเดอร์นี้', onkeydown: e => {
+  const searchIn = el('input', { placeholder: 'Search in this folder', onkeydown: e => {
     if (e.key === 'Enter') doSearch(searchIn.value.trim());
     if (e.key === 'Escape') { searchIn.value = ''; if (st.searching) load(); }
   } });
   const nav = el('div', { class: 'fs-nav' }, backBtn, fwdBtn, upBtn,
-    el('button', { class: 'icon-btn', title: 'รีเฟรช', onclick: () => load() }, icon('refresh')),
+    el('button', { class: 'icon-btn', title: 'Refresh', onclick: () => load() }, icon('refresh')),
     crumbs, el('div', { class: 'fs-search' }, icon('search'), searchIn));
 
   const uploadBtn = el('button', { class: 'btn primary', onclick: e => menuAt(e.currentTarget, [
-    { label: 'อัปโหลดไฟล์', ico: 'upload', run: () => pick('#filePick') },
-    { label: 'อัปโหลดทั้งโฟลเดอร์', ico: 'folderUp', run: () => pick('#folderPick') },
-  ]) }, icon('upload'), 'อัปโหลด', icon('chev', 'chev'));
-  const createBtn = el('button', { class: 'btn', onclick: () => mkdir() }, icon('newfolder'), el('span', { class: 'hide-sm', text: 'สร้างโฟลเดอร์' }));
-  const actionBtn = el('button', { class: 'btn', onclick: e => menuAt(e.currentTarget, actionItems()) }, 'การทำงาน', icon('chev', 'chev'));
-  const dlBtn = el('button', { class: 'btn', onclick: () => download() }, icon('download'), el('span', { class: 'hide-sm', text: 'ดาวน์โหลด' }));
+    { label: 'Upload Files', ico: 'upload', run: () => pick('#filePick') },
+    { label: 'Upload Folder', ico: 'folderUp', run: () => pick('#folderPick') },
+  ]) }, icon('upload'), 'Upload', icon('chev', 'chev'));
+  const createBtn = el('button', { class: 'btn', onclick: () => mkdir() }, icon('newfolder'), el('span', { class: 'hide-sm', text: 'New Folder' }));
+  const actionBtn = el('button', { class: 'btn', onclick: e => menuAt(e.currentTarget, actionItems()) }, 'Actions', icon('chev', 'chev'));
+  const dlBtn = el('button', { class: 'btn', onclick: () => download() }, icon('download'), el('span', { class: 'hide-sm', text: 'Download' }));
   const delBtn = el('button', { class: 'btn hide-sm', onclick: () => del() }, icon('trash'));
-  const viewList = el('button', { class: 'icon-btn', title: 'มุมมองรายการ', onclick: () => setView('list') }, icon('list'));
-  const viewGrid = el('button', { class: 'icon-btn', title: 'มุมมองไอคอน', onclick: () => setView('grid') }, icon('grid'));
-  const hidBtn = el('button', { class: 'icon-btn hide-sm', title: 'แสดงไฟล์ซ่อน', onclick: () => { st.hidden = !st.hidden; store.set('hidden', st.hidden); render(); } }, icon('eye'));
+  const viewList = el('button', { class: 'icon-btn', title: 'List View', onclick: () => setView('list') }, icon('list'));
+  const viewGrid = el('button', { class: 'icon-btn', title: 'Icon View', onclick: () => setView('grid') }, icon('grid'));
+  const hidBtn = el('button', { class: 'icon-btn hide-sm', title: 'Show Hidden Files', onclick: () => { st.hidden = !st.hidden; store.set('hidden', st.hidden); render(); } }, icon('eye'));
   const tools = el('div', { class: 'fs-tools' }, uploadBtn, createBtn, actionBtn, dlBtn, delBtn, el('div', { class: 'grow' }), hidBtn, viewList, viewGrid);
 
   const list = el('div', { class: 'fs-list', tabindex: '0' });
@@ -535,12 +535,12 @@ function FileStation(body, win) {
     return el('div', { class: 'tree-node' }, row, kids);
   }
   function buildSide() {
-    side.replaceChildren(el('div', { class: 'sec', text: 'ที่เก็บข้อมูล' }));
+    side.replaceChildren(el('div', { class: 'sec', text: 'Storage' }));
     for (const r of State.roots) side.append(treeNode(r.name, r.path, 0));
     const main = State.roots[0];
     if (main) {
-      side.append(el('div', { class: 'sec', text: 'เข้าถึงด่วน' }));
-      for (const [n, label] of [['DCIM', 'กล้อง (DCIM)'], ['Pictures', 'รูปภาพ'], ['Download', 'ดาวน์โหลด'], ['Documents', 'เอกสาร'], ['Movies', 'วิดีโอ'], ['Music', 'เพลง']]) {
+      side.append(el('div', { class: 'sec', text: 'Quick Access' }));
+      for (const [n, label] of [['DCIM', 'Camera (DCIM)'], ['Pictures', 'Pictures'], ['Download', 'Downloads'], ['Documents', 'Documents'], ['Movies', 'Movies'], ['Music', 'Music']]) {
         const p = main.path + '/' + n;
         side.append(el('div', { class: 'tree-node' }, el('div', { class: 'tn', 'data-path': p, onclick: () => go(p) },
           el('span', { class: 'caret none' }), fileIcon('folder'), el('span', { class: 'nm', text: label }))));
@@ -569,7 +569,7 @@ function FileStation(body, win) {
     if (!st.path) return;
     if (!keepSel) st.sel.clear();
     st.searching = null;
-    list.replaceChildren(el('div', { class: 'empty', text: 'กำลังโหลด…' }));
+    list.replaceChildren(el('div', { class: 'empty', text: 'Loading…' }));
     try {
       const r = await api('list', { path: st.path });
       st.entries = r.entries;
@@ -579,8 +579,8 @@ function FileStation(body, win) {
       st.entries = [];
       st.parent = null;
       st.error = e.message === 'no_permission'
-        ? 'แอป NexShare บนมือถือยังไม่ได้รับสิทธิ์เข้าถึงไฟล์ — เปิดแอปบนมือถือแล้วกด "อนุญาตให้เข้าถึงไฟล์ทั้งหมด"'
-        : 'เปิดโฟลเดอร์นี้ไม่ได้ (' + e.message + ')';
+        ? 'NexShare on phone does not have storage access — open the app on phone and grant "All Files Access"'
+        : 'Cannot open this folder (' + e.message + ')';
     }
     render();
   }
@@ -588,7 +588,7 @@ function FileStation(body, win) {
     if (!q) return load();
     st.searching = q;
     st.sel.clear();
-    list.replaceChildren(el('div', { class: 'empty', text: 'กำลังค้นหา…' }));
+    list.replaceChildren(el('div', { class: 'empty', text: 'Searching…' }));
     try {
       const r = await api('search', { path: st.path, q });
       st.entries = r.entries;
@@ -623,7 +623,7 @@ function FileStation(body, win) {
       const target = acc;
       crumbs.append(el('span', { class: 'sep', text: '›' }), el('button', { text: p, onclick: () => go(target) }));
     }
-    if (st.searching) crumbs.append(el('span', { class: 'sep', text: '›' }), el('button', { text: `ผลการค้นหา "${st.searching}"` }));
+    if (st.searching) crumbs.append(el('span', { class: 'sep', text: '›' }), el('button', { text: `Search results for "${st.searching}"` }));
     crumbs.scrollLeft = crumbs.scrollWidth;
   }
 
@@ -641,7 +641,7 @@ function FileStation(body, win) {
     list.replaceChildren();
     if (st.error) { list.append(el('div', { class: 'notice', text: st.error })); updateSel(); return; }
     if (!st.shown.length) {
-      list.append(el('div', { class: 'empty' }, fileIcon('folder'), st.searching ? 'ไม่พบไฟล์ที่ตรงกัน' : 'โฟลเดอร์นี้ว่างเปล่า — ลากไฟล์มาวางเพื่ออัปโหลด'));
+      list.append(el('div', { class: 'empty' }, fileIcon('folder'), st.searching ? 'No matching files found' : 'This folder is empty — drag files here to upload'));
       updateSel();
       return;
     }
@@ -670,7 +670,7 @@ function FileStation(body, win) {
       tbody.append(tr);
     }
     list.append(el('table', { class: 'files' }, colgroup,
-      el('thead', null, el('tr', null, el('th', { class: 'chk' }, allChk), th('name', 'ชื่อ'), th('size', 'ขนาด'), th('type', 'ชนิด', 'col-type'), th('mtime', 'แก้ไขล่าสุด', 'col-date'))),
+      el('thead', null, el('tr', null, el('th', { class: 'chk' }, allChk), th('name', 'Name'), th('size', 'Size'), th('type', 'Type', 'col-type'), th('mtime', 'Modified', 'col-date'))),
       tbody));
   }
 
@@ -735,9 +735,9 @@ function FileStation(body, win) {
     const files = st.shown.filter(e => !e.dir).length, dirs = st.shown.length - files;
     const size = selected().reduce((s, e) => s + (e.dir ? 0 : e.size), 0);
     status.replaceChildren(...[
-      el('span', { text: `${st.shown.length} รายการ (${dirs} โฟลเดอร์, ${files} ไฟล์)` }),
-      n ? el('span', { text: `เลือก ${n} รายการ${size ? ' · ' + fmtSize(size) : ''}` }) : null,
-      State.clipboard ? el('span', { text: `คลิปบอร์ด: ${State.clipboard.paths.length} รายการ (${State.clipboard.move ? 'ตัด' : 'คัดลอก'})` }) : null].filter(Boolean));
+      el('span', { text: `${st.shown.length} items (${dirs} folders, ${files} files)` }),
+      n ? el('span', { text: `${n} selected${size ? ' · ' + fmtSize(size) : ''}` }) : null,
+      State.clipboard ? el('span', { text: `Clipboard: ${State.clipboard.paths.length} items (${State.clipboard.move ? 'cut' : 'copy'})` }) : null].filter(Boolean));
   }
   const selected = () => st.shown.filter(e => st.sel.has(e.path));
 
@@ -748,12 +748,12 @@ function FileStation(body, win) {
     st.sel.clear();
     updateSel();
     menu([
-      { label: 'สร้างโฟลเดอร์', ico: 'newfolder', run: mkdir },
-      { label: 'อัปโหลดไฟล์', ico: 'upload', run: () => pick('#filePick') },
-      { label: 'อัปโหลดทั้งโฟลเดอร์', ico: 'folderUp', run: () => pick('#folderPick') },
-      State.clipboard && { label: 'วาง', ico: 'paste', run: paste },
+      { label: 'New Folder', ico: 'newfolder', run: mkdir },
+      { label: 'Upload Files', ico: 'upload', run: () => pick('#filePick') },
+      { label: 'Upload Folder', ico: 'folderUp', run: () => pick('#folderPick') },
+      State.clipboard && { label: 'Paste', ico: 'paste', run: paste },
       '-',
-      { label: 'รีเฟรช', ico: 'refresh', run: () => load() },
+      { label: 'Refresh', ico: 'refresh', run: () => load() },
     ], e.clientX, e.clientY);
   });
   list.addEventListener('keydown', e => {
@@ -772,30 +772,30 @@ function FileStation(body, win) {
   function actionItems() {
     const sel = selected(), one = sel.length === 1 ? sel[0] : null;
     return [
-      { label: 'เปิด', ico: 'open', disabled: !one, run: () => open(one) },
-      { label: 'ดาวน์โหลด', ico: 'download', disabled: !sel.length, run: download },
-      { label: 'ดาวน์โหลดเป็น ZIP', ico: 'zip', disabled: !sel.length, run: () => download(true) },
-      { label: 'คัดลอกลิงก์ดาวน์โหลด', ico: 'link', disabled: !one || one.dir, run: () => copyLink(one) },
-      one && /\.torrent$/i.test(one.name) ? { label: 'เพิ่มใน Download Station', ico: 'download', run: () => addTorrentFromPhone(one) } : null,
-      one && !one.dir && kindOf(one) === 'image' ? { label: 'ตั้งเป็นวอลเปเปอร์', ico: 'open', run: () => setWallpaperFromFile(one) } : null,
+      { label: 'Open', ico: 'open', disabled: !one, run: () => open(one) },
+      { label: 'Download', ico: 'download', disabled: !sel.length, run: download },
+      { label: 'Download as ZIP', ico: 'zip', disabled: !sel.length, run: () => download(true) },
+      { label: 'Copy Download Link', ico: 'link', disabled: !one || one.dir, run: () => copyLink(one) },
+      one && /\.torrent$/i.test(one.name) ? { label: 'Add to Download Station', ico: 'download', run: () => addTorrentFromPhone(one) } : null,
+      one && !one.dir && kindOf(one) === 'image' ? { label: 'Set as Wallpaper', ico: 'open', run: () => setWallpaperFromFile(one) } : null,
       '-',
-      { label: 'เปลี่ยนชื่อ', ico: 'rename', disabled: !one, run: rename },
-      { label: 'คัดลอก', ico: 'copy', disabled: !sel.length, run: () => clip(false) },
-      { label: 'ตัด', ico: 'cut', disabled: !sel.length, run: () => clip(true) },
-      { label: 'วาง', ico: 'paste', disabled: !State.clipboard, run: paste },
+      { label: 'Rename', ico: 'rename', disabled: !one, run: rename },
+      { label: 'Copy', ico: 'copy', disabled: !sel.length, run: () => clip(false) },
+      { label: 'Cut', ico: 'cut', disabled: !sel.length, run: () => clip(true) },
+      { label: 'Paste', ico: 'paste', disabled: !State.clipboard, run: paste },
       '-',
-      { label: 'ลบ', ico: 'trash', danger: true, disabled: !sel.length, run: del },
+      { label: 'Delete', ico: 'trash', danger: true, disabled: !sel.length, run: del },
     ];
   }
   async function setWallpaperFromFile(e) {
-    try { await api('wallpaper', { path: e.path }, { method: 'POST' }); toast('ตั้งวอลเปเปอร์แล้ว'); }
-    catch (x) { toast('ไม่สำเร็จ: ' + x.message); }
+    try { await api('wallpaper', { path: e.path }, { method: 'POST' }); toast('Wallpaper set successfully'); }
+    catch (x) { toast('Failed: ' + x.message); }
   }
   async function addTorrentFromPhone(e) {
     try {
       const blob = await (await fetch(fileUrl(e.path))).blob();
       if (await submitDownloads({ urls: '', dest: '', torrentFile: blob })) openApp('download');
-    } catch (x) { toast('ไม่สำเร็จ: ' + x.message); }
+    } catch (x) { toast('Failed: ' + x.message); }
   }
   function open(e) {
     if (e.dir) go(e.path);
@@ -812,47 +812,47 @@ function FileStation(body, win) {
   }
   function copyLink(e) {
     const url = location.origin + fileUrl(e.path, true);
-    const done = () => toast('คัดลอกลิงก์แล้ว (ผู้รับต้องอยู่ใน Wi-Fi เดียวกัน)');
-    if (navigator.clipboard && isSecureContext) navigator.clipboard.writeText(url).then(done, () => dialog({ title: 'ลิงก์ดาวน์โหลด', input: url, cancel: false }));
-    else dialog({ title: 'ลิงก์ดาวน์โหลด', input: url, cancel: false });
+    const done = () => toast('Link copied (recipient must be on the same Wi-Fi)');
+    if (navigator.clipboard && isSecureContext) navigator.clipboard.writeText(url).then(done, () => dialog({ title: 'Download Link', input: url, cancel: false }));
+    else dialog({ title: 'Download Link', input: url, cancel: false });
   }
   async function mkdir() {
-    const name = await dialog({ title: 'สร้างโฟลเดอร์', input: 'โฟลเดอร์ใหม่', okText: 'สร้าง' });
+    const name = await dialog({ title: 'New Folder', input: 'New Folder', okText: 'Create' });
     if (!name) return;
-    try { await api('mkdir', { path: st.path, name }, { method: 'POST' }); await load(); toast('สร้างโฟลเดอร์แล้ว'); }
-    catch (e) { toast(e.status === 409 ? 'มีชื่อนี้อยู่แล้ว' : 'สร้างไม่สำเร็จ: ' + e.message); }
+    try { await api('mkdir', { path: st.path, name }, { method: 'POST' }); await load(); toast('Folder created'); }
+    catch (e) { toast(e.status === 409 ? 'A file or folder with this name already exists' : 'Failed to create: ' + e.message); }
   }
   async function rename() {
     const e = selected()[0];
     if (!e) return;
-    const name = await dialog({ title: 'เปลี่ยนชื่อ', input: e.name, okText: 'บันทึก' });
+    const name = await dialog({ title: 'Rename', input: e.name, okText: 'Save' });
     if (!name || name === e.name) return;
     try { await api('rename', { path: e.path, name }, { method: 'POST' }); await load(); }
-    catch (err) { toast(err.status === 409 ? 'มีชื่อนี้อยู่แล้ว' : 'เปลี่ยนชื่อไม่สำเร็จ'); }
+    catch (err) { toast(err.status === 409 ? 'A file or folder with this name already exists' : 'Failed to rename'); }
   }
   async function del() {
     const sel = selected();
     if (!sel.length) return;
-    const ok = await dialog({ title: 'ลบ ' + (sel.length === 1 ? `"${sel[0].name}"` : sel.length + ' รายการ') + '?', message: 'ไฟล์จะถูกลบออกจากมือถือถาวร กู้คืนไม่ได้', okText: 'ลบ', danger: true });
+    const ok = await dialog({ title: 'Delete ' + (sel.length === 1 ? `"${sel[0].name}"` : sel.length + ' items') + '?', message: 'Files will be permanently deleted from the phone.', okText: 'Delete', danger: true });
     if (!ok) return;
-    try { const r = await api('delete', { p: sel.map(e => e.path) }, { method: 'POST' }); toast(`ลบแล้ว ${r.deleted} รายการ`); }
-    catch (e) { toast('ลบไม่สำเร็จ: ' + e.message); }
+    try { const r = await api('delete', { p: sel.map(e => e.path) }, { method: 'POST' }); toast(`Deleted ${r.deleted} items`); }
+    catch (e) { toast('Failed to delete: ' + e.message); }
     load();
   }
   function clip(move) {
     State.clipboard = { move, paths: selected().map(e => e.path) };
-    toast((move ? 'ตัด ' : 'คัดลอก ') + State.clipboard.paths.length + ' รายการ — ไปที่โฟลเดอร์ปลายทางแล้วกด วาง');
+    toast((move ? 'Cut ' : 'Copied ') + State.clipboard.paths.length + ' items — navigate to target folder and click Paste');
     updateSel();
   }
   async function paste() {
     const c = State.clipboard;
     if (!c) return;
-    toast('กำลัง' + (c.move ? 'ย้าย' : 'คัดลอก') + '…');
+    toast((c.move ? 'Moving' : 'Copying') + '…');
     try {
       const r = await api(c.move ? 'move' : 'copy', { dst: st.path, p: c.paths }, { method: 'POST' });
-      toast(`${c.move ? 'ย้าย' : 'คัดลอก'}แล้ว ${r.done} รายการ`);
+      toast(`${c.move ? 'Moved' : 'Copied'} ${r.done} items`);
       if (c.move) State.clipboard = null;
-    } catch (e) { toast('ไม่สำเร็จ: ' + e.message); }
+    } catch (e) { toast('Failed: ' + e.message); }
     load();
   }
   function pick(sel) {
@@ -913,15 +913,15 @@ function FileStation(body, win) {
 
 function MediaApp(type) {
   return (body, win) => {
-    const pane = el('div', { class: 'photos' }, el('div', { class: 'empty', text: 'กำลังโหลด…' }));
+    const pane = el('div', { class: 'photos' }, el('div', { class: 'empty', text: 'Loading…' }));
     body.append(pane);
     (async () => {
       try {
         const r = await api('media', { type });
         const items = r.entries;
         pane.replaceChildren();
-        if (!items.length) { pane.append(el('div', { class: 'empty', text: 'ไม่พบไฟล์' })); return; }
-        win.setTitle(win.app.name + ' — ' + items.length + ' รายการ');
+        if (!items.length) { pane.append(el('div', { class: 'empty', text: 'No files found' })); return; }
+        win.setTitle(win.app.name + ' — ' + items.length + ' items');
         if (type === 'audio') return renderAudio(items);
         let month = null, grid = null;
         for (const e of items) {
@@ -933,14 +933,14 @@ function MediaApp(type) {
           grid.append(el('div', { class: 'ph', title: e.name, onclick: () => openEntry(e, items) }, img,
             kindOf(e) === 'video' ? el('div', { class: 'play' }, icon('play')) : null));
         }
-      } catch (e) { pane.replaceChildren(el('div', { class: 'notice', text: 'โหลดไม่สำเร็จ: ' + e.message })); }
+      } catch (e) { pane.replaceChildren(el('div', { class: 'notice', text: 'Failed to load: ' + e.message })); }
     })();
     function renderAudio(items) {
       const tbody = el('tbody');
       items.forEach(e => tbody.append(el('tr', { onclick: () => openEntry(e, items) },
         el('td', { class: 'name' }, el('div', null, fileIcon('audio'), el('span', { text: e.name }))),
         el('td', { class: 'dim', text: fmtSize(e.size), style: { width: '90px' } }))));
-      pane.append(el('div', { style: { margin: '12px 2px', color: 'var(--text-2)' }, text: 'กดที่เพลงเพื่อเปิดใน Media Player (เล่นต่อเนื่องทั้งรายการ)' }), el('table', { class: 'files' }, tbody));
+      pane.append(el('div', { style: { margin: '12px 2px', color: 'var(--text-2)' }, text: 'Click a track to play in Media Player (continuous playback)' }), el('table', { class: 'files' }, tbody));
     }
     return {};
   };
@@ -993,23 +993,23 @@ function ResourceMonitor(body) {
     const cv = el('canvas', { class: 'chart' });
     return { card: el('div', { class: 'card' }, el('h4', { text: title }), val, sub, cv), val, sub, cv };
   };
-  const cpu = mk('CPU'), ram = mk('หน่วยความจำ (RAM)'), net = mk('เครือข่าย'), conn = mk('การเชื่อมต่อ');
+  const cpu = mk('CPU'), ram = mk('Memory (RAM)'), net = mk('Network'), conn = mk('Connections');
   conn.cv.remove();
   body.append(el('div', { class: 'pane' }, el('div', { class: 'rm-grid' }, cpu.card, ram.card, net.card, conn.card)));
   const update = s => {
     const H = Stats.hist;
     cpu.val.textContent = s.cpu >= 0 ? s.cpu.toFixed(0) + '%' : 'N/A';
-    cpu.sub.textContent = s.cores + ' คอร์';
+    cpu.sub.textContent = s.cores + ' Cores';
     drawChart(cpu.cv, [{ data: H.cpu, color: '#1e6fd9' }], 100);
     const used = s.memTotal - s.memAvail;
     ram.val.textContent = Math.round(used / s.memTotal * 100) + '%';
     ram.sub.textContent = fmtSize(used) + ' / ' + fmtSize(s.memTotal);
     drawChart(ram.cv, [{ data: H.ram, color: '#2fb36b' }], 100);
     net.val.replaceChildren(el('span', { style: { color: 'var(--up)' }, text: '▲ ' + fmtRate(Stats.up) }), ' ', el('span', { style: { color: 'var(--down)', fontSize: '20px' }, text: '▼ ' + fmtRate(Stats.down) }));
-    net.sub.textContent = 'รับรวม ' + fmtSize(s.rx) + ' · ส่งรวม ' + fmtSize(s.tx);
+    net.sub.textContent = 'Total RX ' + fmtSize(s.rx) + ' · Total TX ' + fmtSize(s.tx);
     drawChart(net.cv, [{ data: H.up, color: '#2a8cf0' }, { data: H.down, color: '#32b67a' }]);
     conn.val.textContent = s.connections;
-    conn.sub.textContent = 'การเชื่อมต่อ HTTP ที่เปิดอยู่ตอนนี้ · แบตเตอรี่ ' + (s.battery >= 0 ? s.battery + '%' : '-') + (s.charging ? ' (กำลังชาร์จ)' : '') + (s.batteryTemp ? ' · ' + s.batteryTemp + '°C' : '');
+    conn.sub.textContent = 'Active HTTP connections · Battery ' + (s.battery >= 0 ? s.battery + '%' : '-') + (s.charging ? ' (Charging)' : '') + (s.batteryTemp ? ' · ' + s.batteryTemp + '°C' : '');
   };
   Stats.listeners.add(update);
   if (Stats.last) update(Stats.last);
@@ -1023,45 +1023,45 @@ function ControlPanel(body) {
     const s = Stats.last || {};
     const urls = [`http://${s.host || 'nexshare.local'}:${s.port || 8080}`, s.ip ? `http://${s.ip}:${s.port}` : null].filter(Boolean);
     fill(pane,
-      el('h2', { text: 'แผงควบคุม' }),
-      State.roots.length && !State.roots[0].readable ? el('div', { class: 'notice', style: { margin: '0 0 12px' }, text: 'ยังไม่ได้ให้สิทธิ์เข้าถึงไฟล์ — เปิดแอป NexShare บนมือถือแล้วกด "อนุญาตให้เข้าถึงไฟล์ทั้งหมด"' }) : null,
-      Auth.pinRequired === false ? el('div', { class: 'notice', style: { margin: '0 0 12px' }, text: 'ปิดการใช้ PIN อยู่ ใครก็ตามใน Wi-Fi เดียวกันเข้าถึงไฟล์ได้ เปิด PIN ได้ในแอปบนมือถือ' }) : null,
-      el('div', { class: 'card' }, el('h3', { text: 'อุปกรณ์', style: { marginTop: 0 } }), el('dl', { class: 'kv' },
-        el('dt', { text: 'ชื่อเซิร์ฟเวอร์' }), el('dd', { text: s.name || '-' }),
-        el('dt', { text: 'รุ่น' }), el('dd', { text: s.model || '-' }),
+      el('h2', { text: 'Control Panel' }),
+      State.roots.length && !State.roots[0].readable ? el('div', { class: 'notice', style: { margin: '0 0 12px' }, text: 'Storage access not granted — open NexShare app on your phone and tap "Grant All Files Access"' }) : null,
+      Auth.pinRequired === false ? el('div', { class: 'notice', style: { margin: '0 0 12px' }, text: 'PIN authentication is disabled. Anyone on this Wi-Fi can access your files. You can enable PIN in the mobile app.' }) : null,
+      el('div', { class: 'card' }, el('h3', { text: 'Device', style: { marginTop: 0 } }), el('dl', { class: 'kv' },
+        el('dt', { text: 'Server Name' }), el('dd', { text: s.name || '-' }),
+        el('dt', { text: 'Model' }), el('dd', { text: s.model || '-' }),
         el('dt', { text: 'Android' }), el('dd', { text: s.android ? `${s.android} (API ${s.sdk})` : '-' }),
-        el('dt', { text: 'เปิดเครื่องมาแล้ว' }), el('dd', { text: s.uptime ? fmtUptime(s.uptime) : '-' }))),
-      el('div', { class: 'card' }, el('h3', { text: 'การเข้าถึงจากเครื่องอื่น', style: { marginTop: 0 } }), el('dl', { class: 'kv' },
-        ...urls.flatMap((u, i) => [el('dt', { text: i ? 'ผ่าน IP' : 'Local domain' }), el('dd', { class: 'mono', text: u })]),
-        el('dt', { text: 'ความปลอดภัย' }), el('dd', { text: State.authMode === 'password' ? 'ชื่อผู้ใช้ + รหัสผ่าน' : State.authMode === 'pin' ? 'ต้องใส่ PIN' : 'ไม่ต้องล็อกอิน' }))),
+        el('dt', { text: 'Uptime' }), el('dd', { text: s.uptime ? fmtUptime(s.uptime) : '-' }))),
+      el('div', { class: 'card' }, el('h3', { text: 'Network Access', style: { marginTop: 0 } }), el('dl', { class: 'kv' },
+        ...urls.flatMap((u, i) => [el('dt', { text: i ? 'Via IP' : 'Local domain' }), el('dd', { class: 'mono', text: u })]),
+        el('dt', { text: 'Security' }), el('dd', { text: State.authMode === 'password' ? 'Username + Password' : State.authMode === 'pin' ? 'PIN required' : 'No login required' }))),
       el('div', { class: 'card' },
-        el('h3', { text: 'ไดรฟ์เครือข่าย WebDAV (Windows Network Drive)', style: { marginTop: 0 } }),
+        el('h3', { text: 'WebDAV Network Drive (Windows)', style: { marginTop: 0 } }),
         el('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' } },
-          el('span', { text: 'สถานะ WebDAV: ' + (State.webdavEnabled ? 'เปิดใช้งาน' : 'ปิดอยู่') }),
+          el('span', { text: 'WebDAV Status: ' + (State.webdavEnabled ? 'Enabled' : 'Disabled') }),
           el('button', {
             class: 'btn' + (State.webdavEnabled ? ' danger' : ''),
             onclick: async () => {
               try {
                 const res = await api('webdav/toggle', null, { method: 'POST', body: JSON.stringify({ enabled: !State.webdavEnabled }) });
                 State.webdavEnabled = res.enabled;
-                toast(State.webdavEnabled ? 'เปิด WebDAV แล้ว' : 'ปิด WebDAV แล้ว');
+                toast(State.webdavEnabled ? 'WebDAV enabled' : 'WebDAV disabled');
                 render();
-              } catch (e) { toast('เปลี่ยนสถานะ WebDAV ไม่สำเร็จ'); }
+              } catch (e) { toast('Failed to change WebDAV status'); }
             }
-          }, State.webdavEnabled ? 'ปิด WebDAV' : 'เปิด WebDAV')
+          }, State.webdavEnabled ? 'Disable WebDAV' : 'Enable WebDAV')
         ),
         State.webdavEnabled ? el('dl', { class: 'kv' },
-          el('dt', { text: 'URL WebDAV' }), el('dd', { class: 'mono', style: { cursor: 'pointer', color: '#1e6fd9' }, title: 'คลิกเพื่อคัดลอก', onclick: e => { navigator.clipboard?.writeText(e.target.textContent); toast('คัดลอก URL แล้ว'); }, text: (s.ip ? `http://${s.ip}:${s.port || 8080}/dav/` : `http://${s.host || 'nexshare.local'}:${s.port || 8080}/dav/`) }),
-          el('dt', { text: 'ชื่อผู้ใช้' }), el('dd', { class: 'mono', text: 'nexshare' }),
-          el('dt', { text: 'รหัสผ่าน' }), el('dd', { text: 'PIN 6 หลักของแอป' }),
-          el('dt', { text: 'คำสั่ง Windows' }), el('dd', { class: 'mono', style: { fontSize: '11px', wordBreak: 'break-all' }, text: `net use Z: http://${s.ip || 'IP'}:${s.port || 8080}/dav/ /user:nexshare *` })
-        ) : el('div', { class: 'hint', text: 'เปิดเพื่อแมปที่เก็บข้อมูลมือถือเป็นไดรฟ์ Z: ใน Windows (รัน windows-webdav.reg ก่อนเชื่อมต่อ)' })
+          el('dt', { text: 'WebDAV URL' }), el('dd', { class: 'mono', style: { cursor: 'pointer', color: '#1e6fd9' }, title: 'Click to copy', onclick: e => { navigator.clipboard?.writeText(e.target.textContent); toast('URL copied to clipboard'); }, text: (s.ip ? `http://${s.ip}:${s.port || 8080}/dav/` : `http://${s.host || 'nexshare.local'}:${s.port || 8080}/dav/`) }),
+          el('dt', { text: 'Username' }), el('dd', { class: 'mono', text: 'nexshare' }),
+          el('dt', { text: 'Password' }), el('dd', { text: '6-digit PIN from mobile app' }),
+          el('dt', { text: 'Windows Command' }), el('dd', { class: 'mono', style: { fontSize: '11px', wordBreak: 'break-all' }, text: `net use Z: http://${s.ip || 'IP'}:${s.port || 8080}/dav/ /user:nexshare *` })
+        ) : el('div', { class: 'hint', text: 'Enable to map phone storage as Z: drive in Windows (use RaiDrive or run windows-webdav.reg)' })
       ),
-      el('div', { class: 'card' }, el('h3', { text: 'ที่เก็บข้อมูล', style: { marginTop: 0 } }),
+      el('div', { class: 'card' }, el('h3', { text: 'Storage', style: { marginTop: 0 } }),
         ...State.roots.map(r => el('div', { class: 'meter' },
           el('div', { class: 'row' }, el('span', { text: r.name }), el('b', { text: r.total ? `${fmtSize(r.total - r.free)} / ${fmtSize(r.total)}` : '-' })),
           el('div', { class: 'bar' }, el('i', { style: { width: r.total ? ((r.total - r.free) / r.total * 100) + '%' : 0 } }))))),
-      Auth.pinRequired ? el('button', { class: 'btn', onclick: () => Auth.logout() }, icon('logout'), 'ออกจากระบบ') : null);
+      Auth.pinRequired ? el('button', { class: 'btn', onclick: () => Auth.logout() }, icon('logout'), 'Sign Out') : null);
   };
   render();
   const t = setInterval(render, 5000);
@@ -1070,24 +1070,24 @@ function ControlPanel(body) {
 
 function Help(body) {
   body.append(el('div', { class: 'pane help', html: `
-    <h2>วิธีใช้ NexShare</h2>
+    <h2>How to use NexShare</h2>
     <ol>
-      <li>เปิดแอป <b>NexShare</b> บนมือถือ แล้วกด <b>เริ่มแชร์</b> (ครั้งแรกต้องอนุญาตให้เข้าถึงไฟล์ทั้งหมด)</li>
-      <li>ให้คอมหรือมือถืออีกเครื่องต่อ Wi-Fi เดียวกัน (หรือต่อ Hotspot ของมือถือเครื่องนี้)</li>
-      <li>เปิดเบราว์เซอร์ไปที่ <b class="mono">http://nexshare.local:8080</b> ถ้าเข้าไม่ได้ให้ใช้ลิงก์เลข IP ที่แสดงในแอป</li>
-      <li>ใส่ PIN 6 หลักที่แสดงในแอป</li>
+      <li>Open the <b>NexShare</b> app on your phone and tap <b>Start Sharing</b> (grant All Files Access on first run).</li>
+      <li>Connect your computer or other devices to the same Wi-Fi (or to this phone's Hotspot).</li>
+      <li>Open a browser at <b class="mono">http://nexshare.local:8080</b> (or use the IP address link shown in the app).</li>
+      <li>Enter the 6-digit PIN shown in the app.</li>
     </ol>
     <h3>File Station</h3>
     <ul>
-      <li>ดับเบิลคลิกเพื่อเปิดโฟลเดอร์หรือดูไฟล์ (บนจอสัมผัสแตะครั้งเดียว)</li>
-      <li>ลากไฟล์หรือโฟลเดอร์จากคอมมาวางในหน้าต่างเพื่ออัปโหลด</li>
-      <li>เลือกหลายไฟล์ด้วย Ctrl/Shift หรือติ๊กช่องหน้าไฟล์ แล้วกด ดาวน์โหลด (หลายไฟล์จะรวมเป็น ZIP)</li>
-      <li>คลิกขวาเพื่อ เปลี่ยนชื่อ / คัดลอก / ตัด / วาง / ลบ · ปุ่มลัด: Delete, F2, Ctrl+A, Ctrl+C, Ctrl+X, Ctrl+V</li>
+      <li>Double-click to open folders or preview files (single tap on touch screens).</li>
+      <li>Drag and drop files or folders from your computer into the window to upload.</li>
+      <li>Select multiple files with Ctrl/Shift or checkboxes, then click Download (multi-file zip on the fly).</li>
+      <li>Right-click to Rename / Copy / Cut / Paste / Delete · Shortcuts: Delete, F2, Ctrl+A, Ctrl+C, Ctrl+X, Ctrl+V</li>
     </ul>
-    <h3>ถ้าเข้า nexshare.local ไม่ได้</h3>
+    <h3>Troubleshooting Connection</h3>
     <ul>
-      <li>Windows 10/11, macOS, iPhone และ Linux ส่วนใหญ่รองรับชื่อ .local อยู่แล้ว ส่วน Android บางรุ่นยังไม่รองรับ ให้ใช้ลิงก์ IP แทน</li>
-      <li>Wi-Fi สาธารณะหรือเราเตอร์ที่เปิด AP/Client isolation จะกันไม่ให้เครื่องคุยกันได้</li>
+      <li>Most Windows 10/11, macOS, iPhone, and Linux devices support .local mDNS names. If unreachable, use the IP link instead.</li>
+      <li>Public Wi-Fi networks with AP/Client Isolation enabled will prevent devices from connecting to each other.</li>
     </ul>` }));
 }
 
@@ -1108,9 +1108,9 @@ const Viewer = {
     this.next = el('button', { class: 'v-nav next', onclick: () => this.step(1) }, icon('fwd'));
     this.el = el('div', { id: 'viewer', class: 'hidden' },
       el('div', { class: 'v-top' }, this.title,
-        el('button', { title: 'เปิดในแท็บใหม่', onclick: () => window.open(fileUrl(this.cur.path), '_blank') }, icon('open')),
-        el('button', { title: 'ดาวน์โหลด', onclick: () => { location.href = fileUrl(this.cur.path, true); } }, icon('download')),
-        el('button', { title: 'ปิด', onclick: () => this.close() }, icon('x'))),
+        el('button', { title: 'Open in new tab', onclick: () => window.open(fileUrl(this.cur.path), '_blank') }, icon('open')),
+        el('button', { title: 'Download', onclick: () => { location.href = fileUrl(this.cur.path, true); } }, icon('download')),
+        el('button', { title: 'Close', onclick: () => this.close() }, icon('x'))),
       el('div', { style: { flex: 1, minHeight: 0, position: 'relative', display: 'flex' } }, this.body, this.prev, this.next));
     this.body.style.flex = '1';
     document.body.append(this.el);
@@ -1148,16 +1148,16 @@ const Viewer = {
     else if (k === 'audio') this.body.append(el('div', { class: 'v-info' }, fileIcon('audio'), el('audio', { src: url, controls: true, autoplay: true })));
     else if (k === 'pdf') this.body.append(el('iframe', { src: url }));
     else if (k === 'text' && e.size < 4 * 1024 * 1024) {
-      const pre = el('pre', { text: 'กำลังโหลด…' });
+      const pre = el('pre', { text: 'Loading…' });
       this.body.append(pre);
       try {
         const r = await fetch(url, { headers: { Range: 'bytes=0-1048575' } });
         pre.textContent = await r.text();
-      } catch { pre.textContent = 'โหลดไม่สำเร็จ'; }
+      } catch { pre.textContent = 'Failed to load'; }
     } else {
-      this.body.append(el('div', { class: 'v-info' }, fileIcon(k), el('div', { text: 'ไม่มีตัวอย่างสำหรับไฟล์ชนิดนี้' }),
-        el('div', { style: { margin: '6px 0 16px' }, text: `${fmtSize(e.size)} · แก้ไข ${fmtDate(e.mtime)}` }),
-        el('a', { class: 'btn primary', href: fileUrl(e.path, true), style: { textDecoration: 'none' } }, icon('download'), 'ดาวน์โหลด')));
+      this.body.append(el('div', { class: 'v-info' }, fileIcon(k), el('div', { text: 'No preview available for this file type' }),
+        el('div', { style: { margin: '6px 0 16px' }, text: `${fmtSize(e.size)} · Modified ${fmtDate(e.mtime)}` }),
+        el('a', { class: 'btn primary', href: fileUrl(e.path, true), style: { textDecoration: 'none' } }, icon('download'), 'Download')));
     }
   },
   close() {
@@ -1175,7 +1175,7 @@ const Uploader = {
     $('#uploads').classList.remove('hidden');
     for (const it of items) {
       const bar = el('i');
-      const s = el('span', { class: 's', text: 'รอคิว' });
+      const s = el('span', { class: 's', text: 'Queued' });
       const node = el('div', { class: 'u-item' }, el('div', { class: 'r1' }, el('span', { class: 'n', text: (it.rel ? it.rel + '/' : '') + it.file.name, title: it.file.name }), s), el('div', { class: 'bar' }, bar));
       $('#uList').prepend(node);
       this.queue.push({ ...it, dest, node, bar, s });
@@ -1203,13 +1203,13 @@ const Uploader = {
       const ok = xhr.status === 200;
       job.node.classList.add(ok ? 'done' : 'err');
       job.bar.style.width = '100%';
-      job.s.textContent = ok ? fmtSize(job.file.size) + ' ✓' : 'ล้มเหลว';
+      job.s.textContent = ok ? fmtSize(job.file.size) + ' ✓' : 'Failed';
       if (xhr.status === 401) Auth.show();
       this.finish(job, ok);
     };
     xhr.onerror = () => {
       job.node.classList.add('err');
-      job.s.textContent = 'การเชื่อมต่อหลุด';
+      job.s.textContent = 'Connection lost';
       this.finish(job, false);
     };
     xhr.send(job.file);
@@ -1221,8 +1221,8 @@ const Uploader = {
     this.refreshT = setTimeout(() => this.listeners.forEach(f => f(job.dest)), 300);
     if (!this.active && !this.queue.length) {
       const done = $('#uList').querySelectorAll('.u-item.done').length;
-      notify(`อัปโหลดเสร็จ ${done} ไฟล์ไปที่ ${displayPath(dest)}`);
-      toast(ok ? 'อัปโหลดเสร็จแล้ว' : 'อัปโหลดเสร็จ (มีบางไฟล์ล้มเหลว)');
+      notify(`Uploaded ${done} files to ${displayPath(dest)}`);
+      toast(ok ? 'Upload complete' : 'Upload finished (some files failed)');
     }
     this.pump();
     this.badge();
@@ -1232,7 +1232,7 @@ const Uploader = {
     const b = $('#uploadsBadge');
     b.textContent = n;
     b.classList.toggle('hidden', !n);
-    $('#uTitle').textContent = n ? `กำลังอัปโหลด (${n})` : 'อัปโหลด';
+    $('#uTitle').textContent = n ? `Uploading (${n})` : 'Uploads';
   },
 };
 $('#uClose').onclick = () => $('#uploads').classList.add('hidden');
@@ -1273,7 +1273,7 @@ async function poll() {
     const warn = (s.battery >= 0 && s.battery <= 15 && !s.charging) || s.diskFree / s.diskTotal < .05;
     $('#hState').textContent = warn ? 'Warning' : 'Good';
     $('#hState').style.color = warn ? '#e8742a' : '';
-    $('#hSub').textContent = warn ? (s.diskFree / s.diskTotal < .05 ? 'พื้นที่เก็บข้อมูลใกล้เต็ม' : 'แบตเตอรี่ใกล้หมด') : 'มือถือของคุณทำงานปกติ';
+    $('#hSub').textContent = warn ? (s.diskFree / s.diskTotal < .05 ? 'Storage is almost full' : 'Battery is low') : 'Your phone is running normally';
     $('#rCpu').textContent = s.cpu >= 0 ? s.cpu.toFixed(0) + '%' : 'N/A';
     setBar('rCpuBar', Math.max(0, s.cpu));
     $('#rRam').textContent = ram.toFixed(0) + '%';
@@ -1286,7 +1286,7 @@ async function poll() {
     setBar('sBar', used / s.diskTotal * 100);
     $('#sUsed').textContent = fmtSize(used) + ' / ' + fmtSize(s.diskTotal);
     $('#sFree').textContent = fmtSize(s.diskFree);
-    $('#sBat').textContent = s.battery >= 0 ? s.battery + '%' + (s.charging ? ' ⚡ กำลังชาร์จ' : '') : '-';
+    $('#sBat').textContent = s.battery >= 0 ? s.battery + '%' + (s.charging ? ' ⚡ Charging' : '') : '-';
     Stats.listeners.forEach(f => f(s));
   } catch { /* server unreachable or logged out */ }
 }
@@ -1315,13 +1315,13 @@ function initWidgets() {
 
 // ---------------------------------------------------------------- Download Station
 
-const DL_STATUS = { queued: 'รอคิว', downloading: 'กำลังโหลด', paused: 'หยุดชั่วคราว', done: 'เสร็จแล้ว', seeding: 'กำลังแชร์ (seed)', error: 'ผิดพลาด', checking: 'กำลังตรวจสอบ', metadata: 'กำลังหาข้อมูล torrent' };
+const DL_STATUS = { queued: 'Queued', downloading: 'Downloading', paused: 'Paused', done: 'Completed', seeding: 'Seeding', error: 'Error', checking: 'Checking', metadata: 'Fetching metadata' };
 
 function fmtEta(secs) {
   if (!isFinite(secs) || secs <= 0) return '';
-  if (secs < 60) return Math.ceil(secs) + ' วิ';
-  if (secs < 3600) return Math.ceil(secs / 60) + ' นาที';
-  return (secs / 3600).toFixed(1) + ' ชม.';
+  if (secs < 60) return Math.ceil(secs) + 's';
+  if (secs < 3600) return Math.ceil(secs / 60) + 'm';
+  return (secs / 3600).toFixed(1) + 'h';
 }
 
 function addDownloadDialog(info, preset) {
@@ -1338,17 +1338,17 @@ function addDownloadDialog(info, preset) {
     const close = v => { wrap.remove(); resolve(v); };
     const wrap = el('div', { id: 'modal', onmousedown: e => { if (e.target === wrap) close(null); } },
       el('div', { class: 'dialog wide' },
-        el('div', { class: 'd-head', text: 'สร้างงานดาวน์โหลด' }),
+        el('div', { class: 'd-head', text: 'Create Download Task' }),
         el('div', { class: 'd-body' },
-          el('label', { class: 'f', text: 'ลิงก์ (ใส่ได้หลายบรรทัด) — http, https หรือ magnet' }), urls,
+          el('label', { class: 'f', text: 'Links (one per line) — http, https, or magnet' }), urls,
           info.torrent ? el('div', { style: { marginTop: '10px' } },
-            el('button', { class: 'btn', onclick: () => tPick.click() }, icon('upload'), 'เลือกไฟล์ .torrent'), tName, tPick)
-            : el('div', { class: 'hint', text: 'แอปเวอร์ชันนี้ยังไม่รองรับ BitTorrent' }),
-          el('label', { class: 'f', text: 'บันทึกไปที่โฟลเดอร์ (บนมือถือ)' }), dest,
-          el('div', { class: 'hint', text: 'มือถือจะโหลดเองแม้ปิดหน้าเว็บนี้ไปแล้ว' })),
+            el('button', { class: 'btn', onclick: () => tPick.click() }, icon('upload'), 'Choose .torrent file'), tName, tPick)
+            : el('div', { class: 'hint', text: 'BitTorrent is not supported on this device' }),
+          el('label', { class: 'f', text: 'Save to phone folder' }), dest,
+          el('div', { class: 'hint', text: 'The phone will download in background even if you close this page' })),
         el('div', { class: 'd-foot' },
-          el('button', { class: 'btn', text: 'ยกเลิก', onclick: () => close(null) }),
-          el('button', { class: 'btn primary', text: 'เริ่มดาวน์โหลด', onclick: () => close({ urls: urls.value, dest: dest.value.trim(), torrentFile }) }))));
+          el('button', { class: 'btn', text: 'Cancel', onclick: () => close(null) }),
+          el('button', { class: 'btn primary', text: 'Start Download', onclick: () => close({ urls: urls.value, dest: dest.value.trim(), torrentFile }) }))));
     document.body.append(wrap);
     urls.focus();
   });
@@ -1358,15 +1358,15 @@ async function submitDownloads(v) {
   if (!v) return false;
   let ok = false;
   try {
-    if (v.urls.trim()) { const r = await api('dl/add', null, { method: 'POST', body: JSON.stringify({ urls: v.urls, dest: v.dest }) }); toast(`เพิ่มงานแล้ว ${r.added} รายการ`); ok = true; }
+    if (v.urls.trim()) { const r = await api('dl/add', null, { method: 'POST', body: JSON.stringify({ urls: v.urls, dest: v.dest }) }); toast(`Added ${r.added} tasks`); ok = true; }
     if (v.torrentFile) {
       const r = await fetch('/api/dl/torrent' + qs({ dest: v.dest || null }), { method: 'POST', body: v.torrentFile });
       const j = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(j.error || r.status);
-      toast('เพิ่มไฟล์ torrent แล้ว');
+      toast('Torrent file added');
       ok = true;
     }
-  } catch (e) { toast('เพิ่มงานไม่สำเร็จ: ' + e.message, 4000); }
+  } catch (e) { toast('Failed to add task: ' + e.message, 4000); }
   return ok;
 }
 
@@ -1374,23 +1374,23 @@ function DownloadStation(body, win) {
   const st = { filter: 'all', tasks: [], info: {}, sel: new Set() };
   const side = el('div', { class: 'ds-side' });
   const tbody = el('tbody');
-  const empty = el('div', { class: 'empty hidden' }, fileIcon('folder'), 'ยังไม่มีงานดาวน์โหลด — กด "สร้าง" แล้ววางลิงก์หรือ magnet');
+  const empty = el('div', { class: 'empty hidden' }, fileIcon('folder'), 'No download tasks yet — click "Create" and paste links or magnets');
   const btn = (ico, label, run, cls) => el('button', { class: 'btn ' + (cls || ''), onclick: run }, icon(ico), el('span', { class: cls === 'primary' ? null : 'hide-sm', text: label }));
   const tools = el('div', { class: 'ds-tools' },
-    btn('plus', 'สร้าง', () => create(), 'primary'),
-    btn('play', 'ดำเนินการต่อ', () => act('resume')),
-    btn('min', 'หยุดชั่วคราว', () => act('pause')),
-    btn('trash', 'ลบงาน', () => removeSel()),
+    btn('plus', 'Create', () => create(), 'primary'),
+    btn('play', 'Resume', () => act('resume')),
+    btn('min', 'Pause', () => act('pause')),
+    btn('trash', 'Delete', () => removeSel()),
     el('div', { style: { flex: 1 } }),
-    btn('folderUp', 'เปิดโฟลเดอร์', () => openFolder()),
-    btn('x', 'ล้างงานที่เสร็จ', async () => { await api('dl/clear', null, { method: 'POST' }); refresh(); }));
+    btn('folderUp', 'Open Folder', () => openFolder()),
+    btn('x', 'Clear Completed', async () => { await api('dl/clear', null, { method: 'POST' }); refresh(); }));
   const table = el('table', { class: 'files dl' },
     el('colgroup', null, el('col', { style: { width: '36px' } }), el('col'), el('col', { style: { width: '90px' } }), el('col', { style: { width: '170px' } }), el('col', { class: 'col-type', style: { width: '120px' } }), el('col', { class: 'col-date', style: { width: '140px' } })),
-    el('thead', null, el('tr', null, el('th', { class: 'chk' }), el('th', { text: 'ชื่อไฟล์' }), el('th', { text: 'ขนาด' }), el('th', { text: 'ความคืบหน้า' }), el('th', { class: 'col-type', text: 'ความเร็ว' }), el('th', { class: 'col-date', text: 'สถานะ' }))),
+    el('thead', null, el('tr', null, el('th', { class: 'chk' }), el('th', { text: 'File Name' }), el('th', { text: 'Size' }), el('th', { text: 'Progress' }), el('th', { class: 'col-type', text: 'Speed' }), el('th', { class: 'col-date', text: 'Status' }))),
     tbody);
   body.append(el('div', { class: 'ds' }, side, el('div', { class: 'ds-main' }, tools, el('div', { class: 'ds-list' }, table, empty))));
 
-  const FILTERS = [['all', 'ทั้งหมด'], ['active', 'กำลังโหลด'], ['done', 'เสร็จแล้ว'], ['paused', 'หยุดชั่วคราว'], ['error', 'ผิดพลาด']];
+  const FILTERS = [['all', 'All'], ['active', 'Downloading'], ['done', 'Completed'], ['paused', 'Paused'], ['error', 'Error']];
   const match = (t, f) => f === 'all' || (f === 'active' ? ['downloading', 'queued', 'checking', 'metadata', 'seeding'].includes(t.status) : t.status === f);
 
   function render() {
@@ -1412,24 +1412,24 @@ function DownloadStation(body, win) {
         el('td', { class: 'chk' }, chk),
         el('td', { class: 'name' }, el('div', null, fileIcon(t.type === 'torrent' ? 'archive' : kindOf({ name: t.name })), el('span', { text: t.name }))),
         el('td', { class: 'dim', text: t.total > 0 ? fmtSize(t.total) : '-' }),
-        el('td', { class: 'prog' }, el('div', { class: 'pct', text: `${pct.toFixed(1)}%${eta ? ' · เหลือ ' + eta : ''}${t.type === 'torrent' && t.peers ? ' · ' + t.peers + ' peers' : ''}` }), el('div', { class: 'bar' }, el('i', { style: { width: pct + '%' } }))),
+        el('td', { class: 'prog' }, el('div', { class: 'pct', text: `${pct.toFixed(1)}%${eta ? ' · ETA ' + eta : ''}${t.type === 'torrent' && t.peers ? ' · ' + t.peers + ' peers' : ''}` }), el('div', { class: 'bar' }, el('i', { style: { width: pct + '%' } }))),
         el('td', { class: 'dim col-type', style: { whiteSpace: 'pre', lineHeight: '1.3', fontSize: '12px' }, text: speed }),
-        el('td', { class: 'col-date' }, el('span', { class: 'st-pill ' + t.status, text: t.status === 'error' ? 'ผิดพลาด: ' + (t.error || '') : (DL_STATUS[t.status] || t.status) })));
+        el('td', { class: 'col-date' }, el('span', { class: 'st-pill ' + t.status, text: t.status === 'error' ? 'Error: ' + (t.error || '') : (DL_STATUS[t.status] || t.status) })));
       return tr;
     }));
     const active = st.tasks.filter(t => t.status === 'downloading').length;
-    win.setTitle('Download Station' + (active ? ` — กำลังโหลด ${active}` : ''));
+    win.setTitle('Download Station' + (active ? ` — Downloading ${active}` : ''));
   }
 
   function taskMenu(t) {
     return [
-      { label: 'เปิดไฟล์', ico: 'open', disabled: t.status !== 'done' && t.status !== 'seeding', run: () => openTask(t) },
-      { label: 'เปิดโฟลเดอร์ปลายทาง', ico: 'folderUp', run: () => openApp('filestation', { path: t.dest }) },
-      { label: 'คัดลอกลิงก์ต้นทาง', ico: 'link', run: () => dialog({ title: 'ลิงก์ต้นทาง', input: t.url, cancel: false }) },
+      { label: 'Open File', ico: 'open', disabled: t.status !== 'done' && t.status !== 'seeding', run: () => openTask(t) },
+      { label: 'Open Destination Folder', ico: 'folderUp', run: () => openApp('filestation', { path: t.dest }) },
+      { label: 'Copy Source Link', ico: 'link', run: () => dialog({ title: 'Source Link', input: t.url, cancel: false }) },
       '-',
-      { label: 'ดำเนินการต่อ', ico: 'play', disabled: !['paused', 'error'].includes(t.status), run: () => act('resume') },
-      { label: 'หยุดชั่วคราว', ico: 'min', disabled: !['downloading', 'queued', 'seeding', 'metadata'].includes(t.status), run: () => act('pause') },
-      { label: 'ลบงาน', ico: 'trash', danger: true, run: removeSel },
+      { label: 'Resume', ico: 'play', disabled: !['paused', 'error'].includes(t.status), run: () => act('resume') },
+      { label: 'Pause', ico: 'min', disabled: !['downloading', 'queued', 'seeding', 'metadata'].includes(t.status), run: () => act('pause') },
+      { label: 'Delete Task', ico: 'trash', danger: true, run: removeSel },
     ];
   }
   async function openTask(t) {
@@ -1438,10 +1438,10 @@ function DownloadStation(body, win) {
     try {
       const r = await api('list', { path: t.dest });
       const e = r.entries.find(x => x.path === path);
-      if (!e) return toast('ไม่พบไฟล์');
+      if (!e) return toast('File not found');
       if (e.dir) return openApp('filestation', { path });
       openEntry(e, r.entries.filter(x => !x.dir));
-    } catch (e) { toast('เปิดไม่ได้: ' + e.message); }
+    } catch (e) { toast('Cannot open: ' + e.message); }
   }
   async function act(kind) {
     for (const id of st.sel) await api('dl/' + kind, { id }, { method: 'POST' }).catch(() => {});
@@ -1453,9 +1453,9 @@ function DownloadStation(body, win) {
     const ok = await new Promise(resolve => {
       const close = v => { wrap.remove(); resolve(v); };
       const wrap = el('div', { id: 'modal' }, el('div', { class: 'dialog' },
-        el('div', { class: 'd-head', text: `ลบ ${st.sel.size} งาน?` }),
-        el('div', { class: 'd-body' }, el('label', { style: { display: 'flex', gap: '8px', alignItems: 'center', cursor: 'pointer' } }, files, 'ลบไฟล์ที่โหลดมาแล้วด้วย')),
-        el('div', { class: 'd-foot' }, el('button', { class: 'btn', text: 'ยกเลิก', onclick: () => close(false) }), el('button', { class: 'btn danger', text: 'ลบ', onclick: () => close(true) }))));
+        el('div', { class: 'd-head', text: `Delete ${st.sel.size} tasks?` }),
+        el('div', { class: 'd-body' }, el('label', { style: { display: 'flex', gap: '8px', alignItems: 'center', cursor: 'pointer' } }, files, 'Also delete downloaded files from phone')),
+        el('div', { class: 'd-foot' }, el('button', { class: 'btn', text: 'Cancel', onclick: () => close(false) }), el('button', { class: 'btn danger', text: 'Delete', onclick: () => close(true) }))));
       document.body.append(wrap);
     });
     if (!ok) return;
@@ -1511,24 +1511,24 @@ function MediaPlayer(body, win) {
   const seek = el('div', { class: 'mp-seek' }, el('div', { class: 'track' }), buf, played, knob, tip);
   const time = el('span', { class: 'time', text: '0:00 / 0:00' });
   const b = (ico, title, run) => el('button', { title, onclick: run }, typeof ico === 'string' ? icon(ico) : ico);
-  const playBtn = b('play', 'เล่น/หยุด (Space)', () => toggle());
+  const playBtn = b('play', 'Play/Pause (Space)', () => toggle());
   const vol = el('input', { type: 'range', min: 0, max: 1, step: 0.05, value: video.volume, class: 'vol', oninput: e => { video.volume = +e.target.value; video.muted = false; store.set('mp.vol', video.volume); } });
-  const muteBtn = b(volIcon(), 'ปิดเสียง (M)', () => { video.muted = !video.muted; });
-  const speedBtn = el('button', { title: 'ความเร็ว', text: '1x', onclick: e => menuAt(e.currentTarget, [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2].map(r => ({ label: (video.playbackRate === r ? '● ' : '') + r + 'x', run: () => setRate(r) }))) });
-  const ccBtn = el('button', { title: 'คำบรรยาย', text: 'CC', onclick: e => subMenu(e.currentTarget) });
-  const loopBtn = b('refresh', 'เล่นซ้ำ', () => cycleLoop());
-  const shufBtn = el('button', { title: 'สุ่ม', text: '⤮', style: { fontSize: '17px' }, onclick: () => { st.shuffle = !st.shuffle; shufBtn.classList.toggle('on', st.shuffle); flash(st.shuffle ? 'สุ่มเพลง: เปิด' : 'สุ่มเพลง: ปิด'); } });
-  const listBtn = b('list', 'เพลย์ลิสต์', () => { listPane.classList.toggle('hidden'); listBtn.classList.toggle('on', !listPane.classList.contains('hidden')); });
+  const muteBtn = b(volIcon(), 'Mute (M)', () => { video.muted = !video.muted; });
+  const speedBtn = el('button', { title: 'Playback Speed', text: '1x', onclick: e => menuAt(e.currentTarget, [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2].map(r => ({ label: (video.playbackRate === r ? '● ' : '') + r + 'x', run: () => setRate(r) }))) });
+  const ccBtn = el('button', { title: 'Subtitles', text: 'CC', onclick: e => subMenu(e.currentTarget) });
+  const loopBtn = b('refresh', 'Loop', () => cycleLoop());
+  const shufBtn = el('button', { title: 'Shuffle', text: '⤮', style: { fontSize: '17px' }, onclick: () => { st.shuffle = !st.shuffle; shufBtn.classList.toggle('on', st.shuffle); flash(st.shuffle ? 'Shuffle: On' : 'Shuffle: Off'); } });
+  const listBtn = b('list', 'Playlist', () => { listPane.classList.toggle('hidden'); listBtn.classList.toggle('on', !listPane.classList.contains('hidden')); });
   listBtn.classList.add('on');
-  const more = b('link', 'ลิงก์สตรีม / เปิดใน VLC', e => menuAt(e.currentTarget, [
-    { label: 'คัดลอกลิงก์สตรีม (ใช้กับ VLC/โปรแกรมอื่น)', ico: 'link', run: () => copyStream() },
-    { label: 'เปิดในแอป VLC (มือถือ)', ico: 'open', run: () => { location.href = 'vlc://' + location.origin + fileUrl(cur().path); } },
-    { label: 'ดาวน์โหลดไฟล์นี้', ico: 'download', run: () => { location.href = fileUrl(cur().path, true); } },
-    document.pictureInPictureEnabled ? { label: 'ภาพซ้อนภาพ (PiP)', ico: 'restore', run: () => video.requestPictureInPicture().catch(() => {}) } : null,
+  const more = b('link', 'Stream Link / Open in VLC', e => menuAt(e.currentTarget, [
+    { label: 'Copy stream link (for VLC or external players)', ico: 'link', run: () => copyStream() },
+    { label: 'Open in VLC app (Phone)', ico: 'open', run: () => { location.href = 'vlc://' + location.origin + fileUrl(cur().path); } },
+    { label: 'Download this file', ico: 'download', run: () => { location.href = fileUrl(cur().path, true); } },
+    document.pictureInPictureEnabled ? { label: 'Picture-in-Picture (PiP)', ico: 'restore', run: () => video.requestPictureInPicture().catch(() => {}) } : null,
   ]));
-  const fsBtn = b('max', 'เต็มจอ (F)', () => fullscreen());
+  const fsBtn = b('max', 'Fullscreen (F)', () => fullscreen());
   const ctrl = el('div', { class: 'mp-ctrl' }, seek, el('div', { class: 'mp-row' },
-    b('back', 'ก่อนหน้า (P)', () => step(-1)), playBtn, b('fwd', 'ถัดไป (N)', () => step(1)),
+    b('back', 'Previous (P)', () => step(-1)), playBtn, b('fwd', 'Next (N)', () => step(1)),
     time, el('div', { class: 'grow' }), muteBtn, vol, speedBtn, ccBtn, loopBtn, shufBtn, more, listBtn, fsBtn));
   const stage = el('div', { class: 'mp-stage' }, screen, ctrl);
   const listItems = el('div', { class: 'items' });
@@ -1559,16 +1559,16 @@ function MediaPlayer(body, win) {
     clearTimeout(bigIcon.t);
     bigIcon.t = setTimeout(() => { big.style.opacity = 0; }, 450);
   }
-  function setRate(r) { video.playbackRate = r; speedBtn.textContent = r + 'x'; flash('ความเร็ว ' + r + 'x'); }
+  function setRate(r) { video.playbackRate = r; speedBtn.textContent = r + 'x'; flash('Speed ' + r + 'x'); }
   function cycleLoop() {
     st.loop = { list: 'one', one: 'off', off: 'list' }[st.loop];
     store.set('mp.loop', st.loop);
     updateLoopBtn();
-    flash({ list: 'เล่นซ้ำทั้งเพลย์ลิสต์', one: 'เล่นซ้ำไฟล์นี้', off: 'ไม่เล่นซ้ำ' }[st.loop]);
+    flash({ list: 'Repeat Playlist', one: 'Repeat Track', off: 'Repeat Off' }[st.loop]);
   }
   function updateLoopBtn() {
     loopBtn.classList.toggle('on', st.loop !== 'off');
-    loopBtn.title = { list: 'เล่นซ้ำ: ทั้งหมด', one: 'เล่นซ้ำ: ไฟล์นี้', off: 'เล่นซ้ำ: ปิด' }[st.loop];
+    loopBtn.title = { list: 'Repeat: All', one: 'Repeat: Track', off: 'Repeat: Off' }[st.loop];
     loopBtn.style.position = 'relative';
     loopBtn.dataset.one = st.loop === 'one' ? '1' : '';
     loopBtn.replaceChildren(icon('refresh'), st.loop === 'one' ? el('span', { text: '1', style: { position: 'absolute', fontSize: '9px', right: '6px', bottom: '5px' } }) : '');
@@ -1580,8 +1580,8 @@ function MediaPlayer(body, win) {
   }
   function copyStream() {
     const url = location.origin + fileUrl(cur().path);
-    if (navigator.clipboard && isSecureContext) navigator.clipboard.writeText(url).then(() => toast('คัดลอกลิงก์แล้ว'));
-    else dialog({ title: 'ลิงก์สตรีม — วางใน VLC (Media › Open Network Stream)', input: url, cancel: false });
+    if (navigator.clipboard && isSecureContext) navigator.clipboard.writeText(url).then(() => toast('Link copied to clipboard'));
+    else dialog({ title: 'Stream Link — Paste into VLC (Media › Open Network Stream)', input: url, cancel: false });
   }
 
   function savePos() {
@@ -1609,7 +1609,7 @@ function MediaPlayer(body, win) {
     if (audio) { art.querySelector('.t').textContent = e.name.replace(/\.[^.]+$/, ''); art.querySelector('.s').textContent = `${st.i + 1} / ${st.list.length} · ${fmtSize(e.size)}`; }
     win.setTitle('Media Player — ' + e.name);
     const pos = resume && store.get('mp.pos', {})[e.path];
-    if (pos) video.addEventListener('loadedmetadata', () => { video.currentTime = pos; flash('เล่นต่อจาก ' + fmtClock(pos)); }, { once: true });
+    if (pos) video.addEventListener('loadedmetadata', () => { video.currentTime = pos; flash('Resuming from ' + fmtClock(pos)); }, { once: true });
     video.play().catch(() => {});
     renderList();
     findSubs(e);
@@ -1650,8 +1650,8 @@ function MediaPlayer(body, win) {
       video.append(tr);
       tr.track.mode = 'showing';
       ccBtn.classList.add('on');
-      if (!quiet) flash('คำบรรยาย: ' + s.name);
-    } catch { toast('โหลดคำบรรยายไม่ได้'); }
+      if (!quiet) flash('Subtitles: ' + s.name);
+    } catch { toast('Failed to load subtitles'); }
   }
   function subMenu(anchor) {
     const pickLocal = el('input', { type: 'file', accept: '.srt,.vtt', class: 'hidden', onchange: async () => {
@@ -1669,15 +1669,15 @@ function MediaPlayer(body, win) {
     document.body.append(pickLocal);
     const track = video.textTracks[0];
     menuAt(anchor, [
-      { label: (track && track.mode === 'showing' ? '' : '● ') + 'ปิดคำบรรยาย', run: () => { if (track) track.mode = 'hidden'; ccBtn.classList.remove('on'); } },
+      { label: (track && track.mode === 'showing' ? '' : '● ') + 'Disable subtitles', run: () => { if (track) track.mode = 'hidden'; ccBtn.classList.remove('on'); } },
       ...st.subs.map(s => ({ label: s.name, run: () => loadSub(s) })),
       '-',
-      { label: 'โหลดไฟล์คำบรรยายจากเครื่องนี้…', ico: 'upload', run: () => pickLocal.click() },
+      { label: 'Load subtitle file from computer…', ico: 'upload', run: () => pickLocal.click() },
     ]);
   }
 
   function renderList() {
-    listHead.replaceChildren(el('span', { text: 'เพลย์ลิสต์', style: { color: '#e6edf3', fontWeight: 600 } }), el('span', { text: st.list.length + ' ไฟล์' }));
+    listHead.replaceChildren(el('span', { text: 'Playlist', style: { color: '#e6edf3', fontWeight: 600 } }), el('span', { text: st.list.length + ' tracks' }));
     listItems.replaceChildren(...st.list.map((e, i) => {
       const k = kindOf(e);
       let thumb;
@@ -1709,11 +1709,11 @@ function MediaPlayer(body, win) {
   video.addEventListener('error', () => {
     if (!cur()) return;
     msg.replaceChildren(el('div', null,
-      el('div', { style: { fontSize: '15px', marginBottom: '6px' }, text: 'เบราว์เซอร์เล่นไฟล์นี้ไม่ได้' }),
-      el('div', { style: { color: '#8b98a5', marginBottom: '14px', fontSize: '12.5px' }, text: 'มักเกิดจาก codec ที่เบราว์เซอร์ไม่รองรับ (เช่น HEVC/H.265, AC3, DTS ในไฟล์ .mkv/.avi) ลองเปิดด้วย VLC แทน' }),
-      el('button', { class: 'btn primary', onclick: copyStream }, icon('link'), 'คัดลอกลิงก์ไปเปิดใน VLC'),
-      el('a', { class: 'btn', href: 'vlc://' + location.origin + fileUrl(cur().path), style: { textDecoration: 'none' } }, icon('open'), 'เปิดแอป VLC'),
-      el('button', { class: 'btn', onclick: () => step(1) }, icon('fwd'), 'ไฟล์ถัดไป')));
+      el('div', { style: { fontSize: '15px', marginBottom: '6px' }, text: 'Browser cannot play this media file' }),
+      el('div', { style: { color: '#8b98a5', marginBottom: '14px', fontSize: '12.5px' }, text: 'Often caused by unsupported codecs (e.g. HEVC/H.265, AC3, DTS in .mkv/.avi). Try opening with VLC instead.' }),
+      el('button', { class: 'btn primary', onclick: copyStream }, icon('link'), 'Copy stream link for VLC'),
+      el('a', { class: 'btn', href: 'vlc://' + location.origin + fileUrl(cur().path), style: { textDecoration: 'none' } }, icon('open'), 'Open VLC App'),
+      el('button', { class: 'btn', onclick: () => step(1) }, icon('fwd'), 'Next Track')));
     msg.classList.remove('hidden');
   });
   screen.addEventListener('click', e => { if (e.target === video || e.target === screen) { toggle(); bigIcon(video.paused ? 'pause' : 'play'); } });
@@ -1737,14 +1737,14 @@ function MediaPlayer(body, win) {
   root.addEventListener('keydown', e => {
     if (e.target.tagName === 'INPUT' || $('#modal')) return;
     const k = e.key.toLowerCase();
-    const seekBy = s => { video.currentTime = Math.max(0, Math.min(video.duration || 0, video.currentTime + s)); flash((s > 0 ? '+' : '') + s + ' วิ'); };
+    const seekBy = s => { video.currentTime = Math.max(0, Math.min(video.duration || 0, video.currentTime + s)); flash((s > 0 ? '+' : '') + s + 's'); };
     if (k === ' ' || k === 'k') { e.preventDefault(); toggle(); bigIcon(video.paused ? 'pause' : 'play'); }
     else if (k === 'arrowright') seekBy(5);
     else if (k === 'arrowleft') seekBy(-5);
     else if (k === 'l') seekBy(10);
     else if (k === 'j') seekBy(-10);
-    else if (k === 'arrowup') { e.preventDefault(); video.volume = Math.min(1, video.volume + .05); flash('เสียง ' + Math.round(video.volume * 100) + '%'); }
-    else if (k === 'arrowdown') { e.preventDefault(); video.volume = Math.max(0, video.volume - .05); flash('เสียง ' + Math.round(video.volume * 100) + '%'); }
+    else if (k === 'arrowup') { e.preventDefault(); video.volume = Math.min(1, video.volume + .05); flash('Volume ' + Math.round(video.volume * 100) + '%'); }
+    else if (k === 'arrowdown') { e.preventDefault(); video.volume = Math.max(0, video.volume - .05); flash('Volume ' + Math.round(video.volume * 100) + '%'); }
     else if (k === 'm') video.muted = !video.muted;
     else if (k === 'f') fullscreen();
     else if (k === 'n') step(1);
@@ -1783,7 +1783,7 @@ function openEntry(e, siblings, folder) {
 function Terminal(body, win) {
   const out = el('div', { class: 'term-out' });
   const ps = el('span', { class: 'ps', text: '/data/local/tmp' });
-  const input = el('input', { spellcheck: 'false', autocapitalize: 'off', autocomplete: 'off', placeholder: 'พิมพ์คำสั่งแล้ว Enter' });
+  const input = el('input', { spellcheck: 'false', autocapitalize: 'off', autocomplete: 'off', placeholder: 'Type command and press Enter' });
   const st = { cwd: '/data/local/tmp', history: store.get('term.hist', []), hi: -1, busy: false };
   const quick = ['ls -la', 'busybox | head -40', 'id', 'getprop ro.product.model', 'df -h', 'free -m', 'ps -A | head', 'pm list packages -3'];
   const bar = el('div', { class: 'term-bar' }, ...quick.map(c => el('button', { class: 'term-chip', text: c, onclick: () => run(c) })));
@@ -1840,14 +1840,14 @@ function Terminal(body, win) {
       const s = await api('root/status');
       if (!s.root) {
         out.append(el('div', { class: 'notice', text: s.flavor !== 'root'
-          ? 'Terminal ใช้ได้เฉพาะ NexShare รุ่น Root'
-          : 'ยังไม่ได้สิทธิ์ root — เปิดแอป NexShare บนมือถือแล้วกด "ขอสิทธิ์ root" (ต้องมี Magisk/SuperSU)' }));
+          ? 'Terminal is only available on NexShare Root edition'
+          : 'Root access not granted — open NexShare on your phone and tap "Request root permission" (requires Magisk/SuperSU)' }));
         input.disabled = true;
         return;
       }
       line('NexShare root shell'
-        + (s.busybox ? ' · มี busybox (~300 คำสั่ง: ls, grep, sed, awk, tar, vi, wget, top…)' : '')
-        + (s.termux ? ' · พบ Termux (ใช้แพ็กเกจของ Termux ได้ด้วย)' : ''));
+        + (s.busybox ? ' · BusyBox available (~300 tools: ls, grep, sed, awk, tar, vi, wget, top…)' : '')
+        + (s.termux ? ' · Termux detected (Termux packages accessible)' : ''));
       run('id && getprop ro.product.model');
       input.focus();
     } catch (e) { out.append(el('div', { class: 'notice', text: e.message })); }
@@ -1859,16 +1859,16 @@ function Terminal(body, win) {
 // ---------------------------------------------------------------- Screen mirror (root)
 
 function ScreenMirror(body, win) {
-  const img = el('img', { alt: 'หน้าจอมือถือ', draggable: false });
-  const stage = el('div', { class: 'scr-stage' }, el('div', { class: 'scr-msg', text: 'กำลังเชื่อมต่อ…' }));
+  const img = el('img', { alt: 'Phone screen', draggable: false });
+  const stage = el('div', { class: 'scr-stage' }, el('div', { class: 'scr-msg', text: 'Connecting…' }));
   const fps = el('span', { class: 'fps', text: '' });
-  const liveBtn = el('button', { class: 'btn', onclick: () => toggle() }, icon('play'), el('span', { text: 'เริ่มสด' }));
-  const shotBtn = el('button', { class: 'btn', onclick: () => grab() }, icon('refresh'), el('span', { class: 'hide-sm', text: 'ถ่ายใหม่' }));
-  const saveBtn = el('button', { class: 'btn', onclick: () => save() }, icon('download'), el('span', { class: 'hide-sm', text: 'บันทึก' }));
+  const liveBtn = el('button', { class: 'btn', onclick: () => toggle() }, icon('play'), el('span', { text: 'Start Live' }));
+  const shotBtn = el('button', { class: 'btn', onclick: () => grab() }, icon('refresh'), el('span', { class: 'hide-sm', text: 'Capture' }));
+  const saveBtn = el('button', { class: 'btn', onclick: () => save() }, icon('download'), el('span', { class: 'hide-sm', text: 'Save' }));
   const rateSel = el('select', { onchange: () => { st.interval = +rateSel.value; if (st.live) { stop(); start(); } }, style: { height: '30px', borderRadius: '7px', background: '#1b2330', color: '#d6dee8', border: '1px solid #2a3440' } },
-    ...[[700, 'ปกติ ~1.4 fps'], [400, 'เร็ว ~2.5 fps'], [1500, 'ประหยัด'], [250, 'ลื่นสุด (กินแบต)']].map(([v, l]) => el('option', { value: v, text: l })));
+    ...[[700, 'Normal ~1.4 fps'], [400, 'Fast ~2.5 fps'], [1500, 'Battery Saver'], [250, 'Max Smooth (high battery)']].map(([v, l]) => el('option', { value: v, text: l })));
   const tapChk = el('label', { style: { color: '#c4cfda', fontSize: '12px', display: 'flex', gap: '4px', alignItems: 'center' } },
-    el('input', { type: 'checkbox', checked: true, onchange: e => st.control = e.target.checked }), 'สั่งงาน (แตะ/ปัด)');
+    el('input', { type: 'checkbox', checked: true, onchange: e => st.control = e.target.checked }), 'Remote Control (Tap/Swipe)');
   const bar = el('div', { class: 'scr-bar' }, liveBtn, shotBtn, rateSel, tapChk, el('span', { class: 'grow' }), fps, saveBtn);
   const key = (label, code) => el('button', { title: label, onclick: () => sendKey(code) }, label === 'Back' ? icon('back') : label === 'Home' ? el('span', { text: '⬤', style: { fontSize: '12px' } }) : label === 'Recents' ? icon('max') : el('span', { text: label }));
   const nav = el('div', { class: 'scr-nav' }, key('Back', 4), key('Home', 3), key('Recents', 187),
@@ -1899,20 +1899,20 @@ function ScreenMirror(body, win) {
       if (st.lastT) fps.textContent = (1000 / (now - st.lastT)).toFixed(1) + ' fps';
       st.lastT = now;
     } catch (e) {
-      if (!st.live) stage.replaceChildren(el('div', { class: 'scr-msg', text: 'จับภาพไม่ได้: ' + e.message }));
+      if (!st.live) stage.replaceChildren(el('div', { class: 'scr-msg', text: 'Capture failed: ' + e.message }));
     }
     st.busy = false;
   }
   function start() {
     st.live = true;
-    liveBtn.replaceChildren(icon('pause'), el('span', { text: 'หยุด' }));
+    liveBtn.replaceChildren(icon('pause'), el('span', { text: 'Stop' }));
     const loop = async () => { if (!st.live) return; await grab(); if (st.live) st.timer = setTimeout(loop, st.interval); };
     loop();
   }
   function stop() {
     st.live = false;
     clearTimeout(st.timer);
-    liveBtn.replaceChildren(icon('play'), el('span', { text: 'เริ่มสด' }));
+    liveBtn.replaceChildren(icon('play'), el('span', { text: 'Start Live' }));
     fps.textContent = '';
   }
   function toggle() { st.live ? stop() : start(); }
@@ -1948,7 +1948,7 @@ function ScreenMirror(body, win) {
       const s = await api('root/status');
       if (!s.root) {
         stage.replaceChildren(el('div', { class: 'scr-msg', text: s.flavor !== 'root'
-          ? 'ดูหน้าจอได้เฉพาะ NexShare รุ่น Root' : 'ยังไม่ได้สิทธิ์ root — ขอสิทธิ์ในแอปบนมือถือก่อน' }));
+          ? 'Screen mirroring is only available on NexShare Root edition' : 'Root access required — grant root permission in the mobile app first' }));
         [liveBtn, shotBtn, saveBtn].forEach(b => b.disabled = true);
         return;
       }
@@ -1964,69 +1964,69 @@ function ScreenMirror(body, win) {
 
 function PackageCenter(body, win) {
   const st = { apps: [], root: false, flavor: 'normal', q: '', showSystem: false };
-  const search = el('input', { placeholder: 'ค้นหาแอป', oninput: e => { st.q = e.target.value.toLowerCase(); render(); } });
+  const search = el('input', { placeholder: 'Search apps', oninput: e => { st.q = e.target.value.toLowerCase(); render(); } });
   const sysChk = el('label', { style: { display: 'flex', gap: '5px', alignItems: 'center', fontSize: '12.5px', color: 'var(--text-2)', whiteSpace: 'nowrap' } },
-    el('input', { type: 'checkbox', onchange: e => { st.showSystem = e.target.checked; load(); } }), 'รวมแอประบบ');
-  const installBtn = el('button', { class: 'btn primary', onclick: () => pick() }, icon('upload'), el('span', { text: 'ติดตั้ง APK' }));
+    el('input', { type: 'checkbox', onchange: e => { st.showSystem = e.target.checked; load(); } }), 'Include system apps');
+  const installBtn = el('button', { class: 'btn primary', onclick: () => pick() }, icon('upload'), el('span', { text: 'Install APK' }));
   const bar = el('div', { class: 'pc-bar' }, el('div', { class: 'pc-search' }, icon('search'), search), sysChk, installBtn);
-  const drop = el('div', { class: 'pc-drop', text: 'ลากไฟล์ .apk มาวางที่นี่เพื่อติดตั้ง' });
+  const drop = el('div', { class: 'pc-drop', text: 'Drag and drop .apk file here to install' });
   const list = el('div', { class: 'pc-list' }, drop);
   const apkPick = el('input', { type: 'file', accept: '.apk', class: 'hidden', onchange: () => { if (apkPick.files[0]) installApk(apkPick.files[0]); apkPick.value = ''; } });
   body.append(el('div', { class: 'pc' }, bar, list), apkPick);
 
   function render() {
     const rows = st.apps.filter(a => !st.q || a.label.toLowerCase().includes(st.q) || a.pkg.includes(st.q));
-    win.setTitle('Package Center — ' + st.apps.length + ' แอป');
+    win.setTitle('Package Center — ' + st.apps.length + ' apps');
     list.replaceChildren(drop, ...rows.map(a => {
       const ico = el('img', { loading: 'lazy', src: '/api/root/appicon' + qs({ pkg: a.pkg }), alt: '' });
       ico.onerror = () => ico.replaceWith(el('div', { class: 'ph' }, fileIcon('apk')));
       return el('div', { class: 'pc-item' }, ico,
         el('div', { class: 'meta' },
-          el('div', { class: 'nm' }, a.label, a.system ? el('span', { class: 'tag sys', text: ' ระบบ', style: { marginLeft: '6px' } }) : '', !a.enabled ? el('span', { class: 'tag off', text: ' ปิดอยู่', style: { marginLeft: '6px' } }) : ''),
+          el('div', { class: 'nm' }, a.label, a.system ? el('span', { class: 'tag sys', text: ' System', style: { marginLeft: '6px' } }) : '', !a.enabled ? el('span', { class: 'tag off', text: ' Disabled', style: { marginLeft: '6px' } }) : ''),
           el('div', { class: 'sub', text: a.pkg + (a.version ? ' · v' + a.version : '') + (a.size ? ' · ' + fmtSize(a.size) : '') })),
-        el('button', { class: 'btn', onclick: e => menuAt(e.currentTarget, appMenu(a)) }, 'จัดการ', icon('chev', 'chev')));
+        el('button', { class: 'btn', onclick: e => menuAt(e.currentTarget, appMenu(a)) }, 'Manage', icon('chev', 'chev')));
     }));
   }
   function appMenu(a) {
     const act = async (action, confirm) => {
-      if (confirm && !await dialog({ title: confirm, okText: 'ตกลง', danger: true })) return;
-      try { const r = await api('root/app', { pkg: a.pkg, action }, { method: 'POST' }); toast('สำเร็จ'); if (['uninstall', 'disable', 'enable'].includes(action)) load(); }
-      catch (e) { toast('ไม่สำเร็จ: ' + e.message); }
+      if (confirm && !await dialog({ title: confirm, okText: 'OK', danger: true })) return;
+      try { const r = await api('root/app', { pkg: a.pkg, action }, { method: 'POST' }); toast('Success'); if (['uninstall', 'disable', 'enable'].includes(action)) load(); }
+      catch (e) { toast('Failed: ' + e.message); }
     };
     return [
-      { label: 'เปิดแอป', ico: 'open', run: () => act('open') },
-      st.root ? { label: 'บังคับหยุด', ico: 'min', run: () => act('force-stop') } : null,
-      st.root ? { label: 'ล้างข้อมูล', ico: 'trash', run: () => act('clear', 'ล้างข้อมูลของ ' + a.label + '?') } : null,
-      st.root && a.enabled && a.system ? { label: 'ปิดการใช้งาน', run: () => act('disable', 'ปิด ' + a.label + '?') } : null,
-      st.root && !a.enabled ? { label: 'เปิดการใช้งาน', run: () => act('enable') } : null,
-      st.root && !a.system ? { label: 'ถอนการติดตั้ง', ico: 'trash', danger: true, run: () => act('uninstall', 'ถอน ' + a.label + '?') } : null,
+      { label: 'Launch App', ico: 'open', run: () => act('open') },
+      st.root ? { label: 'Force Stop', ico: 'min', run: () => act('force-stop') } : null,
+      st.root ? { label: 'Clear Data', ico: 'trash', run: () => act('clear', 'Clear data for ' + a.label + '?') } : null,
+      st.root && a.enabled && a.system ? { label: 'Disable App', run: () => act('disable', 'Disable ' + a.label + '?') } : null,
+      st.root && !a.enabled ? { label: 'Enable App', run: () => act('enable') } : null,
+      st.root && !a.system ? { label: 'Uninstall', ico: 'trash', danger: true, run: () => act('uninstall', 'Uninstall ' + a.label + '?') } : null,
     ].filter(Boolean);
   }
   function pick() { apkPick.click(); }
   async function installApk(file) {
-    toast('กำลังอัปโหลดและติดตั้ง ' + file.name + '…', 4000);
+    toast('Uploading and installing ' + file.name + '…', 4000);
     try {
       const r = await fetch('/api/root/install', { method: 'POST', body: file, credentials: 'same-origin' });
       const j = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(j.error || r.status);
-      if (j.mode === 'root') { toast('ติดตั้งสำเร็จ'); load(); }
-      else toast('อัปโหลดแล้ว — ยืนยันการติดตั้งบนหน้าจอมือถือ', 5000);
-    } catch (e) { toast('ติดตั้งไม่สำเร็จ: ' + e.message, 5000); }
+      if (j.mode === 'root') { toast('Installation succeeded'); load(); }
+      else toast('Uploaded — confirm installation on phone screen', 5000);
+    } catch (e) { toast('Installation failed: ' + e.message, 5000); }
   }
   let dragN = 0;
   list.addEventListener('dragenter', e => { if ([...e.dataTransfer.types].includes('Files')) { dragN++; drop.classList.add('drag'); } });
   list.addEventListener('dragleave', () => { if (--dragN <= 0) { dragN = 0; drop.classList.remove('drag'); } });
   list.addEventListener('dragover', e => e.preventDefault());
-  list.addEventListener('drop', e => { e.preventDefault(); dragN = 0; drop.classList.remove('drag'); const f = [...e.dataTransfer.files].find(f => /\.apk$/i.test(f.name)); if (f) installApk(f); else toast('ลากไฟล์ .apk เท่านั้น'); });
+  list.addEventListener('drop', e => { e.preventDefault(); dragN = 0; drop.classList.remove('drag'); const f = [...e.dataTransfer.files].find(f => /\.apk$/i.test(f.name)); if (f) installApk(f); else toast('Drop .apk files only'); });
 
   async function load() {
     try {
       const r = await api('root/apps', { system: st.showSystem ? 1 : 0 });
       st.apps = r.apps;
       st.root = r.root;
-      drop.textContent = st.root ? 'ลากไฟล์ .apk มาวางที่นี่เพื่อติดตั้งแบบเงียบ (root)' : 'ลากไฟล์ .apk มาวางเพื่อติดตั้ง (ยืนยันบนมือถือ)';
+      drop.textContent = st.root ? 'Drop .apk file here for silent install (root)' : 'Drop .apk file here to install (confirm on phone)';
       render();
-    } catch (e) { list.replaceChildren(el('div', { class: 'notice', text: 'โหลดรายการแอปไม่ได้: ' + e.message })); }
+    } catch (e) { list.replaceChildren(el('div', { class: 'notice', text: 'Failed to load apps: ' + e.message })); }
   }
   (async () => { try { st.flavor = (await api('root/status')).flavor; } catch {} load(); })();
   return { handle(arg) { if (arg && arg.install) pick(); } };
@@ -2091,14 +2091,14 @@ function Wallpaper(body, win) {
   preview.append(frame);
   const thumbs = el('div', { style: { display: 'flex', gap: '10px', padding: '12px', overflowX: 'auto', borderTop: '1px solid var(--line)' } });
   const infoChk = el('label', { style: { display: 'flex', gap: '6px', alignItems: 'center', fontSize: '13px' } },
-    el('input', { type: 'checkbox', checked: true, onchange: e => { st.showInfo = e.target.checked; render(); } }), 'ใส่ชื่อเครื่อง/IP ด้านล่าง');
+    el('input', { type: 'checkbox', checked: true, onchange: e => { st.showInfo = e.target.checked; render(); } }), 'Include device name & IP');
   const status = el('span', { style: { color: 'var(--text-3)', fontSize: '12px' } });
   const setBtn = el('button', { class: 'btn primary', onclick: e => menuAt(e.currentTarget, [
-    { label: 'ตั้งเป็นวอลเปเปอร์ (หน้าหลัก + ล็อก)', run: () => apply('both') },
-    { label: 'เฉพาะหน้าหลัก', run: () => apply('home') },
-    { label: 'เฉพาะหน้าจอล็อก', run: () => apply('lock') },
-    { label: 'ดาวน์โหลดรูป', ico: 'download', run: () => download() },
-  ]) }, icon('download'), 'ตั้งเป็นวอลเปเปอร์', icon('chev', 'chev'));
+    { label: 'Set as Wallpaper (Home + Lock)', run: () => apply('both') },
+    { label: 'Home Screen only', run: () => apply('home') },
+    { label: 'Lock Screen only', run: () => apply('lock') },
+    { label: 'Download Image', ico: 'download', run: () => download() },
+  ]) }, icon('download'), 'Set as Wallpaper', icon('chev', 'chev'));
   const bar = el('div', { class: 'ds-tools' }, infoChk, el('span', { style: { flex: 1 } }), status, setBtn);
   body.append(el('div', { style: { flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 } }, bar, preview, thumbs));
 
@@ -2128,14 +2128,14 @@ function Wallpaper(body, win) {
     return await new Promise(r => canvas.toBlob(r, 'image/jpeg', 0.92));
   }
   async function apply(which) {
-    status.textContent = 'กำลังตั้งวอลเปเปอร์…';
+    status.textContent = 'Setting wallpaper…';
     try {
       const blob = await toBlob();
       const r = await fetch('/api/wallpaper' + qs({ which }), { method: 'POST', body: blob, credentials: 'same-origin' });
       if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.error || r.status); }
       status.textContent = '';
-      toast('ตั้งวอลเปเปอร์ NexOS แล้ว');
-    } catch (e) { status.textContent = ''; toast('ไม่สำเร็จ: ' + e.message, 4000); }
+      toast('NexOS wallpaper set successfully');
+    } catch (e) { status.textContent = ''; toast('Failed: ' + e.message, 4000); }
   }
   async function download() {
     const blob = await toBlob();
@@ -2147,7 +2147,7 @@ function Wallpaper(body, win) {
 }
 // ---------------------------------------------------------------- Remote Access (Cloudflare Tunnel)
 
-const TUN_STATE = { off: 'ปิดอยู่', starting: 'กำลังเชื่อมต่อ…', connected: 'เชื่อมต่อแล้ว', error: 'ผิดพลาด' };
+const TUN_STATE = { off: 'Disabled', starting: 'Connecting…', connected: 'Connected', error: 'Error' };
 
 function RemoteAccess(body, win) {
   const pane = el('div', { class: 'pane' });
@@ -2158,7 +2158,7 @@ function RemoteAccess(body, win) {
     try {
       const r = await api('tunnel/' + path, null, payload ? { method: 'POST', body: JSON.stringify(payload) } : { method: 'POST' });
       render(r);
-    } catch (e) { toast('ไม่สำเร็จ: ' + e.message, 4000); refresh(); }
+    } catch (e) { toast('Failed: ' + e.message, 4000); refresh(); }
   }
 
   function render(s) {
@@ -2166,47 +2166,47 @@ function RemoteAccess(body, win) {
     const connected = s.state === 'connected';
     const dotColor = { off: '#9aa6b2', starting: '#f0a020', connected: '#2fb36b', error: '#e5484d' }[s.state];
     fill(pane,
-      el('h2', null, 'เข้าถึงจากอินเทอร์เน็ต (Cloudflare Tunnel)'),
-      !s.supported ? el('div', { class: 'notice', text: 'มือถือเครื่องนี้ไม่รองรับ (ไม่มีไฟล์ cloudflared สำหรับ CPU นี้) — ใช้ได้เฉพาะในวง Wi-Fi เดียวกัน' }) : null,
+      el('h2', null, 'Remote Access (Cloudflare Tunnel)'),
+      !s.supported ? el('div', { class: 'notice', text: 'This device is not supported (no cloudflared binary for this CPU) — local Wi-Fi only' }) : null,
       el('div', { class: 'card' },
         el('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', marginBottom: connected || s.state === 'error' ? '12px' : 0 } },
           el('span', { style: { width: '12px', height: '12px', borderRadius: '50%', background: dotColor, flex: 'none' } }),
           el('b', { text: TUN_STATE[s.state] || s.state }),
-          s.mode && s.mode !== 'off' ? el('span', { class: 'st-pill', text: s.mode === 'named' ? 'โดเมนตัวเอง' : 'ลิงก์ชั่วคราว' }) : null),
+          s.mode && s.mode !== 'off' ? el('span', { class: 'st-pill', text: s.mode === 'named' ? 'Custom Domain' : 'Quick Tunnel' }) : null),
         connected && s.url ? el('div', null,
-          el('div', { style: { fontSize: '12px', color: 'var(--text-3)', marginBottom: '4px' }, text: 'ลิงก์สาธารณะ (เปิดได้จากทุกที่):' }),
+          el('div', { style: { fontSize: '12px', color: 'var(--text-3)', marginBottom: '4px' }, text: 'Public URL (accessible anywhere):' }),
           el('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' } },
             el('a', { class: 'mono', href: s.url, target: '_blank', style: { fontSize: '16px', color: 'var(--accent)', wordBreak: 'break-all' }, text: s.url }),
-            el('button', { class: 'btn', onclick: () => copy(s.url) }, icon('link'), 'คัดลอก'))) : null,
-        connected && s.mode === 'named' && !s.url ? el('div', { class: 'mono', style: { color: 'var(--text-2)' }, text: 'เชื่อมต่อแล้ว — เปิดด้วยโดเมนที่คุณตั้งไว้ใน Cloudflare' }) : null,
-        s.state === 'error' ? el('div', { class: 'notice', style: { margin: '0' }, text: s.error || 'เชื่อมต่อไม่สำเร็จ' }) : null),
+            el('button', { class: 'btn', onclick: () => copy(s.url) }, icon('link'), 'Copy'))) : null,
+        connected && s.mode === 'named' && !s.url ? el('div', { class: 'mono', style: { color: 'var(--text-2)' }, text: 'Connected — accessible via your configured domain in Cloudflare' }) : null,
+        s.state === 'error' ? el('div', { class: 'notice', style: { margin: '0' }, text: s.error || 'Connection failed' }) : null),
 
       s.state === 'off' || s.state === 'error'
         ? el('div', { class: 'card' },
-            el('h3', { style: { marginTop: 0 }, text: 'เปิด Tunnel' }),
-            el('div', { class: 'notice', style: { margin: '0 0 12px' }, text: 'เมื่อเปิด เครื่องจะเข้าถึงได้จากอินเทอร์เน็ต ระบบจะบังคับเปิด PIN ให้อัตโนมัติ อย่าปิด PIN ขณะเปิด tunnel' }),
+            el('h3', { style: { marginTop: 0 }, text: 'Start Tunnel' }),
+            el('div', { class: 'notice', style: { margin: '0 0 12px' }, text: 'When enabled, your server is accessible over the internet. PIN login will be enforced automatically.' }),
             el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '14px' } },
-              el('button', { class: 'btn primary', disabled: !s.supported, onclick: () => act('start', { mode: 'quick' }) }, icon('link'), 'ลิงก์ชั่วคราว (trycloudflare.com)')),
-            el('h3', { text: 'หรือใช้โดเมนตัวเอง (Named Tunnel)' }),
-            el('div', { class: 'hint', style: { marginBottom: '8px' }, html: 'ไปที่ Cloudflare Zero Trust → Networks → Tunnels → สร้าง tunnel → คัดลอก token (ขึ้นต้นด้วย <span class="mono">eyJ…</span>) มาวางด้านล่าง แล้วตั้ง Public hostname ชี้มาที่ <span class="mono">http://localhost:' + (Stats.last ? Stats.last.port : 8080) + '</span>' }),
+              el('button', { class: 'btn primary', disabled: !s.supported, onclick: () => act('start', { mode: 'quick' }) }, icon('link'), 'Quick Tunnel (trycloudflare.com)')),
+            el('h3', { text: 'Or use your own domain (Named Tunnel)' }),
+            el('div', { class: 'hint', style: { marginBottom: '8px' }, html: 'Go to Cloudflare Zero Trust → Networks → Tunnels → Create tunnel → paste token below, and set Public hostname pointing to <span class="mono">http://localhost:' + (Stats.last ? Stats.last.port : 8080) + '</span>' }),
             (() => {
-              const t = el('input', { placeholder: 'วาง tunnel token ที่นี่', value: s.hasToken ? '••••••••••••••••' : '', style: { fontFamily: 'monospace' }, onfocus: e => { if (e.target.value.startsWith('•')) e.target.value = ''; } });
+              const t = el('input', { placeholder: 'Paste tunnel token here', value: s.hasToken ? '••••••••••••••••' : '', style: { fontFamily: 'monospace' }, onfocus: e => { if (e.target.value.startsWith('•')) e.target.value = ''; } });
               return el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } }, t,
-                el('button', { class: 'btn', disabled: !s.supported, onclick: () => act('start', { mode: 'named', token: t.value.startsWith('•') ? undefined : t.value }) }, icon('link'), 'เชื่อมต่อด้วย token'));
+                el('button', { class: 'btn', disabled: !s.supported, onclick: () => act('start', { mode: 'named', token: t.value.startsWith('•') ? undefined : t.value }) }, icon('link'), 'Connect with token'));
             })())
         : el('div', { class: 'card' },
             el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
-              el('button', { class: 'btn danger', onclick: () => act('stop') }, icon('x'), 'ปิด Tunnel'),
-              el('button', { class: 'btn', onclick: () => act('start', { mode: s.mode === 'named' ? 'named' : 'quick' }) }, icon('refresh'), 'เชื่อมต่อใหม่'))),
+              el('button', { class: 'btn danger', onclick: () => act('stop') }, icon('x'), 'Stop Tunnel'),
+              el('button', { class: 'btn', onclick: () => act('start', { mode: s.mode === 'named' ? 'named' : 'quick' }) }, icon('refresh'), 'Reconnect'))),
 
       el('div', { class: 'card' },
         el('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }, onclick: () => { logOpen = !logOpen; render(lastState); } },
-          el('h3', { style: { margin: 0 }, text: 'บันทึกการทำงาน (log)' }), icon(logOpen ? 'min' : 'chev')),
-        logOpen ? el('pre', { class: 'mono', style: { marginTop: '10px', maxHeight: '220px', overflow: 'auto', background: '#0d1117', color: '#c9d1d9', padding: '12px', borderRadius: '8px', fontSize: '12px', whiteSpace: 'pre-wrap', userSelect: 'text' }, text: s.log || '(ยังไม่มี)' }) : null));
+          el('h3', { style: { margin: 0 }, text: 'Process Logs' }), icon(logOpen ? 'min' : 'chev')),
+        logOpen ? el('pre', { class: 'mono', style: { marginTop: '10px', maxHeight: '220px', overflow: 'auto', background: '#0d1117', color: '#c9d1d9', padding: '12px', borderRadius: '8px', fontSize: '12px', whiteSpace: 'pre-wrap', userSelect: 'text' }, text: s.log || '(No logs yet)' }) : null));
   }
   function copy(url) {
-    if (navigator.clipboard && isSecureContext) navigator.clipboard.writeText(url).then(() => toast('คัดลอกลิงก์แล้ว'));
-    else dialog({ title: 'ลิงก์สาธารณะ', input: url, cancel: false });
+    if (navigator.clipboard && isSecureContext) navigator.clipboard.writeText(url).then(() => toast('Link copied to clipboard'));
+    else dialog({ title: 'Public Link', input: url, cancel: false });
   }
   async function refresh() {
     try { render(await api('tunnel/status')); } catch { /* offline */ }
@@ -2225,7 +2225,7 @@ const Auth = {
     $('#pin').classList.toggle('hidden', pw);
     $('#loginUser').classList.toggle('hidden', !pw);
     $('#loginPass').classList.toggle('hidden', !pw);
-    $('#loginServer').textContent = pw ? 'เข้าสู่ระบบด้วยชื่อผู้ใช้และรหัสผ่าน' : 'ใส่ PIN ที่แสดงในแอปบนมือถือ';
+    $('#loginServer').textContent = pw ? 'Sign in with username and password' : 'Enter the PIN shown on your phone app';
   },
   show() {
     this.applyMode();
@@ -2251,8 +2251,8 @@ $('#loginForm').addEventListener('submit', async e => {
     $('#pin').value = $('#loginPass').value = '';
     start();
   } catch (x) {
-    err.textContent = x.status === 429 ? 'ใส่ผิดหลายครั้ง รอ 1 นาทีแล้วลองใหม่'
-      : Auth.mode === 'password' ? 'ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง' : 'PIN ไม่ถูกต้อง';
+    err.textContent = x.status === 429 ? 'Too many failed attempts. Wait 1 minute and try again.'
+      : Auth.mode === 'password' ? 'Invalid username or password' : 'Incorrect PIN';
     (Auth.mode === 'password' ? $('#loginPass') : $('#pin')).select();
   }
 });
@@ -2274,19 +2274,19 @@ const APPS = {
   remote: { id: 'remote', name: 'Remote Access', ico: 'remote', w: 660, h: 620, mount: RemoteAccess },
 };
 
-$('#mainMenuBtn').onclick = e => openPop && openPop.btn === e.currentTarget ? closePop() : appGridPopover(e.currentTarget, Object.keys(APPS).filter(k => !APPS[k].root || State.isRoot), 'ค้นหาแอป');
+$('#mainMenuBtn').onclick = e => openPop && openPop.btn === e.currentTarget ? closePop() : appGridPopover(e.currentTarget, Object.keys(APPS).filter(k => !APPS[k].root || State.isRoot), 'Search apps');
 $('#searchBtn').onclick = () => openApp('filestation', { search: true });
 $('#infoBtn').onclick = () => openApp('control');
 $('#userBtn').onclick = e => menuAt(e.currentTarget, [
   { label: Stats.last ? Stats.last.model : 'NexShare', ico: 'info', run: () => openApp('control') },
-  Auth.pinRequired ? { label: 'ออกจากระบบ', ico: 'logout', run: () => Auth.logout() } : null,
+  Auth.pinRequired ? { label: 'Sign Out', ico: 'logout', run: () => Auth.logout() } : null,
 ]);
 $('#notifBtn').onclick = e => {
-  const items = State.notes.length ? State.notes.slice(0, 8).map(n => ({ label: n.text, run: () => {} })) : [{ label: 'ยังไม่มีการแจ้งเตือน', disabled: true, run: () => {} }];
+  const items = State.notes.length ? State.notes.slice(0, 8).map(n => ({ label: n.text, run: () => {} })) : [{ label: 'No notifications yet', disabled: true, run: () => {} }];
   menuAt(e.currentTarget, items);
 };
 document.addEventListener('dragover', e => e.preventDefault());
-document.addEventListener('drop', e => { if (!e.target.closest('.fs-list')) { e.preventDefault(); toast('เปิด File Station แล้ววางไฟล์ในหน้าต่างเพื่ออัปโหลด'); } });
+document.addEventListener('drop', e => { if (!e.target.closest('.fs-list')) { e.preventDefault(); toast('Open File Station and drop files into the window to upload'); } });
 addEventListener('resize', () => { renderDesktop(); });
 
 let started = false;
@@ -2302,7 +2302,7 @@ async function start() {
   initWidgets();
   poll();
   setInterval(poll, 2000);
-  if (State.roots.length && !State.roots[0].readable) notify('แอปบนมือถือยังไม่ได้รับสิทธิ์เข้าถึงไฟล์');
+  if (State.roots.length && !State.roots[0].readable) notify('Mobile app does not have storage access');
   if (innerWidth > 760) openApp('filestation');
 }
 
@@ -2320,5 +2320,5 @@ async function start() {
     State.webdavEnabled = !!s.webdavEnabled;
     if (!s.auth) { Auth.show(); return; }
     start();
-  } catch { toast('เชื่อมต่อมือถือไม่ได้'); }
+  } catch { toast('Cannot connect to phone'); }
 })();

@@ -64,7 +64,7 @@ public class MainActivity extends Activity {
         header.setBackgroundColor(BLUE);
         header.setPadding(dp(24), dp(28), dp(24), dp(28));
         TextView title = text("NexShare", 28, Color.WHITE, true);
-        TextView sub = text("แชร์ไฟล์ในมือถือผ่านหน้าเว็บในวง Wi-Fi เดียวกัน", 14, 0xDDFFFFFF, false);
+        TextView sub = text("Share phone files via web browser on the same Wi-Fi", 14, 0xDDFFFFFF, false);
         status = text("", 15, Color.WHITE, true);
         status.setPadding(0, dp(14), 0, 0);
         header.addView(title);
@@ -95,18 +95,18 @@ public class MainActivity extends Activity {
         body.addView(toggle, new LinearLayout.LayoutParams(-1, dp(56)));
 
         LinearLayout card = card(body);
-        card.addView(text("เปิดจากคอม/มือถือเครื่องอื่นที่ต่อ Wi-Fi เดียวกัน", 13, 0xFF6B7785, false));
+        card.addView(text("Open from a computer or other phone on the same Wi-Fi", 13, 0xFF6B7785, false));
         urlHost = link(card);
         urlIp = link(card);
-        TextView hint = text("ถ้าเปิด nexshare.local ไม่ได้ ให้ใช้ลิงก์ที่เป็นเลข IP แทน", 12, 0xFF8A96A3, false);
+        TextView hint = text("If nexshare.local does not open, use the IP address link instead", 12, 0xFF8A96A3, false);
         hint.setPadding(0, dp(8), 0, 0);
         card.addView(hint);
 
         LinearLayout authCard = card(body);
-        authCard.addView(text("วิธีเข้าสู่ระบบ (ล็อกอิน)", 15, 0xFF1D2733, true));
+        authCard.addView(text("Login Mode", 15, 0xFF1D2733, true));
         authGroup = new RadioGroup(this);
         String[] modes = {Settings.MODE_PIN, Settings.MODE_PASSWORD, Settings.MODE_NONE};
-        String[] labels = {"PIN สุ่ม 6 หลัก", "ชื่อผู้ใช้ + รหัสผ่าน", "ไม่ต้องล็อกอิน"};
+        String[] labels = {"Random 6-digit PIN", "Username + Password", "No login required"};
         for (int i = 0; i < modes.length; i++) {
             RadioButton rb = new RadioButton(this);
             rb.setText(labels[i]);
@@ -131,7 +131,7 @@ public class MainActivity extends Activity {
 
         LinearLayout screenCard = card(body);
         Switch screenSwitch = new Switch(this);
-        screenSwitch.setText("เปิดหน้าจอค้างไว้ขณะแชร์");
+        screenSwitch.setText("Keep screen on while sharing");
         screenSwitch.setTextSize(15);
         screenSwitch.setChecked(Settings.keepScreenOn(this));
         screenSwitch.setOnCheckedChangeListener((v, on) -> {
@@ -140,26 +140,26 @@ public class MainActivity extends Activity {
             if (ServerService.running) startServer(); // re-apply svc power stayon for root
         });
         screenCard.addView(screenSwitch);
-        screenCard.addView(text(Flavor.ROOT ? "รุ่น Root: จอจะติดตลอดแม้สลับไปแอปอื่น (ใช้ svc power stayon)" : "จอจะติดเฉพาะตอนเปิดหน้าแอปนี้", 12, 0xFF8A96A3, false));
+        screenCard.addView(text(Flavor.ROOT ? "Root edition: Screen stays on across other apps (svc power stayon)" : "Screen stays on only while this app is open", 12, 0xFF8A96A3, false));
 
         LinearLayout davCard = card(body);
-        davCard.addView(text("WebDAV (ไดรฟ์เครือข่าย Windows)", 15, 0xFF1D2733, true));
+        davCard.addView(text("WebDAV (Windows Network Drive)", 15, 0xFF1D2733, true));
         davSwitch = new Switch(this);
-        davSwitch.setText("เปิดเซิร์ฟเวอร์ WebDAV");
+        davSwitch.setText("Enable WebDAV Server");
         davSwitch.setTextSize(15);
         davSwitch.setChecked(Settings.webdavEnabled(this));
         davSwitch.setOnCheckedChangeListener((v, on) -> {
             if (on && !Settings.authRequired(this)) {
                 Settings.setAuthMode(this, Settings.MODE_PIN);
                 applyAuthMode();
-                Toast.makeText(this, "เปิดใช้ PIN อัตโนมัติเพื่อความปลอดภัยของ WebDAV", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, "PIN enabled automatically for WebDAV security", Toast.LENGTH_SHORT).show();
             }
             Settings.setWebdavEnabled(this, on);
             refresh();
         });
         davCard.addView(davSwitch);
         davUrl = link(davCard);
-        TextView davHint = text("สำหรับแมปไดรฟ์ใน Windows (net use Z: http://... /user:nexshare *)\nรัน windows-webdav.reg ก่อนเชื่อมต่อ", 12, 0xFF8A96A3, false);
+        TextView davHint = text("Map as a network drive in Windows (net use Z: http://... /user:nexshare *)\nRun windows-webdav.reg or connect via RaiDrive", 12, 0xFF8A96A3, false);
         davHint.setPadding(0, dp(6), 0, 0);
         davCard.addView(davHint);
 
@@ -168,27 +168,27 @@ public class MainActivity extends Activity {
         permCard.addView(permNote);
         permBtn = new Button(this);
         permBtn.setAllCaps(false);
-        permBtn.setText("อนุญาตให้เข้าถึงไฟล์ทั้งหมด");
+        permBtn.setText("Grant All Files Access");
         permBtn.setOnClickListener(v -> requestFileAccess());
         permCard.addView(permBtn);
 
         if (Flavor.ROOT) {
             LinearLayout rootCard = card(body);
             TextView rootState = text("", 14, 0xFF1D2733, false);
-            rootCard.addView(text("NexShare รุ่น Root", 15, 0xFF1D2733, true));
+            rootCard.addView(text("NexShare Root Edition", 15, 0xFF1D2733, true));
             rootCard.addView(rootState);
             Button rootBtn = new Button(this);
             rootBtn.setAllCaps(false);
-            rootBtn.setText("ขอสิทธิ์ root");
+            rootBtn.setText("Request root permission");
             rootBtn.setOnClickListener(v -> new Thread(() -> {
                 RootShell.resetCheck();
                 boolean ok = RootShell.available();
-                runOnUiThread(() -> rootState.setText(ok ? "✓ ได้สิทธิ์ root แล้ว — ใช้ Terminal, ดูหน้าจอ และติดตั้งแอปได้" : "ยังไม่ได้สิทธิ์ root (กด Grant ในแอป Magisk/SuperSU)"));
+                runOnUiThread(() -> rootState.setText(ok ? "✓ Root access granted — Terminal, screen mirror and package installer enabled" : "Root not granted (tap Grant in Magisk/SuperSU)"));
             }).start());
             rootCard.addView(rootBtn);
             new Thread(() -> {
                 boolean ok = RootShell.available();
-                runOnUiThread(() -> rootState.setText(ok ? "✓ ได้สิทธิ์ root แล้ว — ใช้ Terminal, ดูหน้าจอ และติดตั้งแอปได้" : "ยังไม่ได้สิทธิ์ root (กดปุ่มด้านล่างเพื่อขอ)"));
+                runOnUiThread(() -> rootState.setText(ok ? "✓ Root access granted — Terminal, screen mirror and package installer enabled" : "Root not granted (tap button below to request)"));
             }).start();
         }
 
@@ -229,19 +229,19 @@ public class MainActivity extends Activity {
             authDetail.addView(pin);
             Button newPin = new Button(this);
             newPin.setAllCaps(false);
-            newPin.setText("สุ่ม PIN ใหม่");
+            newPin.setText("Generate new PIN");
             newPin.setOnClickListener(v -> applyAuthModeAfter(() -> Settings.regeneratePin(this)));
             authDetail.addView(newPin);
-            authDetail.addView(text("ใส่ PIN นี้ตอนเปิดหน้าเว็บจากเครื่องอื่น", 12, 0xFF8A96A3, false));
+            authDetail.addView(text("Enter this PIN when opening the web UI from other devices", 12, 0xFF8A96A3, false));
         } else if (Settings.MODE_PASSWORD.equals(mode)) {
             EditText user = new EditText(this);
-            user.setHint("ชื่อผู้ใช้");
+            user.setHint("Username");
             user.setText(Settings.username(this));
             user.setTextSize(15);
             user.setSingleLine(true);
             authDetail.addView(user);
             EditText pass = new EditText(this);
-            pass.setHint(Settings.hasPassword(this) ? "รหัสผ่านใหม่ (เว้นว่าง = ไม่เปลี่ยน)" : "ตั้งรหัสผ่าน");
+            pass.setHint(Settings.hasPassword(this) ? "New password (leave blank = unchanged)" : "Set password");
             pass.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
             pass.setTextSize(15);
             pass.setSingleLine(true);
@@ -250,25 +250,25 @@ public class MainActivity extends Activity {
             st.setPadding(0, dp(6), 0, 0);
             Button save = new Button(this);
             save.setAllCaps(false);
-            save.setText("บันทึก");
+            save.setText("Save");
             save.setOnClickListener(v -> {
                 Settings.setUsername(this, user.getText().toString());
                 String pw = pass.getText().toString();
                 if (!pw.isEmpty()) Settings.setPassword(this, pw);
                 pass.setText("");
                 boolean ready = Settings.hasPassword(this);
-                st.setText(ready ? "✓ บันทึกแล้ว" : "⚠ ยังไม่ได้ตั้งรหัสผ่าน");
+                st.setText(ready ? "✓ Saved" : "⚠ Password not set");
                 st.setTextColor(ready ? 0xFF2FB36B : 0xFFE5484D);
-                Toast.makeText(this, "บันทึกแล้ว", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, "Saved", Toast.LENGTH_SHORT).show();
             });
             authDetail.addView(save);
             if (!Settings.hasPassword(this)) {
-                st.setText("⚠ ยังไม่ได้ตั้งรหัสผ่าน — ตั้งก่อนเพื่อให้ล็อกอินได้");
+                st.setText("⚠ Password not set — set one to enable login");
                 st.setTextColor(0xFFE5484D);
             }
             authDetail.addView(st);
         } else {
-            authDetail.addView(text("⚠ ไม่ต้องล็อกอิน: ใครก็ตามในเครือข่ายเดียวกันเข้าถึงไฟล์ได้ทันที", 13, 0xFFB5651D, false));
+            authDetail.addView(text("⚠ No login required: Anyone on the same network can access your files", 13, 0xFFB5651D, false));
         }
     }
 
@@ -316,10 +316,10 @@ public class MainActivity extends Activity {
     private void refresh() {
         boolean on = ServerService.running;
         Inet4Address ip = MdnsResponder.lanAddress();
-        if (on) status.setText("● กำลังทำงาน");
-        else if (ServerService.lastError != null) status.setText("● เปิดเซิร์ฟเวอร์ไม่สำเร็จ: " + ServerService.lastError);
-        else status.setText("○ หยุดอยู่");
-        toggle.setText(on ? "หยุดแชร์" : "เริ่มแชร์");
+        if (on) status.setText("● Running");
+        else if (ServerService.lastError != null) status.setText("● Failed to start: " + ServerService.lastError);
+        else status.setText("○ Stopped");
+        toggle.setText(on ? "Stop Sharing" : "Start Sharing");
         GradientDrawable bg = new GradientDrawable();
         bg.setCornerRadius(dp(12));
         bg.setColor(on ? 0xFFE5484D : BLUE);
@@ -333,7 +333,7 @@ public class MainActivity extends Activity {
             urlIp.setText(ipUrl);
             urlIp.setTag(ipUrl);
         } else {
-            urlIp.setText("ยังไม่ได้ต่อ Wi-Fi / Hotspot");
+            urlIp.setText("Not connected to Wi-Fi / Hotspot");
             urlIp.setTag(null);
         }
         urlHost.setAlpha(on ? 1f : 0.4f);
@@ -349,7 +349,7 @@ public class MainActivity extends Activity {
         }
 
         boolean access = hasFileAccess();
-        permNote.setText(access ? "✓ ได้รับสิทธิ์เข้าถึงไฟล์แล้ว" : "ยังไม่ได้รับสิทธิ์เข้าถึงไฟล์ หน้าเว็บจะเปิดโฟลเดอร์ไม่ได้");
+        permNote.setText(access ? "✓ All files access granted" : "Storage permission not granted. Web UI will not be able to browse folders.");
         permBtn.setVisibility(access ? View.GONE : View.VISIBLE);
     }
 
@@ -376,7 +376,7 @@ public class MainActivity extends Activity {
             if (url == null) return;
             ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
             cm.setPrimaryClip(ClipData.newPlainText("NexShare", url.toString()));
-            Toast.makeText(this, "คัดลอกลิงก์แล้ว", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "Link copied to clipboard", Toast.LENGTH_SHORT).show();
         });
         parent.addView(t);
         return t;
