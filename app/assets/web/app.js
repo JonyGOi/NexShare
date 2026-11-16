@@ -1069,7 +1069,7 @@ function ControlPanel(body) {
         el('h3', { text: 'App Updates', style: { marginTop: 0 } }),
         el('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' } },
           el('div', null,
-            el('b', { text: `NexShare v${s.version || '1.5.0'}` }),
+            el('b', { text: `NexShare v${s.version || '1.5.1'}` }),
             el('span', { style: { marginLeft: '8px', fontSize: '11px', textTransform: 'uppercase', background: '#eef3fb', color: '#1e6fd9', padding: '2px 6px', borderRadius: '4px' }, text: (s.flavor || 'normal') + ' edition' })
           ),
           el('button', {
