@@ -1042,7 +1042,12 @@ function ControlPanel(body) {
   fetchUpdateStatus();
   const render = () => {
     const s = Stats.last || {};
-    const urls = [`http://${s.host || 'nexshare.local'}:${s.port || 8080}`, s.ip ? `http://${s.ip}:${s.port}` : null].filter(Boolean);
+    const urls = [
+      s.ip ? `https://${s.ip}:${s.httpsPort || 8443}` : null,
+      `https://${s.host || 'nexshare.local'}:${s.httpsPort || 8443}`,
+      s.ip ? `http://${s.ip}:${s.port || 8080}` : null,
+      `http://${s.host || 'nexshare.local'}:${s.port || 8080}`,
+    ].filter(Boolean);
     fill(pane,
       el('h2', { text: 'Control Panel' }),
       State.roots.length && !State.roots[0].readable ? el('div', { class: 'notice', style: { margin: '0 0 12px' }, text: 'Storage access not granted — open NexShare app on your phone and tap "Grant All Files Access"' }) : null,
@@ -1054,8 +1059,8 @@ function ControlPanel(body) {
         el('dt', { text: 'Temperature' }), el('dd', { text: (s.temp || s.batteryTemp) ? `${(s.temp || s.batteryTemp).toFixed(1)}°C${s.batteryTemp && s.temp && s.temp !== s.batteryTemp ? ` (Battery: ${s.batteryTemp}°C)` : ''}` : '-' }),
         el('dt', { text: 'Power Mode' }), el('dd', { text: s.eco ? '🌱 Eco Mode (Power Saving / Idle)' : '⚡ Active Mode' }),
         el('dt', { text: 'Uptime' }), el('dd', { text: s.uptime ? fmtUptime(s.uptime) : '-' }))),
-      el('div', { class: 'card' }, el('h3', { text: 'Network Access', style: { marginTop: 0 } }), el('dl', { class: 'kv' },
-        ...urls.flatMap((u, i) => [el('dt', { text: i ? 'Via IP' : 'Local domain' }), el('dd', { class: 'mono', text: u })]),
+      el('div', { class: 'card' }, el('h3', { text: 'Network Access (HTTP & HTTPS)', style: { marginTop: 0 } }), el('dl', { class: 'kv' },
+        ...urls.flatMap((u, i) => [el('dt', { text: u.startsWith('https:') ? 'HTTPS Secure' : 'HTTP Standard' }), el('dd', { class: 'mono', text: u })]),
         el('dt', { text: 'Security' }), el('dd', { text: State.authMode === 'password' ? 'Username + Password' : State.authMode === 'pin' ? 'PIN required' : 'No login required' }))),
       el('div', { class: 'card' },
         el('h3', { text: 'WebDAV Network Drive (Windows)', style: { marginTop: 0 } }),
@@ -1073,18 +1078,27 @@ function ControlPanel(body) {
             }
           }, State.webdavEnabled ? 'Disable WebDAV' : 'Enable WebDAV')
         ),
-        State.webdavEnabled ? el('dl', { class: 'kv' },
-          el('dt', { text: 'WebDAV URL' }), el('dd', { class: 'mono', style: { cursor: 'pointer', color: '#1e6fd9' }, title: 'Click to copy', onclick: e => { navigator.clipboard?.writeText(e.target.textContent); toast('URL copied to clipboard'); }, text: (s.ip ? `http://${s.ip}:${s.port || 8080}/dav/` : `http://${s.host || 'nexshare.local'}:${s.port || 8080}/dav/`) }),
-          el('dt', { text: 'Username' }), el('dd', { class: 'mono', text: 'nexshare' }),
-          el('dt', { text: 'Password' }), el('dd', { text: '6-digit PIN from mobile app' }),
-          el('dt', { text: 'Windows Command' }), el('dd', { class: 'mono', style: { fontSize: '11px', wordBreak: 'break-all' }, text: `net use Z: http://${s.ip || 'IP'}:${s.port || 8080}/dav/ /user:nexshare *` })
-        ) : el('div', { class: 'hint', text: 'Enable to map phone storage as Z: drive in Windows (use RaiDrive or run windows-webdav.reg)' })
+        State.webdavEnabled ? el('div', null,
+          el('dl', { class: 'kv' },
+            el('dt', { text: 'HTTPS WebDAV (Recomendado)' }), el('dd', { class: 'mono', style: { cursor: 'pointer', color: '#16a34a', fontWeight: 'bold' }, title: 'Click to copy', onclick: e => { navigator.clipboard?.writeText(e.target.textContent); toast('HTTPS WebDAV URL copied'); }, text: (s.ip ? `https://${s.ip}:${s.httpsPort || 8443}/dav/` : `https://${s.host || 'nexshare.local'}:${s.httpsPort || 8443}/dav/`) }),
+            el('dt', { text: 'HTTP WebDAV' }), el('dd', { class: 'mono', style: { cursor: 'pointer', color: '#1e6fd9' }, title: 'Click to copy', onclick: e => { navigator.clipboard?.writeText(e.target.textContent); toast('HTTP WebDAV URL copied'); }, text: (s.ip ? `http://${s.ip}:${s.port || 8080}/dav/` : `http://${s.host || 'nexshare.local'}:${s.port || 8080}/dav/`) }),
+            el('dt', { text: 'Username' }), el('dd', { class: 'mono', text: 'nexshare (ou o seu usuário do Windows)' }),
+            el('dt', { text: 'Password' }), el('dd', { text: 'PIN de 6 dígitos exibido no app' }),
+            el('dt', { text: 'Windows CMD (HTTPS)' }), el('dd', { class: 'mono', style: { fontSize: '11px', wordBreak: 'break-all' }, text: `net use Z: https://${s.ip || 'IP'}:${s.httpsPort || 8443}/dav/ /user:nexshare *` }),
+            el('dt', { text: 'Windows CMD (HTTP)' }), el('dd', { class: 'mono', style: { fontSize: '11px', wordBreak: 'break-all' }, text: `net use Z: http://${s.ip || 'IP'}:${s.port || 8080}/dav/ /user:nexshare *` })
+          ),
+          el('div', { style: { display: 'flex', gap: '8px', marginTop: '10px', flexWrap: 'wrap' } },
+            el('a', { class: 'btn', href: '/api/cert', download: 'nexshare-ca.crt' }, icon('download'), 'Baixar Certificado SSL (nexshare-ca.crt)'),
+            el('a', { class: 'btn', href: '/api/webdav/reg', download: 'windows-webdav.reg' }, icon('download'), 'Baixar windows-webdav.reg')
+          ),
+          el('div', { class: 'hint', style: { marginTop: '8px', fontSize: '12px', lineHeight: '1.4' }, html: '<b>Dica Windows:</b> O Windows bloqueia autenticação em WebDAV sem SSL por padrão. Com <b>HTTPS</b> funciona direto! Se usar HTTP puro, execute o <code>windows-webdav.reg</code> uma vez.' })
+        ) : el('div', { class: 'hint', text: 'Ative para mapear os arquivos do celular como unidade de rede Z: no Windows.' })
       ),
       el('div', { class: 'card' },
         el('h3', { text: 'App Updates', style: { marginTop: 0 } }),
         el('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' } },
           el('div', null,
-            el('b', { text: `NexShare v${s.version || '1.5.3'}` }),
+            el('b', { text: `NexShare v${s.version || '1.5.4'}` }),
             el('span', { style: { marginLeft: '8px', fontSize: '11px', textTransform: 'uppercase', background: '#eef3fb', color: '#1e6fd9', padding: '2px 6px', borderRadius: '4px' }, text: (s.flavor || 'normal') + ' edition' })
           ),
           el('button', {

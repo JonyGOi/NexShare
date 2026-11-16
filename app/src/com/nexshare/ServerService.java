@@ -29,6 +29,7 @@ import java.net.Inet4Address;
 public class ServerService extends Service {
 
     public static final int PORT = 8080;
+    public static final int HTTPS_PORT = 8443;
     public static final String ACTION_STOP = "com.nexshare.STOP";
     private static final String CHANNEL = "nexshare";
 
@@ -44,7 +45,7 @@ public class ServerService extends Service {
         return (System.currentTimeMillis() - lastActivityTime) > 45000;
     }
 
-    private final HttpServer[] server = new HttpServer[1];
+    private final HttpServer[] server = new HttpServer[2];
     private MdnsResponder mdns;
     private PowerManager.WakeLock wakeLock;
     private WifiManager.WifiLock wifiLock;
@@ -110,7 +111,7 @@ public class ServerService extends Service {
         Inet4Address ip = MdnsResponder.lanAddress();
         String text;
         if (ip != null) {
-            text = "http://" + MdnsResponder.HOST + ":" + PORT + "  •  " + ip.getHostAddress() + ":" + PORT;
+            text = "http://" + ip.getHostAddress() + ":" + PORT + "  •  https://" + ip.getHostAddress() + ":" + HTTPS_PORT;
         } else {
             text = "Waiting for network connection... (auto-reconnecting)";
         }
@@ -126,9 +127,20 @@ public class ServerService extends Service {
 
     private void startServer() {
         try {
-            HttpServer s = new HttpServer(new WebApi(this, server));
-            server[0] = s;
-            s.start(PORT);
+            WebApi api = new WebApi(this, server);
+            HttpServer http = new HttpServer(api, null);
+            server[0] = http;
+            http.start(PORT);
+
+            try {
+                javax.net.ssl.SSLContext ssl = createSslContext();
+                if (ssl != null) {
+                    HttpServer https = new HttpServer(api, ssl);
+                    server[1] = https;
+                    https.start(HTTPS_PORT);
+                }
+            } catch (Throwable ignored) { }
+
             mdns = new MdnsResponder(this);
             mdns.start();
             registerNsd();
@@ -258,13 +270,31 @@ public class ServerService extends Service {
         }
     }
 
+    private javax.net.ssl.SSLContext createSslContext() {
+        try {
+            java.security.KeyStore ks = java.security.KeyStore.getInstance("PKCS12");
+            try (java.io.InputStream in = getAssets().open("keystore.p12")) {
+                ks.load(in, "nexshare".toCharArray());
+            }
+            javax.net.ssl.KeyManagerFactory kmf = javax.net.ssl.KeyManagerFactory.getInstance(javax.net.ssl.KeyManagerFactory.getDefaultAlgorithm());
+            kmf.init(ks, "nexshare".toCharArray());
+            javax.net.ssl.SSLContext sc = javax.net.ssl.SSLContext.getInstance("TLS");
+            sc.init(kmf.getKeyManagers(), null, null);
+            return sc;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
     @Override
     public void onDestroy() {
         running = false;
         unregisterNetworkMonitoring();
         AutoUpdater.get(this).stop();
         if (server[0] != null) server[0].stop();
+        if (server[1] != null) server[1].stop();
         server[0] = null;
+        server[1] = null;
         if (mdns != null) mdns.stop();
         TunnelManager.get(this).stop();
         DownloadManager.get(this).shutdown();

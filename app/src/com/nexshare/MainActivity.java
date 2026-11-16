@@ -464,13 +464,13 @@ public class MainActivity extends Activity {
         bg.setColor(on ? 0xFFE5484D : BLUE);
         toggle.setBackground(bg);
 
-        String host = "http://" + MdnsResponder.HOST + ":" + ServerService.PORT;
+        String host = "http://" + MdnsResponder.HOST + ":" + ServerService.PORT + "  |  https://" + MdnsResponder.HOST + ":" + ServerService.HTTPS_PORT;
         urlHost.setText(host);
-        urlHost.setTag(host);
+        urlHost.setTag("http://" + MdnsResponder.HOST + ":" + ServerService.PORT);
         if (ip != null) {
-            String ipUrl = "http://" + ip.getHostAddress() + ":" + ServerService.PORT;
+            String ipUrl = "http://" + ip.getHostAddress() + ":" + ServerService.PORT + "\nhttps://" + ip.getHostAddress() + ":" + ServerService.HTTPS_PORT;
             urlIp.setText(ipUrl);
-            urlIp.setTag(ipUrl);
+            urlIp.setTag("https://" + ip.getHostAddress() + ":" + ServerService.HTTPS_PORT);
         } else {
             urlIp.setText("Not connected to Wi-Fi / Hotspot");
             urlIp.setTag(null);
@@ -481,7 +481,7 @@ public class MainActivity extends Activity {
         boolean davOn = Settings.webdavEnabled(this);
         if (davSwitch != null) davSwitch.setChecked(davOn);
         if (davUrl != null) {
-            String dUrl = (ip != null ? "http://" + ip.getHostAddress() : "http://" + MdnsResponder.HOST) + ":" + ServerService.PORT + "/dav/";
+            String dUrl = (ip != null ? "https://" + ip.getHostAddress() + ":" + ServerService.HTTPS_PORT : "http://" + MdnsResponder.HOST + ":" + ServerService.PORT) + "/dav/";
             davUrl.setText(dUrl);
             davUrl.setTag(dUrl);
             davUrl.setAlpha(davOn && on ? 1f : 0.4f);

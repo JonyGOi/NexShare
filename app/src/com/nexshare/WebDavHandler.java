@@ -45,15 +45,22 @@ public class WebDavHandler implements HttpServer.Handler {
             return;
         }
 
-        // Authenticate with HTTP Basic
-        if (!authenticate(req, res)) {
+        // Allow OPTIONS unauthenticated so WebDAV clients (especially Windows Explorer / MiniRedir)
+        // can detect DAV capabilities and auth methods.
+        if ("OPTIONS".equals(req.method)) {
+            handleOptions(req, res);
             return;
         }
 
+        // Authenticate with HTTP Basic only if authentication is enabled in NexShare settings
+        if (Settings.authRequired(ctx)) {
+            if (!authenticate(req, res)) {
+                return;
+            }
+        }
+
         String m = req.method;
-        if ("OPTIONS".equals(m)) {
-            handleOptions(req, res);
-        } else if ("PROPFIND".equals(m)) {
+        if ("PROPFIND".equals(m)) {
             handlePropfind(req, res);
         } else if ("GET".equals(m)) {
             handleGet(req, res, false);
@@ -95,17 +102,16 @@ public class WebDavHandler implements HttpServer.Handler {
                     String user = creds.substring(0, colon).trim();
                     String pass = creds.substring(colon + 1);
 
-                    // Strip Windows machine/domain prefix (e.g. WORKGROUP\nexshare)
+                    // Strip Windows machine/domain prefix (e.g. WORKGROUP\nexshare, DESKTOP-XYZ\Jony)
                     int slash = user.lastIndexOf('\\');
                     if (slash >= 0) user = user.substring(slash + 1);
 
                     String currentPin = Settings.pin(ctx);
-                    boolean userMatches = user.equalsIgnoreCase("nexshare")
-                        || user.equalsIgnoreCase(Settings.username(ctx));
-                    boolean passMatches = currentPin.equals(pass)
-                        || (Settings.MODE_PASSWORD.equals(Settings.authMode(ctx)) && Settings.checkPassword(ctx, pass));
+                    boolean pinMatches = currentPin != null && currentPin.equals(pass);
+                    boolean passMatches = Settings.hasPassword(ctx) && Settings.checkPassword(ctx, pass);
 
-                    if (userMatches && passMatches) {
+                    // Accept login if PIN/password matches, regardless of what username Windows auto-fills
+                    if (pinMatches || passMatches) {
                         return true;
                     }
                 }
@@ -123,7 +129,7 @@ public class WebDavHandler implements HttpServer.Handler {
         String rel = davPath;
         if (rel.startsWith("/dav")) rel = rel.substring(4);
         if (rel.startsWith("/")) rel = rel.substring(1);
-        if (rel.isEmpty()) return storageRoot.getCanonicalFile();
+        if (rel.isEmpty() || rel.equals("/")) return storageRoot.getCanonicalFile();
 
         // Block path traversal attempts
         rel = rel.replace('\\', '/');
@@ -148,6 +154,8 @@ public class WebDavHandler implements HttpServer.Handler {
         res.header("DAV", "1, 2");
         res.header("MS-Author-Via", "DAV");
         res.header("Allow", "OPTIONS, GET, HEAD, PROPFIND, PUT, DELETE, MKCOL, MOVE, COPY, LOCK, UNLOCK, PROPPATCH");
+        res.header("Public", "OPTIONS, GET, HEAD, PROPFIND, PUT, DELETE, MKCOL, MOVE, COPY, LOCK, UNLOCK, PROPPATCH");
+        res.header("Accept-Ranges", "bytes");
         res.begin(200, null, 0);
     }
 
@@ -211,7 +219,7 @@ public class WebDavHandler implements HttpServer.Handler {
         if (f.isDirectory() && !href.endsWith("/")) href += "/";
 
         boolean isDir = f.isDirectory();
-        String name = (davPath.equals("/dav") || davPath.equals("/dav/")) ? "NexShare" : f.getName();
+        String name = (davPath.equals("/") || davPath.equals("/dav") || davPath.equals("/dav/")) ? "NexShare" : f.getName();
 
         xml.append("  <D:response>\n");
         xml.append("    <D:href>").append(href).append("</D:href>\n");

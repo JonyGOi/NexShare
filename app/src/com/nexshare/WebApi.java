@@ -80,11 +80,22 @@ public class WebApi implements HttpServer.Handler {
             webDavHandler.handle(req, res);
             return;
         }
-        if ("OPTIONS".equals(req.method) && (p.equals("/") || p.isEmpty())) {
-            if (Settings.webdavEnabled(ctx)) {
+        if (Settings.webdavEnabled(ctx)) {
+            String m = req.method;
+            if ("OPTIONS".equals(m) || "PROPFIND".equals(m) || "PROPPATCH".equals(m) ||
+                "MKCOL".equals(m) || "COPY".equals(m) || "MOVE".equals(m) ||
+                "LOCK".equals(m) || "UNLOCK".equals(m)) {
                 webDavHandler.handle(req, res);
                 return;
             }
+        }
+        if (p.equals("/api/cert")) {
+            serveCert(res);
+            return;
+        }
+        if (p.equals("/api/webdav/reg")) {
+            serveWebdavReg(res);
+            return;
         }
         if (!p.startsWith("/api/")) {
             serveAsset(p, res);
@@ -780,13 +791,41 @@ public class WebApi implements HttpServer.Handler {
 
     // ---------- webdav ----------
 
+    private void serveCert(HttpServer.Response res) throws IOException {
+        try (InputStream in = ctx.getAssets().open("nexshare.crt")) {
+            ByteArrayOutputStream bo = new ByteArrayOutputStream();
+            byte[] buf = new byte[4096];
+            int n;
+            while ((n = in.read(buf)) > 0) bo.write(buf, 0, n);
+            byte[] data = bo.toByteArray();
+            res.header("Content-Disposition", "attachment; filename=\"nexshare-ca.crt\"");
+            res.bytes(200, "application/x-x509-ca-cert", data);
+        } catch (Exception e) {
+            res.error(404, "certificate not found");
+        }
+    }
+
+    private void serveWebdavReg(HttpServer.Response res) throws IOException {
+        String reg = "Windows Registry Editor Version 5.00\r\n\r\n"
+            + "; Configuração WebDAV para o cliente nativo do Windows (WebClient)\r\n"
+            + "; Permite autenticação HTTP Basic sem SSL/HTTPS e eleva limite para 4GB\r\n\r\n"
+            + "[HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Services\\WebClient\\Parameters]\r\n"
+            + "\"BasicAuthLevel\"=dword:00000002\r\n"
+            + "\"FileSizeLimitInBytes\"=dword:ffffffff\r\n";
+        byte[] data = reg.getBytes(StandardCharsets.UTF_8);
+        res.header("Content-Disposition", "attachment; filename=\"windows-webdav.reg\"");
+        res.bytes(200, "application/octet-stream", data);
+    }
+
     private void webdavStatus(HttpServer.Response res) throws IOException {
         Inet4Address ip = MdnsResponder.lanAddress();
         String ipStr = ip != null ? ip.getHostAddress() : "";
         String url = ip != null ? "http://" + ipStr + ":" + ServerService.PORT + "/dav/" : "http://" + MdnsResponder.HOST + ":" + ServerService.PORT + "/dav/";
+        String httpsUrl = ip != null ? "https://" + ipStr + ":" + ServerService.HTTPS_PORT + "/dav/" : "https://" + MdnsResponder.HOST + ":" + ServerService.HTTPS_PORT + "/dav/";
         JSONObject o = new JSONObject();
         put(o, "enabled", Settings.webdavEnabled(ctx));
         put(o, "url", url);
+        put(o, "httpsUrl", httpsUrl);
         put(o, "user", "nexshare");
         put(o, "pin", Settings.pin(ctx));
         res.json(200, o.toString());
@@ -883,8 +922,13 @@ public class WebApi implements HttpServer.Handler {
         put(o, "ip", ip == null ? "" : ip.getHostAddress());
         put(o, "host", MdnsResponder.HOST);
         put(o, "port", ServerService.PORT);
-        HttpServer s = serverRef[0];
-        put(o, "connections", s == null ? 0 : s.activeConnections.get());
+        put(o, "httpsPort", ServerService.HTTPS_PORT);
+        put(o, "httpsEnabled", serverRef.length > 1 && serverRef[1] != null);
+        int conns = 0;
+        for (HttpServer s : serverRef) {
+            if (s != null) conns += s.activeConnections.get();
+        }
+        put(o, "connections", conns);
 
         ActivityManager am = (ActivityManager) ctx.getSystemService(Context.ACTIVITY_SERVICE);
         ActivityManager.MemoryInfo mi = new ActivityManager.MemoryInfo();

@@ -35,6 +35,7 @@ public class HttpServer {
         public String method;
         public String path;
         public String remote;
+        public boolean isSecure;
         public final Map<String, List<String>> query = new HashMap<>();
         public final Map<String, String> headers = new HashMap<>();
         public LimitedInputStream body;
@@ -165,19 +166,39 @@ public class HttpServer {
     }
 
     private final Handler handler;
+    private final javax.net.ssl.SSLContext sslContext;
     private ServerSocket server;
     private ExecutorService pool;
     private volatile boolean running;
     public final AtomicInteger activeConnections = new AtomicInteger();
 
     public HttpServer(Handler handler) {
-        this.handler = handler;
+        this(handler, null);
     }
 
-    public void start(int port) throws IOException {
-        server = new ServerSocket();
-        server.setReuseAddress(true);
-        server.bind(new InetSocketAddress(port), 64);
+    public HttpServer(Handler handler, javax.net.ssl.SSLContext sslContext) {
+        this.handler = handler;
+        this.sslContext = sslContext;
+    }
+
+    public boolean isSecure() {
+        return sslContext != null;
+    }
+
+    private ServerSocket createServerSocket(int port) throws IOException {
+        ServerSocket s;
+        if (sslContext != null) {
+            s = sslContext.getServerSocketFactory().createServerSocket();
+        } else {
+            s = new ServerSocket();
+        }
+        s.setReuseAddress(true);
+        s.bind(new InetSocketAddress(port), 64);
+        return s;
+    }
+
+    public void start(final int port) throws IOException {
+        server = createServerSocket(port);
         pool = Executors.newCachedThreadPool();
         running = true;
         Thread t = new Thread(new Runnable() {
@@ -196,9 +217,7 @@ public class HttpServer {
                             try {
                                 Thread.sleep(1000);
                                 if (!running) break;
-                                server = new ServerSocket();
-                                server.setReuseAddress(true);
-                                server.bind(new InetSocketAddress(port), 64);
+                                server = createServerSocket(port);
                             } catch (Exception ex) {
                                 try { Thread.sleep(2000); } catch (InterruptedException ignored) { }
                             }
@@ -206,7 +225,7 @@ public class HttpServer {
                     }
                 }
             }
-        }, "http-accept");
+        }, isSecure() ? "https-accept" : "http-accept");
         t.start();
     }
 
@@ -236,6 +255,7 @@ public class HttpServer {
                 Request req = new Request();
                 req.method = parts[0].toUpperCase(Locale.ROOT);
                 req.remote = remote;
+                req.isSecure = isSecure();
                 String target = parts[1];
                 int q = target.indexOf('?');
                 req.path = decode(q >= 0 ? target.substring(0, q) : target);
