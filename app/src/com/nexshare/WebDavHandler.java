@@ -253,8 +253,12 @@ public class WebDavHandler implements HttpServer.Handler {
         }
 
         if (f.isDirectory()) {
-            res.header("Allow", "OPTIONS, PROPFIND");
-            res.text(200, "text/plain; charset=utf-8", "Directory: " + f.getName() + " (use WebDAV PROPFIND)\n");
+            res.header("Allow", "OPTIONS, GET, HEAD, PROPFIND, PUT, DELETE, MKCOL, MOVE, COPY, LOCK, UNLOCK, PROPPATCH");
+            if (isHead) {
+                res.begin(200, "text/html; charset=utf-8", 0);
+                return;
+            }
+            renderHtmlDirectory(f, req.path, res);
             return;
         }
 
@@ -631,5 +635,104 @@ public class WebDavHandler implements HttpServer.Handler {
             }
         }
         return sb.toString();
+    }
+
+    private void renderHtmlDirectory(File dir, String reqPath, HttpServer.Response res) throws IOException {
+        String normPath = reqPath;
+        if (!normPath.endsWith("/")) normPath += "/";
+
+        StringBuilder html = new StringBuilder();
+        html.append("<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>NexShare WebDAV - ")
+            .append(xmlEscape(normPath))
+            .append("</title><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">")
+            .append("<style>")
+            .append("body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0f172a;color:#f8fafc;margin:0;padding:24px;line-height:1.5;}")
+            .append(".box{max-width:960px;margin:0 auto;background:#1e293b;border:1px solid #334155;border-radius:12px;padding:24px;box-shadow:0 10px 25px rgba(0,0,0,0.4);}")
+            .append("h1{margin-top:0;font-size:22px;display:flex;align-items:center;gap:10px;color:#38bdf8;}")
+            .append(".path{font-family:monospace;background:#0f172a;padding:8px 12px;border-radius:6px;border:1px solid #334155;word-break:break-all;margin-bottom:16px;color:#94a3b8;}")
+            .append(".banner{background:#0369a1;color:#f0f9ff;padding:12px 16px;border-radius:8px;margin-bottom:20px;font-size:14px;}")
+            .append(".banner a{color:#bae6fd;font-weight:600;}")
+            .append("table{width:100%;border-collapse:collapse;margin-top:10px;}")
+            .append("th,td{text-align:left;padding:10px 12px;border-bottom:1px solid #334155;}")
+            .append("th{background:#0f172a;color:#94a3b8;font-size:13px;text-transform:uppercase;letter-spacing:0.5px;}")
+            .append("tr:hover td{background:#273549;}")
+            .append("a{color:#38bdf8;text-decoration:none;word-break:break-all;}")
+            .append("a:hover{text-decoration:underline;}")
+            .append(".size{text-align:right;white-space:nowrap;font-family:monospace;color:#94a3b8;}")
+            .append(".date{white-space:nowrap;color:#64748b;font-size:13px;}")
+            .append(".icon{width:20px;display:inline-block;text-align:center;margin-right:6px;}")
+            .append(".btn{display:inline-block;background:#2563eb;color:#fff;padding:8px 16px;border-radius:6px;font-size:13px;font-weight:500;text-decoration:none;margin-right:8px;}")
+            .append(".btn:hover{background:#1d4ed8;text-decoration:none;}")
+            .append("</style></head><body>");
+
+        html.append("<div class=\"box\">");
+        html.append("<h1>📁 NexShare WebDAV</h1>");
+        html.append("<div class=\"path\">Current directory: ").append(xmlEscape(normPath)).append("</div>");
+
+        html.append("<div class=\"banner\">")
+            .append("💡 <strong>WebDAV Endpoint Active.</strong> To manage files with full desktop UI, open <a href=\"/\">NexShare Web Desktop</a>. ")
+            .append("To map as a Windows Drive, use <code>net use</code> or RaiDrive with username <code>nexshare</code> and your 6-digit PIN.")
+            .append("</div>");
+
+        html.append("<table><thead><tr><th>Name</th><th class=\"size\">Size</th><th class=\"date\">Modified</th></tr></thead><tbody>");
+
+        // Parent directory link if not root
+        if (!normPath.equals("/dav/")) {
+            String parentPath = normPath.substring(0, normPath.length() - 1);
+            int lastSlash = parentPath.lastIndexOf('/');
+            if (lastSlash >= 4) {
+                String parentUrl = parentPath.substring(0, lastSlash + 1);
+                html.append("<tr><td><span class=\"icon\">⬆️</span><a href=\"").append(xmlEscape(encodeUriPath(parentUrl))).append("\">.. (Parent Directory)</a></td><td class=\"size\">-</td><td class=\"date\">-</td></tr>");
+            }
+        }
+
+        File[] files = dir.listFiles();
+        if (files != null) {
+            Arrays.sort(files, new Comparator<File>() {
+                @Override
+                public int compare(File a, File b) {
+                    if (a.isDirectory() != b.isDirectory()) {
+                        return a.isDirectory() ? -1 : 1;
+                    }
+                    return a.getName().compareToIgnoreCase(b.getName());
+                }
+            });
+
+            SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US);
+            for (File file : files) {
+                boolean isDir = file.isDirectory();
+                String name = file.getName();
+                String itemHref = encodeUriPath(normPath + name + (isDir ? "/" : ""));
+                String icon = isDir ? "📁" : "📄";
+                String sizeStr = isDir ? "-" : formatSize(file.length());
+                String dateStr = sdf.format(new Date(file.lastModified()));
+
+                html.append("<tr>")
+                    .append("<td><span class=\"icon\">").append(icon).append("</span>")
+                    .append("<a href=\"").append(xmlEscape(itemHref)).append("\">").append(xmlEscape(name)).append(isDir ? "/" : "").append("</a></td>")
+                    .append("<td class=\"size\">").append(sizeStr).append("</td>")
+                    .append("<td class=\"date\">").append(dateStr).append("</td>")
+                    .append("</tr>");
+            }
+        }
+
+        html.append("</tbody></table>");
+        html.append("<div style=\"margin-top:24px;text-align:right;\">")
+            .append("<a class=\"btn\" href=\"/\">Open Web Desktop</a>")
+            .append("</div>");
+        html.append("</div></body></html>");
+
+        byte[] bytes = html.toString().getBytes(StandardCharsets.UTF_8);
+        res.header("Content-Type", "text/html; charset=utf-8");
+        OutputStream out = res.begin(200, "text/html; charset=utf-8", bytes.length);
+        out.write(bytes);
+        out.flush();
+    }
+
+    private static String formatSize(long bytes) {
+        if (bytes < 1024) return bytes + " B";
+        int exp = (int) (Math.log(bytes) / Math.log(1024));
+        String pre = "KMGTPE".charAt(exp - 1) + "";
+        return String.format(Locale.US, "%.1f %sB", bytes / Math.pow(1024, exp), pre);
     }
 }
