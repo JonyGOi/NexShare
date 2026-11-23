@@ -42,7 +42,7 @@ public class MainActivity extends Activity {
     private Switch davSwitch;
     private Switch tunSwitch;
     private TextView tunStatus, tunUrl, tunDav, tunDesc;
-    private Button tunCopy, tunShare;
+    private Button tunCopy, tunShare, tunDiag;
     private RadioGroup authGroup;
     private LinearLayout authDetail;
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -266,6 +266,12 @@ public class MainActivity extends Activity {
             Toast.makeText(this, "WebDAV URL copied", Toast.LENGTH_SHORT).show();
         });
         tunCard.addView(tunDav);
+
+        tunDiag = new Button(this);
+        tunDiag.setAllCaps(false);
+        tunDiag.setText("Tunnel diagnostics");
+        tunDiag.setOnClickListener(v -> showTunnelDiagnostics());
+        tunCard.addView(tunDiag);
 
         tunDesc = text("Works from anywhere (schools, restricted networks, 4G/5G) without opening router ports. With WebDAV on, you also get a public HTTPS network-drive URL.", 12, 0xFF8A96A3, false);
         tunDesc.setPadding(0, dp(6), 0, 0);
@@ -491,6 +497,35 @@ public class MainActivity extends Activity {
         }
     }
 
+    /** Shows what the tunnel preflight found (binary, DNS, reachability) plus the last log lines. */
+    private void showTunnelDiagnostics() {
+        TunnelManager tm = TunnelManager.get(this);
+        StringBuilder sb = new StringBuilder();
+        try {
+            org.json.JSONObject d = tm.diagnose();
+            sb.append("cloudflared: ").append(d.optBoolean("supported") ? "ok" : "ausente").append(" (")
+              .append(d.optString("arch", "?")).append(")\n")
+              .append("Executável: ").append(d.optBoolean("executable") ? "sim" : "não").append("\n")
+              .append("Internet: ").append(d.optBoolean("internet") ? "sim" : "NÃO").append("\n")
+              .append("DNS do celular: ").append(d.optString("dns", "-")).append("\n")
+              .append("api.trycloudflare.com: ").append(d.optString("api", "-")).append("\n")
+              .append("region1.v2.argotunnel.com: ").append(d.optString("edge", "-")).append("\n")
+              .append("Estado: ").append(d.optString("state", "-")).append(" · tentativa ")
+              .append(d.optInt("attempt", 0) + 1).append("/3\n");
+            String why = d.optString("explain", "");
+            if (!why.isEmpty()) sb.append("\nDiagnóstico: ").append(why).append("\n");
+        } catch (Exception e) {
+            sb.append("Falha no diagnóstico: ").append(e.getMessage()).append("\n");
+        }
+        String logs = tm.logTail();
+        if (logs != null && !logs.isEmpty()) sb.append("\nÚltimos logs:\n").append(logs);
+        new android.app.AlertDialog.Builder(this)
+            .setTitle("Tunnel diagnostics")
+            .setMessage(sb.toString())
+            .setPositiveButton("Close", null)
+            .show();
+    }
+
     private void applyAuthModeAfter(Runnable r) {
         r.run();
         applyAuthMode();
@@ -616,7 +651,9 @@ public class MainActivity extends Activity {
                 tunShare.setVisibility(View.GONE);
                 if (tunDav != null) tunDav.setVisibility(View.GONE);
             } else if (ts == TunnelManager.State.ERROR) {
-                tunStatus.setText("Tunnel error: " + tm.error());
+                String why = tm.explain();
+                if (why == null || why.isEmpty()) why = tm.error();
+                tunStatus.setText("⚠ " + why);
                 tunStatus.setTextColor(0xFFE5484D);
                 tunUrl.setVisibility(View.GONE);
                 tunCopy.setVisibility(View.GONE);

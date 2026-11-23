@@ -112,6 +112,23 @@ ports and plain-HTTP WebDAV. In that case **do not** try to reach the phone by I
 The public URL changes every time a *Quick Tunnel* restarts; use a named tunnel with your
 own domain if you need a stable address.
 
+### Cloudflare tunnel troubleshooting
+
+The app now preflights and self-heals, but these are the usual mix-ups:
+
+| Symptom | What it means | Fix |
+|---|---|---|
+| `Provided Tunnel token is not valid` | You pasted an **API Token**, a tunnel **UUID**, or the dashboard URL instead of the connector token | Zero Trust → Networks → Tunnels → *your tunnel* → **Configure** → **Install connector**: copy only the text after `--token` (it starts with `eyJh` and is long) |
+| Named tunnel connects but the link does not open | The tunnel has no **Public hostname** route | In the tunnel's *Public hostnames*, add `nas.yourdomain.com` → `http://localhost:8080`, then type `nas.yourdomain.com` in the *Domínio público* field |
+| Stuck on "Connecting…" then timeout | Network blocks **QUIC/UDP 7844** (typical on campus/corporate Wi-Fi) | Nothing to do — NexShare retries automatically over **HTTP/2 (443) + IPv4**; the panel shows *tentativa 2/3* |
+| `failed to resolve any edge addresses` / `lookup … :53` | Android has no `/etc/resolv.conf`, so the static cloudflared binary needs the phone's DNS | Already handled: the phone's DNS servers are passed via `TUNNEL_DNS_RESOLVER_ADDRS`; 3rd attempt uses 1.1.1.1/8.8.8.8. Disable Private DNS/VPN if it still fails |
+| `failed to request quick Tunnel` / `429` | Cloudflare rate-limited throwaway tunnels | Wait a minute, or use a named tunnel |
+| Logs say `flag provided but not defined` | Older binary/CLI mismatch | Update the APK |
+
+Use **Remote Access → Testar conexão / diagnóstico** (web) or **Tunnel diagnostics** (Android)
+to see binary/arch, internet, the phone's DNS servers, reachability of
+`api.trycloudflare.com` and `region1.v2.argotunnel.com`, the current attempt and the last logs.
+
 ## Download
 
 Grab the APK for your edition from the [Releases](../../releases) page:

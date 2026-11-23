@@ -175,6 +175,7 @@ public class WebApi implements HttpServer.Handler {
             case "/api/tunnel/status": tunnelStatus(res); break;
             case "/api/tunnel/start": tunnelStart(req, res); break;
             case "/api/tunnel/stop": TunnelManager.get(ctx).stop(); Settings.setTunnel(ctx, "off", Settings.tunnelToken(ctx)); tunnelStatus(res); break;
+            case "/api/tunnel/diagnose": res.json(200, TunnelManager.get(ctx).diagnose().toString()); break;
             case "/api/dl/list": dlList(res); break;
             case "/api/dl/add": dlAdd(req, res); break;
             case "/api/dl/torrent": dlTorrent(req, res); break;
@@ -859,6 +860,9 @@ public class WebApi implements HttpServer.Handler {
         put(o, "error", tm.error());
         put(o, "mode", Settings.tunnelMode(ctx));
         put(o, "hasToken", !Settings.tunnelToken(ctx).isEmpty());
+        put(o, "host", Settings.tunnelHost(ctx));
+        put(o, "explain", tm.explain());
+        put(o, "attempt", tm.attempt());
         put(o, "log", tm.logTail());
         res.json(200, o.toString());
     }
@@ -873,10 +877,14 @@ public class WebApi implements HttpServer.Handler {
         }
         String mode = b.optString("mode", "quick");
         String token = b.optString("token", Settings.tunnelToken(ctx));
+        String host = b.has("host") ? b.optString("host", "") : Settings.tunnelHost(ctx);
         // Exposing the files to the internet without a PIN would be reckless: turn it on.
         Settings.requireLogin(ctx);
         try {
-            TunnelManager.get(ctx).start(mode, token);
+            TunnelManager.get(ctx).start(mode, token, host);
+        } catch (IllegalArgumentException e) {
+            res.error(400, e.getMessage());
+            return;
         } catch (Exception e) {
             res.error(500, e.getMessage());
             return;

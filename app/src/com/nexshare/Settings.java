@@ -187,6 +187,23 @@ public final class Settings {
         return prefs(c).getString("tunnelToken", "");
     }
 
+    /** Public hostname of a named tunnel (e.g. nas.example.com), used to show the real URL. */
+    public static String tunnelHost(Context c) {
+        return prefs(c).getString("tunnelHost", "");
+    }
+
+    public static void setTunnelHost(Context c, String host) {
+        if (host == null) return;
+        host = host.trim().toLowerCase(Locale.ROOT);
+        if (host.startsWith("https://")) host = host.substring(8);
+        else if (host.startsWith("http://")) host = host.substring(7);
+        int slash = host.indexOf('/');
+        if (slash > 0) host = host.substring(0, slash);
+        if (host.endsWith(".")) host = host.substring(0, host.length() - 1);
+        if (host.contains(" ") || host.isEmpty()) return;
+        prefs(c).edit().putString("tunnelHost", host).apply();
+    }
+
     public static void setTunnel(Context c, String mode, String token) {
         prefs(c).edit().putString("tunnelMode", mode == null ? "off" : mode)
             .putString("tunnelToken", token == null ? "" : token).apply();

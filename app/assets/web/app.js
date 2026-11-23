@@ -1105,7 +1105,7 @@ function ControlPanel(body) {
         el('h3', { text: 'App Updates', style: { marginTop: 0 } }),
         el('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' } },
           el('div', null,
-            el('b', { text: `NexShare v${s.version || '1.6.0'}` }),
+            el('b', { text: `NexShare v${s.version || '1.6.1'}` }),
             el('span', { style: { marginLeft: '8px', fontSize: '11px', textTransform: 'uppercase', background: '#eef3fb', color: '#1e6fd9', padding: '2px 6px', borderRadius: '4px' }, text: (s.flavor || 'normal') + ' edition' })
           ),
           el('button', {
@@ -2472,14 +2472,19 @@ function RemoteAccess(body, win) {
   const urlLink = el('a', { class: 'mono', target: '_blank', style: { fontSize: '16px', color: 'var(--accent)', wordBreak: 'break-all' } });
   const copyBtn = el('button', { class: 'btn', onclick: () => copy(urlLink.href) }, icon('link'), ' Copiar Link');
   const davHint = el('div', { style: { display: 'none', marginTop: '10px', fontSize: '12px', color: 'var(--text-2)', lineHeight: 1.6 } });
+  const namedHint = el('div', { style: { display: 'none', marginTop: '8px', fontSize: '12px', color: '#b45309', lineHeight: 1.6 } },
+    el('b', { text: 'Dica: ' }), 'se o domínio não abrir, confira em Cloudflare → seu túnel → Public hostnames se existe uma rota apontando para http://localhost:8080 e preencha o domínio no campo acima.');
   urlBox.append(
     el('div', { style: { fontSize: '12px', color: 'var(--text-3)', marginBottom: '4px' }, text: 'Link Público (Acessível em qualquer lugar do mundo):' }),
     el('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' } }, urlLink, copyBtn),
-    davHint
+    davHint,
+    namedHint
   );
 
-  const errNotice = el('div', { class: 'notice danger', style: { display: 'none', margin: '12px 0 0', color: '#e5484d' } });
-  const statusCard = el('div', { class: 'card' }, statusRow, urlBox, errNotice);
+  const errNotice = el('div', { class: 'notice danger', style: { display: 'none', margin: '12px 0 0', color: '#e5484d', lineHeight: 1.55 } });
+  const errRaw = el('div', { class: 'mono', style: { display: 'none', margin: '6px 0 0', fontSize: '11px', color: 'var(--text-3)', wordBreak: 'break-word' } });
+  const progressNote = el('div', { style: { display: 'none', margin: '10px 0 0', fontSize: '12px', color: '#b45309' } });
+  const statusCard = el('div', { class: 'card' }, statusRow, progressNote, urlBox, errNotice, errRaw);
 
   const quickBtn = el('button', { class: 'btn primary', style: { fontSize: '14px', padding: '10px 16px' }, onclick: () => act('start', { mode: 'quick' }) }, icon('link'), ' ⚡ Conectar Quick Tunnel (Grátis / 1 Clique)');
   const stopBtn = el('button', { class: 'btn danger', style: { display: 'none' }, onclick: () => act('stop') }, icon('x'), ' Parar Túnel');
@@ -2493,11 +2498,18 @@ function RemoteAccess(body, win) {
   let userEdited = false;
   tokenInput.addEventListener('input', () => { userEdited = true; });
 
+  const hostInput = el('input', {
+    type: 'text',
+    placeholder: 'Domínio público (opcional): nas.seudominio.com',
+    style: { fontFamily: 'monospace', flex: '1', minWidth: '220px', padding: '8px 10px', borderRadius: '6px', border: '1px solid #cbd5e1' }
+  });
+  hostInput.value = (lastState && lastState.host) || '';
+
   const tokenBtn = el('button', {
     class: 'btn',
     onclick: () => {
       const val = tokenInput.value.trim();
-      act('start', { mode: 'named', token: val || undefined });
+      act('start', { mode: 'named', token: val || undefined, host: hostInput.value.trim() });
     }
   }, icon('link'), ' Conectar com Token');
 
@@ -2512,9 +2524,34 @@ function RemoteAccess(body, win) {
     el('div', { class: 'notice', style: { margin: '0 0 12px' }, text: 'O Quick Tunnel permite acessar o celular pela internet sem precisar criar conta, sem configurar portas e sem tokens. Funciona em faculdades, Wi-Fi institucional e redes móveis.' }),
     el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '16px' } }, quickBtn, stopBtn, reconnectBtn),
     el('h3', { text: 'Ou usar Domínio Próprio (Named Tunnel)' }),
-    el('div', { class: 'hint', style: { marginBottom: '8px' }, html: 'Cloudflare Zero Trust → Networks → Tunnels → Criar Túnel → Cole o token abaixo apontando para <span class="mono">http://localhost:' + (Stats.last ? Stats.last.port : 8080) + '</span>' }),
-    el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' } }, tokenInput, tokenBtn, clearTokenBtn)
+    el('div', { class: 'hint', style: { marginBottom: '8px', lineHeight: 1.6 }, html: 'Zero Trust → Networks → Tunnels → seu túnel → <b>Configure</b> → <b>Install connector</b>: copie só o texto depois de <span class="mono">--token</span> (começa com <span class="mono">eyJh</span>). Em <b>Public hostnames</b> aponte seu domínio para <span class="mono">http://localhost:' + (Stats.last ? Stats.last.port : 8080) + '</span> e informe o mesmo domínio abaixo.' }),
+    el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' } }, tokenInput, tokenBtn, clearTokenBtn),
+    el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center', marginTop: '8px' } }, hostInput),
+    el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '12px' } },
+      el('button', { class: 'btn', onclick: () => diagnose() }, icon('info'), ' Testar conexão / diagnóstico'))
   );
+
+  async function diagnose() {
+    try {
+      const d = await api('tunnel/diagnose');
+      const lines = [
+        'Binário: ' + (d.supported ? 'ok' : 'AUSENTE') + ' (' + (d.arch || '?') + ') ' + (d.binary || ''),
+        'Executável: ' + (d.executable ? 'sim' : 'não'),
+        'Internet: ' + (d.internet ? 'sim' : 'NÃO'),
+        'DNS do celular: ' + (d.dns || '-'),
+        'api.trycloudflare.com: ' + d.api,
+        'region1.v2.argotunnel.com: ' + d.edge,
+        'Estado: ' + d.state + ' (tentativa ' + (d.attempt || 0) + '/2)',
+        d.explain ? 'Diagnóstico: ' + d.explain : '',
+        d.error ? 'Último erro: ' + d.error : '',
+        '',
+        lastState && lastState.log ? lastState.log : '(sem logs)',
+      ].filter(x => x !== '');
+      logOpen = true;
+      logPre.textContent = lines.join('\n');
+      renderLogs();
+    } catch (e) { toast('Diagnóstico falhou: ' + e.message, 4000); }
+  }
 
   const logPre = el('pre', { class: 'mono', style: { display: 'none', marginTop: '10px', maxHeight: '220px', overflow: 'auto', background: '#0d1117', color: '#c9d1d9', padding: '12px', borderRadius: '8px', fontSize: '11px', whiteSpace: 'pre-wrap', userSelect: 'text' } });
   const logsCard = el('div', { class: 'card' },
@@ -2561,6 +2598,7 @@ function RemoteAccess(body, win) {
 
     if (connected && s.url) {
       urlBox.style.display = 'block';
+      namedHint.style.display = 'none';
       urlLink.href = s.url;
       urlLink.textContent = s.url;
       State.tunnelUrl = s.url;
@@ -2580,18 +2618,37 @@ function RemoteAccess(body, win) {
       urlLink.href = '#';
       urlLink.textContent = 'Conectado — acessível pelo domínio configurado no Cloudflare';
       davHint.style.display = 'none';
+      namedHint.style.display = 'block';
       State.tunnelUrl = '';
     } else {
       urlBox.style.display = 'none';
+      namedHint.style.display = 'none';
       State.tunnelUrl = '';
     }
 
-    if (isError && s.error) {
+    if (starting) {
+      progressNote.style.display = 'block';
+      const mode = (s.attempt || 0) === 0 ? 'automático (QUIC)' : (s.attempt === 1 ? 'HTTP/2' : 'HTTP/2 + IPv4 + DNS público');
+      progressNote.textContent = `Conectando… tentativa ${(s.attempt || 0) + 1}/3 · transporte ${mode}. Se a rede bloquear, o app troca de rota sozinho.`;
+    } else {
+      progressNote.style.display = 'none';
+    }
+
+    if (isError && (s.explain || s.error)) {
       errNotice.style.display = 'block';
-      errNotice.textContent = s.error;
+      errNotice.textContent = s.explain || s.error;
+      if (s.explain && s.error && s.explain !== s.error) {
+        errRaw.style.display = 'block';
+        errRaw.textContent = 'cloudflared: ' + s.error;
+      } else {
+        errRaw.style.display = 'none';
+      }
     } else {
       errNotice.style.display = 'none';
+      errRaw.style.display = 'none';
     }
+
+    if (s.host && document.activeElement !== hostInput) hostInput.value = s.host;
 
     quickBtn.disabled = !s.supported;
     tokenBtn.disabled = !s.supported;
