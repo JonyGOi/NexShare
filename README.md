@@ -48,10 +48,16 @@ root prompt.
 - **Download Station** — download from http/https links or BitTorrent
   (magnet links and `.torrent` files, via libtorrent4j) straight to the phone,
   with pause/resume, progress, speed and peers.
+- **Debrid Hub** — turn the phone into a tiny Real-Debrid. Paste a magnet and the
+  video starts streaming in seconds: the biggest video file is prioritised, pieces are
+  fetched sequentially, and playback throttles itself until the bytes being read are on
+  disk (VLC/browser play while the torrent downloads). Ships a Real-Debrid compatible
+  `/rest/1.0` API so Stremio addons, Kodi and VLC can use the phone as a debrid host.
 - **Remote Access (Cloudflare Tunnel)** — expose the server on the internet with one
   tap. Get a throwaway `https://<name>.trycloudflare.com` URL, or paste a named-tunnel
   token to bind your own domain. `cloudflared` is bundled (arm64 + arm), so no Termux
-  needed. Enabling a tunnel force-enables the PIN.
+  needed. Enabling a tunnel force-enables the PIN, and the app shows the public link
+  with Copy / Share buttons plus a public HTTPS WebDAV URL.
 - **Wallpaper** — generate NexOS-branded wallpapers and set them on the phone,
   or set any image in File Station as wallpaper.
 - **Always-on Background Service & Screen-Off Mode** — runs 24/7 in the background with partial wake lock and Wi-Fi lock so you can turn off the phone's screen completely without losing file transfers or network access. Automatically exempts from Doze mode (via root shell or 1-tap exemption dialog) and auto-starts on phone boot.
@@ -62,6 +68,49 @@ root prompt.
   Storage, battery.
 - Reachable at `nexshare.local` via a built-in mDNS responder, with IP fallback.
   Choose your login mode: none, a random 6-digit PIN, or username + password.
+
+## Debrid Hub (phone as a Real-Debrid)
+
+The **Debrid Hub** app in the web desktop turns magnet links into instant streaming:
+
+1. Open **Debrid Hub** → paste a magnet (or a `.torrent`/direct URL) → **Desbridar & Transmitir**.
+2. NexShare adds the torrent, waits for metadata, and prioritises the biggest video file
+   with a sequential piece range and piece deadlines.
+3. Pick a file and either **Assistir aqui** (in-browser player) or **Link VLC** and open it
+   in VLC/MPV/Kodi/Smart TV. Playback starts right away — the HTTP server writes only the
+   bytes already on disk and waits for the pieces being read, instead of serving zeros.
+
+Every link carries the device API key, so it keeps working after restarts.
+
+### Real-Debrid compatible API
+
+For clients that speak the Real-Debrid API (Stremio debrid addons, Torrentio-style
+resolvers, Kodi addons):
+
+| | |
+|---|---|
+| Base URL (LAN) | `http://<phone-ip>:8080/rest/1.0/` |
+| Base URL (internet) | `https://<name>.trycloudflare.com/rest/1.0/` |
+| API key | shown in Debrid Hub → *Usar no VLC / Stremio / Windows* |
+
+Send the key as `Authorization: Bearer <key>`, `X-Api-Key: <key>` or `?token=<key>`.
+Implemented endpoints: `/user`, `/torrents`, `/torrents/addMagnet`, `/torrents/addTorrent`,
+`/torrents/info/{id}`, `/torrents/selectFiles/{id}`, `/torrents/delete/{id}`,
+`/torrents/instantAvailability/{hash}`, `/unrestrict/link`, `/hosts/domains`, `/time/iso`.
+The API requires the same login as the rest of NexShare (PIN or username+password).
+
+## Remote access in restricted networks
+
+School, hotel and corporate Wi-Fi usually block device-to-device traffic, non-standard
+ports and plain-HTTP WebDAV. In that case **do not** try to reach the phone by IP:
+
+1. In the app, turn on **Remote Access / Internet (Cloudflare)** (or *Remote Access* in the
+   web Control Panel) and wait for `https://<name>.trycloudflare.com`.
+2. Use that HTTPS URL from any network — home, 4G/5G, faculty Wi-Fi. Nothing to port-forward.
+3. The same URL also serves `/dav/`, so Windows can mount it as a drive over TLS (see below).
+
+The public URL changes every time a *Quick Tunnel* restarts; use a named tunnel with your
+own domain if you need a stable address.
 
 ## Download
 
@@ -108,7 +157,11 @@ If you prefer not to install third-party software, you can use the built-in Wind
    Run `map-drive.ps1` in PowerShell as Administrator:
    ```powershell
    .\map-drive.ps1 -PhoneIP 192.168.1.100 -Pin 123456 -Drive Z:
+   # or through the tunnel:
+   .\map-drive.ps1 -Url https://<name>.trycloudflare.com/dav/ -Pin 123456
    ```
+   The script checks connectivity first, auto-picks a free drive letter and explains the
+   `net use` error code if mapping fails.
 
 2. **Manual Setup:**
    - Double-click `windows-webdav.reg` to set `BasicAuthLevel = 2` and `FileSizeLimitInBytes = 0xffffffff`.
@@ -129,12 +182,38 @@ You can also access the drive directly from Windows File Explorer or the Run dia
 ```
 *(Always use the phone's IP address instead of `nexshare.local` because Windows WebClient does not reliably resolve mDNS `.local` hostnames).*
 
+### 4. Windows says "network name cannot be found" (error 67)
+
+Error 67 from `net use` means Windows never got a usable WebDAV answer. In practice it is
+one of these, and the fixes are in order of reliability:
+
+| Cause | Fix |
+|---|---|
+| The network blocks peer-to-peer traffic or port 8080 | Use the public HTTPS tunnel URL (works on port 443) |
+| Windows refuses Basic auth over plain HTTP (default policy, no admin rights) | Use the HTTPS URL — Basic over TLS is allowed by default |
+| Windows does not trust the phone's self-signed certificate | Use the tunnel URL (public CA certificate) instead of `https://<ip>:8443` |
+| Stale credentials for the host | `net use * /delete /y` and retry |
+| WebClient service stopped | `Start-Service WebClient` (or run `map-drive.ps1` as admin) |
+
+With a tunnel running, the whole thing becomes one command — no registry, no admin:
+
+```powershell
+.\map-drive.ps1 -Url https://<name>.trycloudflare.com/dav/ -Pin 123456
+# or manually:
+net use Z: https://<name>.trycloudflare.com/dav/ /user:nexshare 123456 /persistent:no
+```
+
+The Control Panel and the Android app show this public WebDAV URL (tap to copy) whenever
+WebDAV and Remote Access are both on.
+
 ## Known limitations
 
-- **HTTP without encryption**: WebDAV runs over plain HTTP on your local Wi-Fi network. Always keep PIN protection enabled, especially on shared Wi-Fi networks.
+- **HTTP without encryption**: WebDAV runs over plain HTTP on your local Wi-Fi network. Always keep PIN protection enabled, especially on shared Wi-Fi networks. Over the internet always use the tunnel's HTTPS URL.
 - **No SMB**: Pure Java implementation without external native SMB/Samba libraries. WebDAV is used because it runs on standard HTTP/1.1 and integrates natively with Windows File Explorer.
 - **Windows WebClient file size limit**: The native Windows WebClient service has a hard architectural cap of 4 GB (`0xffffffff` bytes) for single file transfers over WebDAV. To transfer files larger than 4 GB, use **RaiDrive** or the NexShare web interface (File Station).
 - **Small files performance**: Because WebDAV issues HTTP round-trips for metadata (`PROPFIND`) on each file/folder, browsing directories with thousands of small files will be slower than a local disk.
+- **Tunnel limits**: Cloudflare Quick Tunnels are free but get a new random URL on every restart and cap request bodies (uploads over WebDAV) at 100 MB. Large downloads/streams are fine; for big uploads use the LAN or a named tunnel on your own domain.
+- **Debrid is local, not a cloud cache**: NexShare streams what the phone itself downloads from the swarm — it does not mirror files to a datacenter or unlock premium hosters. Speed and start-up time depend on seeders, and files stay on the phone until you delete them.
 
 ## Build from source (Windows)
 

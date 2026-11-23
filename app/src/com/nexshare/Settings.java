@@ -41,6 +41,14 @@ public final class Settings {
         return !MODE_NONE.equals(authMode(c));
     }
 
+    /**
+     * WebDAV and the Cloudflare tunnel expose storage beyond the local Wi-Fi, so they must never
+     * run with login disabled: switching them on forces PIN mode.
+     */
+    public static void requireLogin(Context c) {
+        if (MODE_NONE.equals(authMode(c))) setAuthMode(c, MODE_PIN);
+    }
+
     // Kept for existing callers; true when any login is required.
     public static boolean pinEnabled(Context c) {
         return authRequired(c);
@@ -141,6 +149,24 @@ public final class Settings {
         StringBuilder sb = new StringBuilder(b.length * 2);
         for (byte x : b) sb.append(String.format(Locale.ROOT, "%02x", x));
         return sb.toString();
+    }
+
+    // ---------- API key (Debrid REST + stream links) ----------
+
+    /** Persistent API key used by the Real-Debrid compatible API, Stremio/VLC links and remote clients. */
+    public static String apiKey(Context c) {
+        SharedPreferences p = prefs(c);
+        String k = p.getString("apiKey", null);
+        if (k == null || k.length() < 24) {
+            k = regenerateApiKey(c);
+        }
+        return k;
+    }
+
+    public static String regenerateApiKey(Context c) {
+        String k = randomHex(20);
+        prefs(c).edit().putString("apiKey", k).apply();
+        return k;
     }
 
     // ---------- misc ----------

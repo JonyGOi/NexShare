@@ -29,6 +29,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.RandomAccessFile;
 import java.net.Inet4Address;
+import java.net.URLDecoder;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
@@ -80,6 +81,17 @@ public class WebApi implements HttpServer.Handler {
             webDavHandler.handle(req, res);
             return;
         }
+        if (p.equals("/rest/1.0") || p.startsWith("/rest/1.0/")) {
+            // Real-Debrid compatible API: needs the API key (Bearer / X-Api-Key / ?token=) or a session cookie.
+            if (!authorized(req)) {
+                res.header("WWW-Authenticate", "Bearer realm=\"NexShare\"");
+                res.header("Access-Control-Allow-Origin", "*");
+                res.error(401, "bad_token");
+                return;
+            }
+            handleDebridRest(req, res);
+            return;
+        }
         if (Settings.webdavEnabled(ctx)) {
             String m = req.method;
             if ("OPTIONS".equals(m) || "PROPFIND".equals(m) || "PROPPATCH".equals(m) ||
@@ -111,7 +123,8 @@ public class WebApi implements HttpServer.Handler {
         }
         if (p.equals("/api/session")) {
             JSONObject o = new JSONObject();
-            put(o, "auth", authorized(req));
+            boolean isAuth = authorized(req);
+            put(o, "auth", isAuth);
             put(o, "pinRequired", Settings.authRequired(ctx));
             put(o, "authMode", Settings.authMode(ctx));
             put(o, "username", Settings.username(ctx));
@@ -120,6 +133,13 @@ public class WebApi implements HttpServer.Handler {
             put(o, "version", Flavor.VERSION);
             put(o, "root", Flavor.ROOT && RootShell.available());
             put(o, "webdavEnabled", Settings.webdavEnabled(ctx));
+            if (isAuth) {
+                put(o, "token", getOrCreateStreamToken());
+                put(o, "apiKey", Settings.apiKey(ctx));
+                put(o, "tunnelUrl", tunnelPublicUrl());
+                put(o, "davUrl", davUrl(false));
+                put(o, "davHttpsUrl", davUrl(true));
+            }
             res.json(200, o.toString());
             return;
         }
@@ -162,6 +182,10 @@ public class WebApi implements HttpServer.Handler {
             case "/api/dl/resume": DownloadManager.get(ctx).resume(req.param("id")); dlList(res); break;
             case "/api/dl/remove": DownloadManager.get(ctx).remove(req.param("id"), "1".equals(req.param("files"))); dlList(res); break;
             case "/api/dl/clear": DownloadManager.get(ctx).clearFinished(); dlList(res); break;
+            case "/api/debrid/unrestrict": debridUnrestrict(req, res); break;
+            case "/api/debrid/files": debridFiles(req, res); break;
+            case "/api/debrid/prioritize": debridPrioritize(req, res); break;
+            case "/api/debrid/rotatekey": debridRotateKey(res); break;
             case "/api/update/check": checkUpdate(res); break;
             case "/api/update/install": installUpdate(req, res); break;
             case "/api/update/status": updateStatus(res); break;
@@ -174,8 +198,51 @@ public class WebApi implements HttpServer.Handler {
 
     private boolean authorized(HttpServer.Request req) {
         if (!Settings.authRequired(ctx)) return true;
+        String apiKey = Settings.apiKey(ctx);
+        String pin = Settings.pin(ctx);
+
         String t = req.cookie("ns_token");
-        return t != null && tokens.contains(t);
+        if (t != null && tokens.contains(t)) return true;
+
+        String paramToken = req.param("token");
+        if (paramToken == null) paramToken = req.param("t");
+        if (paramToken == null) paramToken = req.param("apikey");
+        if (paramToken != null && !paramToken.isEmpty()) {
+            if (tokens.contains(paramToken) || paramToken.equals(apiKey)) return true;
+            if (Settings.MODE_PIN.equals(Settings.authMode(ctx)) && paramToken.equals(pin)) return true;
+        }
+
+        String headerKey = req.header("x-api-key");
+        if (headerKey != null && headerKey.trim().equals(apiKey)) return true;
+
+        String authHeader = req.header("authorization");
+        if (authHeader != null) {
+            String ah = authHeader.trim();
+            if (ah.regionMatches(true, 0, "Bearer ", 0, 7)) {
+                String bearer = ah.substring(7).trim();
+                if (tokens.contains(bearer)) return true;
+                if (bearer.equals(apiKey)) return true;
+                if (Settings.MODE_PIN.equals(Settings.authMode(ctx)) && bearer.equals(pin)) return true;
+                if (Settings.MODE_PASSWORD.equals(Settings.authMode(ctx)) && Settings.checkPassword(ctx, bearer)) return true;
+            } else if (ah.regionMatches(true, 0, "Basic ", 0, 6)) {
+                try {
+                    String cred = new String(android.util.Base64.decode(ah.substring(6).trim(), android.util.Base64.DEFAULT), StandardCharsets.UTF_8);
+                    int colon = cred.indexOf(':');
+                    if (colon > 0) {
+                        String user = cred.substring(0, colon);
+                        String pass = cred.substring(colon + 1);
+                        String mode = Settings.authMode(ctx);
+                        if (pass.equals(apiKey)) return true;
+                        if (Settings.MODE_PASSWORD.equals(mode)) {
+                            if (user.equals(Settings.username(ctx)) && Settings.checkPassword(ctx, pass)) return true;
+                        } else {
+                            if (pass.equals(pin)) return true;
+                        }
+                    }
+                } catch (Exception ignored) { }
+            }
+        }
+        return false;
     }
 
     private void login(HttpServer.Request req, HttpServer.Response res) throws IOException {
@@ -219,7 +286,12 @@ public class WebApi implements HttpServer.Handler {
         String token = sb.toString();
         tokens.add(token);
         res.header("Set-Cookie", "ns_token=" + token + "; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000");
-        res.json(200, "{\"ok\":true}");
+        res.json(200, "{\"ok\":true,\"token\":\"" + token + "\"}");
+    }
+
+    /** Stable token for stream/API links. Rotating it invalidates every saved Stremio/VLC link. */
+    private String getOrCreateStreamToken() {
+        return Settings.apiKey(ctx);
     }
 
     // ---------- static ----------
@@ -438,28 +510,16 @@ public class WebApi implements HttpServer.Handler {
         OutputStream out = res.begin(partial ? 206 : 200, mime(f.getName()), Math.max(count, 0));
         if ("HEAD".equals(req.method) || len == 0) return;
         TransferTracker.onTransferStart();
+        DownloadManager.StreamRef stream = "1".equals(req.param("dl")) ? null : DownloadManager.get(ctx).locateTorrentFile(f);
         try {
             try (RandomAccessFile raf = new RandomAccessFile(f, "r")) {
                 raf.seek(start);
-                byte[] buf = new byte[65536];
-                long left = count;
-                while (left > 0) {
-                    int n = raf.read(buf, 0, (int) Math.min(buf.length, left));
-                    if (n < 0) break;
-                    out.write(buf, 0, n);
-                    left -= n;
-                }
+                InputStream in = java.nio.channels.Channels.newInputStream(raf.getChannel());
+                pumpFile(in, out, start, count, stream);
             } catch (IOException e) {
                 if (RootIo.isAvailable()) {
                     try (InputStream in = RootIo.openInputStream(f, start)) {
-                        byte[] buf = new byte[65536];
-                        long left = count;
-                        while (left > 0) {
-                            int n = in.read(buf, 0, (int) Math.min(buf.length, left));
-                            if (n < 0) break;
-                            out.write(buf, 0, n);
-                            left -= n;
-                        }
+                        pumpFile(in, out, start, count, stream);
                     }
                 } else {
                     throw e;
@@ -468,6 +528,41 @@ public class WebApi implements HttpServer.Handler {
         } finally {
             TransferTracker.onTransferEnd();
         }
+    }
+
+    /**
+     * Copies a byte range to the client. When the file belongs to a torrent that is still
+     * downloading, writes only what is already on disk and waits for the pieces being read,
+     * so VLC/the browser can start playback immediately (debrid-style streaming).
+     */
+    private void pumpFile(InputStream in, OutputStream out, long start, long count, DownloadManager.StreamRef ref) throws IOException {
+        long pos = start;
+        long left = count;
+        if (ref != null && ref.downloaded() - start >= count) ref = null; // whole range already on disk
+        long avail = ref == null ? Long.MAX_VALUE : ref.downloaded();
+        long stalledSince = 0;
+        byte[] buf = new byte[65536];
+        while (left > 0) {
+            int want = buf.length;
+            if (ref != null) {
+                long now = ref.downloaded();
+                if (now > avail) { avail = now; stalledSince = 0; }
+                long ready = avail - pos;
+                if (ready <= 0) {
+                    if (stalledSince == 0) stalledSince = System.currentTimeMillis();
+                    if (System.currentTimeMillis() - stalledSince > 60000) break; // stalled swarm: end the stream
+                    try { Thread.sleep(200); } catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
+                    continue;
+                }
+                want = (int) Math.min(want, ready);
+            }
+            int n = in.read(buf, 0, (int) Math.min(want, left));
+            if (n < 0) break;
+            out.write(buf, 0, n);
+            left -= n;
+            pos += n;
+        }
+        out.flush();
     }
 
     private void thumb(HttpServer.Request req, HttpServer.Response res) throws IOException {
@@ -779,7 +874,7 @@ public class WebApi implements HttpServer.Handler {
         String mode = b.optString("mode", "quick");
         String token = b.optString("token", Settings.tunnelToken(ctx));
         // Exposing the files to the internet without a PIN would be reckless: turn it on.
-        if (!Settings.pinEnabled(ctx)) Settings.setPinEnabled(ctx, true);
+        Settings.requireLogin(ctx);
         try {
             TunnelManager.get(ctx).start(mode, token);
         } catch (Exception e) {
@@ -817,15 +912,37 @@ public class WebApi implements HttpServer.Handler {
         res.bytes(200, "application/octet-stream", data);
     }
 
+    /** Public base URL when the Cloudflare tunnel is up ("" when only reachable on the LAN). */
+    private String tunnelPublicUrl() {
+        TunnelManager tm = TunnelManager.get(ctx);
+        String u = tm.url();
+        return (tm.state() == TunnelManager.State.CONNECTED && u != null && !u.isEmpty()) ? u : "";
+    }
+
+    private String lanHost() {
+        Inet4Address ip = MdnsResponder.lanAddress();
+        return ip != null ? ip.getHostAddress() : MdnsResponder.HOST;
+    }
+
+    /** WebDAV endpoint: the public HTTPS one wins when a tunnel is up (works on locked-down networks). */
+    private String davUrl(boolean https) {
+        String pub = tunnelPublicUrl();
+        if (!pub.isEmpty()) return pub + "/dav/";
+        return (https ? "https://" + lanHost() + ":" + ServerService.HTTPS_PORT
+                      : "http://" + lanHost() + ":" + ServerService.PORT) + "/dav/";
+    }
+
     private void webdavStatus(HttpServer.Response res) throws IOException {
         Inet4Address ip = MdnsResponder.lanAddress();
         String ipStr = ip != null ? ip.getHostAddress() : "";
         String url = ip != null ? "http://" + ipStr + ":" + ServerService.PORT + "/dav/" : "http://" + MdnsResponder.HOST + ":" + ServerService.PORT + "/dav/";
         String httpsUrl = ip != null ? "https://" + ipStr + ":" + ServerService.HTTPS_PORT + "/dav/" : "https://" + MdnsResponder.HOST + ":" + ServerService.HTTPS_PORT + "/dav/";
+        String pub = tunnelPublicUrl();
         JSONObject o = new JSONObject();
         put(o, "enabled", Settings.webdavEnabled(ctx));
         put(o, "url", url);
         put(o, "httpsUrl", httpsUrl);
+        put(o, "publicUrl", pub.isEmpty() ? JSONObject.NULL : pub + "/dav/");
         put(o, "user", Settings.authMode(ctx).equals("password") ? Settings.username(ctx) : "nexshare");
         put(o, "pin", Settings.pin(ctx));
         res.json(200, o.toString());
@@ -839,6 +956,7 @@ public class WebApi implements HttpServer.Handler {
             body = new JSONObject();
         }
         boolean enable = body.optBoolean("enabled", !Settings.webdavEnabled(ctx));
+        if (enable) Settings.requireLogin(ctx);
         Settings.setWebdavEnabled(ctx, enable);
         webdavStatus(res);
     }
@@ -1323,5 +1441,510 @@ public class WebApi implements HttpServer.Handler {
                 }
             }
         }, "update-install").start();
+    }
+
+    // ---------- debrid hub & real-debrid API ----------
+
+    private void handleDebridRest(HttpServer.Request req, HttpServer.Response res) throws IOException {
+        res.header("Access-Control-Allow-Origin", "*");
+        res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+        res.header("Access-Control-Allow-Headers", "*");
+        if ("OPTIONS".equals(req.method)) {
+            res.json(200, "{}");
+            return;
+        }
+
+        String p = req.path;
+        String token = getOrCreateStreamToken();
+        String host = req.header("host");
+        String proto = req.isSecure ? "https" : "http";
+        String baseUrl = proto + "://" + (host != null ? host : (MdnsResponder.HOST + ":" + ServerService.PORT));
+        String tunnel = tunnelPublicUrl();
+        String remoteUrl = tunnel.isEmpty() ? baseUrl : tunnel;
+
+        DownloadManager dm = DownloadManager.get(ctx);
+        TorrentEngine te = dm.torrentEngine();
+
+        if (p.equals("/rest/1.0/user")) {
+            JSONObject u = new JSONObject();
+            put(u, "id", 1);
+            put(u, "username", Settings.authMode(ctx).equals(Settings.MODE_PASSWORD) ? Settings.username(ctx) : "nexshare");
+            put(u, "email", "nexshare@local");
+            put(u, "points", 1000);
+            put(u, "locale", "en");
+            put(u, "avatar", "");
+            put(u, "type", "premium");
+            put(u, "premium", 9999999999L);
+            put(u, "expiration", "2039-12-31T23:59:59.000Z");
+            res.json(200, u.toString());
+            return;
+        }
+
+        if (p.startsWith("/rest/1.0/torrents/instantAvailability")) {
+            String rest = p.substring("/rest/1.0/torrents/instantAvailability".length()).replaceAll("^/+", "");
+            JSONObject root = new JSONObject();
+            for (String rawHash : rest.split("[/,]")) {
+                String hash = rawHash.trim().toLowerCase(Locale.ROOT);
+                if (hash.isEmpty()) continue;
+                DownloadManager.Task t = dm.findByHash(hash);
+                if (t != null) {
+                    JSONObject rd = new JSONObject();
+                    JSONArray arr = new JSONArray();
+                    JSONArray variants = new JSONArray();
+                    JSONObject fObj = new JSONObject();
+                    put(fObj, "filename", t.name);
+                    put(fObj, "filesize", t.total > 0 ? t.total : 1000000L);
+                    variants.put(fObj);
+                    put(rd, "rd", variants);
+                    arr.put(rd);
+                    put(root, hash, arr);
+                } else {
+                    put(root, hash, new JSONObject());
+                }
+            }
+            res.json(200, root.toString());
+            return;
+        }
+
+        if (p.equals("/rest/1.0/hosts/domains")) {
+            JSONObject hosts = new JSONObject();
+            JSONArray supported = new JSONArray();
+            supported.put("nexshare");
+            supported.put("torrent");
+            put(hosts, "hosts", supported);
+            res.json(200, hosts.toString());
+            return;
+        }
+
+        if (p.equals("/rest/1.0/time/iso")) {
+            res.text(200, "text/plain", isoNow());
+            return;
+        }
+
+        if (p.equals("/rest/1.0/torrents")) {
+            List<DownloadManager.Task> tasks = dm.getTorrentTasks();
+            JSONArray arr = new JSONArray();
+            for (DownloadManager.Task t : tasks) {
+                JSONObject o = new JSONObject();
+                put(o, "id", t.id);
+                put(o, "filename", t.name);
+                put(o, "original_filename", t.name);
+                put(o, "hash", t.hash != null ? t.hash.toLowerCase(Locale.ROOT) : "");
+                put(o, "bytes", t.total > 0 ? t.total : 0L);
+                put(o, "original_bytes", t.total > 0 ? t.total : 0L);
+                put(o, "host", "nexshare");
+                put(o, "split", 2000);
+                put(o, "progress", t.total > 0 ? Math.min(100.0, (t.done * 100.0) / t.total) : 0);
+                put(o, "status", ("done".equals(t.status) || "seeding".equals(t.status)) ? "downloaded" : "downloading");
+                put(o, "added", HttpServer.httpDate(t.created));
+                put(o, "speed", t.speed);
+                put(o, "seeders", t.seeds);
+
+                JSONArray links = new JSONArray();
+                if (te != null) {
+                    List<JSONObject> files = te.listFiles(t);
+                    for (int i = 0; i < files.size(); i++) {
+                        links.put(remoteUrl + "/rest/1.0/unrestrict/link?id=" + t.id + "&file=" + i);
+                    }
+                }
+                put(o, "links", links);
+                arr.put(o);
+            }
+            res.json(200, arr.toString());
+            return;
+        }
+
+        if (p.equals("/rest/1.0/torrents/addMagnet")) {
+            String magnet = req.param("magnet");
+            if (magnet == null || magnet.isEmpty()) {
+                String body = req.bodyString(65536);
+                if (body != null) {
+                    if (body.startsWith("magnet:")) magnet = body.trim();
+                    else if (body.contains("magnet=")) {
+                        int idx = body.indexOf("magnet=");
+                        magnet = URLDecoder.decode(body.substring(idx + 7).split("&")[0], "UTF-8");
+                    } else {
+                        try {
+                            JSONObject b = new JSONObject(body);
+                            magnet = b.optString("magnet");
+                        } catch (Exception ignored) { }
+                    }
+                }
+            }
+            if (magnet == null || !magnet.startsWith("magnet:")) {
+                res.error(400, "invalid magnet link");
+                return;
+            }
+            String hash = magnetHash(magnet);
+            DownloadManager.Task existing = dm.findByHash(hash);
+            if (existing != null) {
+                JSONObject o = new JSONObject();
+                put(o, "id", existing.id);
+                put(o, "uri", "/rest/1.0/torrents/info/" + existing.id);
+                res.json(200, o.toString());
+                return;
+            }
+            DownloadManager.Task t = dm.addUrl(magnet, DownloadManager.defaultDir());
+            if (te != null) te.autoPrioritize(t);
+            JSONObject o = new JSONObject();
+            put(o, "id", t.id);
+            put(o, "uri", "/rest/1.0/torrents/info/" + t.id);
+            res.json(200, o.toString());
+            return;
+        }
+
+        if (p.equals("/rest/1.0/torrents/addTorrent")) {
+            byte[] torrentBytes = req.bodyBytes();
+            if (torrentBytes == null || torrentBytes.length == 0) {
+                res.error(400, "empty torrent body");
+                return;
+            }
+            DownloadManager.Task t = dm.addTorrent(null, torrentBytes, DownloadManager.defaultDir());
+            if (te != null) te.autoPrioritize(t);
+            JSONObject o = new JSONObject();
+            put(o, "id", t.id);
+            put(o, "uri", "/rest/1.0/torrents/info/" + t.id);
+            res.json(200, o.toString());
+            return;
+        }
+
+        if (p.startsWith("/rest/1.0/torrents/info/")) {
+            String id = p.substring("/rest/1.0/torrents/info/".length()).trim();
+            DownloadManager.Task t = dm.getTask(id);
+            if (t == null) {
+                res.error(404, "torrent not found");
+                return;
+            }
+            JSONObject o = new JSONObject();
+            put(o, "id", t.id);
+            put(o, "filename", t.name);
+            put(o, "original_filename", t.name);
+            put(o, "hash", t.hash != null ? t.hash.toLowerCase(Locale.ROOT) : "");
+            put(o, "bytes", t.total > 0 ? t.total : 0L);
+            put(o, "original_bytes", t.total > 0 ? t.total : 0L);
+            put(o, "host", "nexshare");
+            put(o, "split", 2000);
+            put(o, "progress", t.total > 0 ? Math.min(100.0, (t.done * 100.0) / t.total) : 0);
+            put(o, "status", ("done".equals(t.status) || "seeding".equals(t.status)) ? "downloaded" : "downloading");
+            put(o, "added", HttpServer.httpDate(t.created));
+            put(o, "speed", t.speed);
+            put(o, "seeders", t.seeds);
+
+            JSONArray filesArr = new JSONArray();
+            JSONArray linksArr = new JSONArray();
+            if (te != null) {
+                List<JSONObject> fList = te.listFiles(t);
+                for (int i = 0; i < fList.size(); i++) {
+                    JSONObject fi = fList.get(i);
+                    JSONObject fo = new JSONObject();
+                    put(fo, "id", i + 1);
+                    put(fo, "path", "/" + fi.optString("path"));
+                    put(fo, "bytes", fi.optLong("size"));
+                    put(fo, "selected", 1);
+                    filesArr.put(fo);
+                    linksArr.put(remoteUrl + "/rest/1.0/unrestrict/link?id=" + t.id + "&file=" + i);
+                }
+            }
+            put(o, "files", filesArr);
+            put(o, "links", linksArr);
+            res.json(200, o.toString());
+            return;
+        }
+
+        if (p.startsWith("/rest/1.0/torrents/selectFiles/")) {
+            String id = p.substring("/rest/1.0/torrents/selectFiles/".length()).trim();
+            DownloadManager.Task t = dm.getTask(id);
+            if (t != null && te != null) {
+                String sel = req.param("files");
+                if (sel == null) {
+                    String body = req.bodyString(65536);
+                    if (body != null) {
+                        for (String part : body.split("&")) {
+                            int eq = part.indexOf('=');
+                            if (eq > 0 && "files".equals(part.substring(0, eq).trim())) {
+                                sel = URLDecoder.decode(part.substring(eq + 1), "UTF-8");
+                                break;
+                            }
+                        }
+                        if (sel == null && body.startsWith("magnet:")) sel = "0";
+                    }
+                }
+                sel = sel == null ? "" : sel.trim();
+                if (sel.isEmpty() || "all".equalsIgnoreCase(sel)) {
+                    te.clearPriority(t);
+                } else {
+                    String[] parts = sel.split(",");
+                    int first = -1;
+                    for (String part : parts) {
+                        try {
+                            int idx = Integer.parseInt(part.trim());
+                            // Real-Debrid file ids are 1-based; NexShare indexes files from 0.
+                            te.prioritizeFile(t, Math.max(0, idx - 1));
+                            if (first < 0) first = Math.max(0, idx - 1);
+                        } catch (NumberFormatException ignored) { }
+                    }
+                    if (first > 0) te.prioritizeFile(t, first);
+                }
+            }
+            res.json(200, "{\"status\":\"ok\"}");
+            return;
+        }
+
+        if (p.startsWith("/rest/1.0/torrents/delete/")) {
+            String id = p.substring("/rest/1.0/torrents/delete/".length()).trim();
+            if (id.isEmpty()) id = req.param("id");
+            if (id != null) dm.remove(id, false);
+            res.json(200, "{\"status\":\"ok\"}");
+            return;
+        }
+
+        if (p.equals("/rest/1.0/unrestrict/link")) {
+            String taskId = req.param("id");
+            int fileIdx = 0;
+            try { fileIdx = Integer.parseInt(req.param("file")); } catch (Exception ignored) { }
+
+            if (taskId == null || taskId.isEmpty()) {
+                String link = req.param("link");
+                if (link == null) {
+                    String b = req.bodyString(4096);
+                    if (b != null && b.contains("link=")) {
+                        link = URLDecoder.decode(b.substring(b.indexOf("link=") + 5).split("&")[0], "UTF-8");
+                    }
+                }
+                if (link != null && link.contains("id=")) {
+                    int idIdx = link.indexOf("id=");
+                    taskId = link.substring(idIdx + 3).split("&")[0];
+                    if (link.contains("file=")) {
+                        try {
+                            fileIdx = Integer.parseInt(link.substring(link.indexOf("file=") + 5).split("&")[0]);
+                        } catch (Exception ignored) { }
+                    }
+                }
+            }
+
+            DownloadManager.Task t = taskId != null ? dm.getTask(taskId) : null;
+            if (t == null) {
+                List<DownloadManager.Task> list = dm.getTorrentTasks();
+                if (!list.isEmpty()) t = list.get(0);
+            }
+
+            if (t == null) {
+                res.error(404, "torrent not found");
+                return;
+            }
+
+            if (te != null) te.prioritizeFile(t, fileIdx);
+
+            String fileName = t.name;
+            String streamUrl;
+            if ("http".equals(t.type)) {
+                streamUrl = t.url;
+            } else {
+                String filePath = t.name;
+                if (te != null) {
+                    List<JSONObject> fList = te.listFiles(t);
+                    if (fileIdx >= 0 && fileIdx < fList.size()) {
+                        JSONObject fi = fList.get(fileIdx);
+                        filePath = fi.optString("path", t.name);
+                        fileName = fi.optString("name", t.name);
+                    }
+                }
+                File targetFile = new File(new File(t.dest), filePath);
+                String streamPath = targetFile.getAbsolutePath();
+                // baseUrl = how the caller reached us (LAN or tunnel), so links keep working for them.
+                streamUrl = baseUrl + "/api/file?path=" + URLEncoder.encode(streamPath, "UTF-8") + "&token=" + token;
+            }
+
+            if ("GET".equals(req.method)) {
+                res.header("Location", streamUrl);
+                res.text(302, "text/plain", "Redirecting to stream: " + streamUrl);
+                return;
+            }
+
+            JSONObject out = new JSONObject();
+            put(out, "id", t.id + "_" + fileIdx);
+            put(out, "filename", fileName);
+            put(out, "mimeType", mime(fileName));
+            put(out, "filesize", t.total);
+            put(out, "link", streamUrl);
+            put(out, "host", "nexshare");
+            put(out, "download", streamUrl + "&dl=1");
+            put(out, "streamable", 1);
+            res.json(200, out.toString());
+            return;
+        }
+
+        res.error(404, "not found");
+    }
+
+    /** Extracts the info hash from a magnet URI (hex, or base32 on older links). */
+    static String magnetHash(String magnet) {
+        if (magnet == null) return null;
+        int idx = magnet.toLowerCase(Locale.ROOT).indexOf("urn:btih:");
+        if (idx < 0) return null;
+        int start = idx + 9;
+        int end = start;
+        while (end < magnet.length()) {
+            char c = magnet.charAt(end);
+            if (c == '&' || c == '?' || c == '#' || c == ' ') break;
+            end++;
+        }
+        String raw = magnet.substring(start, end).trim();
+        if (raw.length() == 40) return raw.toLowerCase(Locale.ROOT);
+        if (raw.length() == 32) {
+            // base32 -> hex
+            try {
+                String alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+                StringBuilder bits = new StringBuilder();
+                for (char c : raw.toUpperCase(Locale.ROOT).toCharArray()) {
+                    int v = alphabet.indexOf(c);
+                    if (v < 0) return raw.toLowerCase(Locale.ROOT);
+                    bits.append(String.format(Locale.ROOT, "%5s", Integer.toBinaryString(v)).replace(' ', '0'));
+                }
+                StringBuilder hex = new StringBuilder();
+                for (int i = 0; i + 4 <= bits.length() && hex.length() < 40; i += 4)
+                    hex.append(Character.forDigit(Integer.parseInt(bits.substring(i, i + 4), 2), 16));
+                return hex.toString();
+            } catch (Exception e) {
+                return raw.toLowerCase(Locale.ROOT);
+            }
+        }
+        return raw.toLowerCase(Locale.ROOT);
+    }
+
+    private static String isoNow() {
+        java.text.SimpleDateFormat f = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.ROOT);
+        f.setTimeZone(java.util.TimeZone.getTimeZone("UTC"));
+        return f.format(new java.util.Date());
+    }
+
+    private void debridUnrestrict(HttpServer.Request req, HttpServer.Response res) throws IOException {
+        JSONObject body;
+        try {
+            body = new JSONObject(req.bodyString(65536));
+        } catch (Exception e) {
+            res.error(400, "bad request");
+            return;
+        }
+        String magnet = body.optString("magnet", "").trim();
+        if (magnet.isEmpty()) magnet = body.optString("url", "").trim();
+        if (magnet.isEmpty()) {
+            res.error(400, "missing magnet link or url");
+            return;
+        }
+        File dest = dlDir(body.optString("dest", null));
+        DownloadManager dm = DownloadManager.get(ctx);
+        DownloadManager.Task t = dm.addUrl(magnet, dest);
+        TorrentEngine te = dm.torrentEngine();
+        if (te != null) te.autoPrioritize(t);
+
+        String token = getOrCreateStreamToken();
+        String host = req.header("host");
+        String proto = req.isSecure ? "https" : "http";
+        String baseUrl = proto + "://" + (host != null ? host : (MdnsResponder.HOST + ":" + ServerService.PORT));
+        String tunnel = tunnelPublicUrl();
+        String remoteUrl = tunnel.isEmpty() ? null : tunnel;
+
+        JSONObject o = new JSONObject();
+        put(o, "ok", true);
+        put(o, "task", t.toJson());
+        put(o, "token", token);
+        put(o, "baseUrl", baseUrl);
+        put(o, "remoteUrl", remoteUrl);
+
+        put(o, "files", debridFileList(t, te, baseUrl, remoteUrl, token));
+        res.json(200, o.toString());
+    }
+
+    private void debridFiles(HttpServer.Request req, HttpServer.Response res) throws IOException {
+        String id = req.param("id");
+        DownloadManager dm = DownloadManager.get(ctx);
+        DownloadManager.Task t = dm.getTask(id);
+        if (t == null) {
+            res.error(404, "task not found");
+            return;
+        }
+        TorrentEngine te = dm.torrentEngine();
+        String token = getOrCreateStreamToken();
+        String host = req.header("host");
+        String proto = req.isSecure ? "https" : "http";
+        String baseUrl = proto + "://" + (host != null ? host : (MdnsResponder.HOST + ":" + ServerService.PORT));
+        String tunnel = tunnelPublicUrl();
+        String remoteUrl = tunnel.isEmpty() ? null : tunnel;
+
+        JSONObject o = new JSONObject();
+        put(o, "task", t.toJson());
+        put(o, "token", token);
+        put(o, "baseUrl", baseUrl);
+        put(o, "remoteUrl", remoteUrl);
+
+        put(o, "files", debridFileList(t, te, baseUrl, remoteUrl, token));
+        res.json(200, o.toString());
+    }
+
+    /** File entries (with stream links) for a debrid task: torrent files or a direct http(s) url. */
+    private JSONArray debridFileList(DownloadManager.Task t, TorrentEngine te, String baseUrl, String remoteUrl, String token) {
+        JSONArray arr = new JSONArray();
+        if ("http".equals(t.type)) {
+            JSONObject fi = new JSONObject();
+            put(fi, "id", 0);
+            put(fi, "name", t.name);
+            put(fi, "path", t.name);
+            put(fi, "size", t.total);
+            put(fi, "done", t.done);
+            put(fi, "progress", t.total > 0 ? Math.min(100.0, (t.done * 100.0) / t.total) : 0);
+            put(fi, "streamUrl", t.url);
+            put(fi, "remoteStreamUrl", t.url);
+            put(fi, "fullPath", t.url);
+            arr.put(fi);
+            return arr;
+        }
+        if (te == null) return arr;
+        List<JSONObject> fList = te.listFiles(t);
+        File baseDir = new File(t.dest);
+        for (int i = 0; i < fList.size(); i++) {
+            JSONObject fi = fList.get(i);
+            File f = new File(baseDir, fi.optString("path"));
+            String fPath = f.getAbsolutePath();
+            String encoded;
+            try {
+                encoded = URLEncoder.encode(fPath, "UTF-8");
+            } catch (java.io.UnsupportedEncodingException e) {
+                encoded = fPath;
+            }
+            put(fi, "streamUrl", baseUrl + "/api/file?path=" + encoded + "&token=" + token);
+            put(fi, "remoteStreamUrl", remoteUrl != null ? remoteUrl + "/api/file?path=" + encoded + "&token=" + token : null);
+            put(fi, "fullPath", fPath);
+            arr.put(fi);
+        }
+        return arr;
+    }
+
+    /** Issues a new API key, invalidating every stream/API link shared so far. */
+    private void debridRotateKey(HttpServer.Response res) throws IOException {
+        String key = Settings.regenerateApiKey(ctx);
+        JSONObject o = new JSONObject();
+        put(o, "ok", true);
+        put(o, "apiKey", key);
+        res.json(200, o.toString());
+    }
+
+    private void debridPrioritize(HttpServer.Request req, HttpServer.Response res) throws IOException {
+        JSONObject body;
+        try {
+            body = new JSONObject(req.bodyString(4096));
+        } catch (Exception e) {
+            res.error(400, "bad request");
+            return;
+        }
+        String id = body.optString("id");
+        int fileIndex = body.optInt("fileIndex", 0);
+        DownloadManager dm = DownloadManager.get(ctx);
+        DownloadManager.Task t = dm.getTask(id);
+        if (t != null) {
+            TorrentEngine te = dm.torrentEngine();
+            if (te != null) te.prioritizeFile(t, fileIndex);
+        }
+        res.json(200, "{\"ok\":true}");
     }
 }

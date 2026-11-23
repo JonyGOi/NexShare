@@ -187,9 +187,9 @@ public class WebDavHandler implements HttpServer.Handler {
         boolean canDigest = (Settings.MODE_PASSWORD.equals(mode) && configuredPass != null) 
                          || (!Settings.MODE_PASSWORD.equals(mode) && currentPin != null);
         if (canDigest) {
-            res.header("WWW-Authenticate", "Digest realm=\"NexShare\", nonce=\"" + nonce + "\", qop=\"auth\", algorithm=MD5");
+            res.addHeader("WWW-Authenticate", "Digest realm=\"NexShare\", nonce=\"" + nonce + "\", qop=\"auth\", algorithm=MD5");
         }
-        res.header("WWW-Authenticate", "Basic realm=\"NexShare\", charset=\"UTF-8\"");
+        res.addHeader("WWW-Authenticate", "Basic realm=\"NexShare\", charset=\"UTF-8\"");
 
         String hint;
         if (Settings.MODE_PASSWORD.equals(mode)) {
@@ -358,6 +358,7 @@ public class WebDavHandler implements HttpServer.Handler {
         xml.append("        <D:getlastmodified>").append(HttpServer.httpDate(f.lastModified())).append("</D:getlastmodified>\n");
         xml.append("        <D:creationdate>").append(isoDate(f.lastModified())).append("</D:creationdate>\n");
         xml.append("        <D:getetag>\"").append(Long.toHexString(f.lastModified())).append('-').append(Long.toHexString(f.length())).append("\"</D:getetag>\n");
+        appendWindowsProps(xml, f.lastModified(), isDir);
 
         // Disk Quota (RFC 4331) for Windows Explorer capacity bar
         try {
@@ -373,6 +374,19 @@ public class WebDavHandler implements HttpServer.Handler {
         xml.append("      <D:status>HTTP/1.1 200 OK</D:status>\n");
         xml.append("    </D:propstat>\n");
         xml.append("  </D:response>\n");
+    }
+
+    /** Extra properties the Windows WebDAV redirector (MiniRedir) reads for File Explorer. */
+    private void appendWindowsProps(StringBuilder xml, long mtime, boolean isDir) {
+        xml.append("        <D:supportedlock><D:lockentry><D:lockscope><D:exclusive/></D:lockscope>")
+           .append("<D:locktype><D:write/></D:locktype></D:lockentry></D:supportedlock>\n");
+        xml.append("        <D:lockdiscovery/>\n");
+        // Windows only: 100ns ticks since 1601-01-01; lets Explorer show the real timestamps.
+        long winTime = (mtime + 11644473600000L) * 10000L;
+        xml.append("        <Win32:Win32LastModifiedTime xmlns:Win32=\"urn:schemas-microsoft-com:\">")
+           .append(winTime).append("</Win32:Win32LastModifiedTime>\n");
+        xml.append("        <Win32:Win32FileAttributes xmlns:Win32=\"urn:schemas-microsoft-com:\">")
+           .append(isDir ? "00000010" : "00000020").append("</Win32:Win32FileAttributes>\n");
     }
 
     private void appendResourcePropWithRoot(StringBuilder xml, File f, String davPath, RootIo.Entry re) {
@@ -398,6 +412,7 @@ public class WebDavHandler implements HttpServer.Handler {
         xml.append("        <D:getlastmodified>").append(HttpServer.httpDate(mtime)).append("</D:getlastmodified>\n");
         xml.append("        <D:creationdate>").append(isoDate(mtime)).append("</D:creationdate>\n");
         xml.append("        <D:getetag>\"").append(Long.toHexString(mtime)).append('-').append(Long.toHexString(re.size)).append("\"</D:getetag>\n");
+        appendWindowsProps(xml, mtime, re.isDir);
 
         try {
             StatFs st = new StatFs(storageRoot.getPath());

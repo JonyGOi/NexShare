@@ -40,6 +40,9 @@ public class MainActivity extends Activity {
     private TextView status, urlHost, urlIp, davUrl, davHint, permNote, bgStatus;
     private Button toggle, permBtn, bgBtn;
     private Switch davSwitch;
+    private Switch tunSwitch;
+    private TextView tunStatus, tunUrl, tunDav, tunDesc;
+    private Button tunCopy, tunShare;
     private RadioGroup authGroup;
     private LinearLayout authDetail;
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -168,7 +171,9 @@ public class MainActivity extends Activity {
         davSwitch.setTextSize(15);
         davSwitch.setChecked(Settings.webdavEnabled(this));
         davSwitch.setOnCheckedChangeListener((v, on) -> {
+            if (on) Settings.requireLogin(this);
             Settings.setWebdavEnabled(this, on);
+            applyAuthMode();
             refresh();
         });
         davCard.addView(davSwitch);
@@ -176,6 +181,95 @@ public class MainActivity extends Activity {
         davHint = text("", 12, 0xFF8A96A3, false);
         davHint.setPadding(0, dp(6), 0, 0);
         davCard.addView(davHint);
+
+        LinearLayout tunCard = card(body);
+        tunCard.addView(text("Remote Access / Internet (Cloudflare)", 15, 0xFF1D2733, true));
+        tunSwitch = new Switch(this);
+        tunSwitch.setText("Enable 1-Click Internet Tunnel");
+        tunSwitch.setTextSize(15);
+        tunSwitch.setChecked(TunnelManager.get(this).state() != TunnelManager.State.OFF);
+        tunCard.addView(tunSwitch);
+
+        tunStatus = text("", 13, 0xFF6B7785, false);
+        tunStatus.setPadding(0, dp(4), 0, 0);
+        tunCard.addView(tunStatus);
+
+        tunUrl = link(tunCard);
+        tunUrl.setVisibility(View.GONE);
+
+        LinearLayout tunBtns = new LinearLayout(this);
+        tunBtns.setOrientation(LinearLayout.HORIZONTAL);
+        tunBtns.setPadding(0, dp(6), 0, 0);
+
+        tunCopy = new Button(this);
+        tunCopy.setAllCaps(false);
+        tunCopy.setText("Copy Public Link");
+        tunCopy.setVisibility(View.GONE);
+        tunBtns.addView(tunCopy, new LinearLayout.LayoutParams(0, -2, 1f));
+
+        tunShare = new Button(this);
+        tunShare.setAllCaps(false);
+        tunShare.setText("Share");
+        tunShare.setVisibility(View.GONE);
+        LinearLayout.LayoutParams shareLp = new LinearLayout.LayoutParams(0, -2, 1f);
+        shareLp.setMarginStart(dp(8));
+        tunBtns.addView(tunShare, shareLp);
+        tunCard.addView(tunBtns);
+
+        tunSwitch.setOnCheckedChangeListener((btn, isChecked) -> {
+            if (isChecked) {
+                Settings.requireLogin(this);
+                applyAuthMode();
+                new Thread(() -> {
+                    try {
+                        // Reuse a saved named-tunnel token; otherwise a throwaway quick tunnel.
+                        String savedToken = Settings.tunnelToken(MainActivity.this);
+                        boolean named = savedToken != null && !savedToken.isEmpty();
+                        TunnelManager.get(MainActivity.this).start(named ? "named" : "quick", named ? savedToken : null);
+                    } catch (Exception e) {
+                        runOnUiThread(() -> Toast.makeText(MainActivity.this, "Error: " + e.getMessage(), Toast.LENGTH_LONG).show());
+                    }
+                }).start();
+            } else {
+                TunnelManager.get(MainActivity.this).stop();
+            }
+            refresh();
+        });
+
+        tunCopy.setOnClickListener(v -> {
+            String u = TunnelManager.get(MainActivity.this).url();
+            if (u != null && !u.isEmpty()) {
+                android.content.ClipboardManager cm = (android.content.ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("NexShare Public URL", u));
+                Toast.makeText(MainActivity.this, "Link copied: " + u, Toast.LENGTH_SHORT).show();
+            }
+        });
+
+        tunShare.setOnClickListener(v -> {
+            String u = TunnelManager.get(MainActivity.this).url();
+            if (u != null && !u.isEmpty()) {
+                Intent send = new Intent(Intent.ACTION_SEND);
+                send.setType("text/plain");
+                send.putExtra(Intent.EXTRA_TEXT, u);
+                startActivity(Intent.createChooser(send, "Share Public Link"));
+            }
+        });
+
+        tunDav = text("", 12, 0xFF7C3AED, true);
+        tunDav.setPadding(0, dp(8), 0, 0);
+        tunDav.setVisibility(View.GONE);
+        tunDav.setOnClickListener(v -> {
+            Object url = v.getTag();
+            if (url == null) return;
+            ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+            cm.setPrimaryClip(ClipData.newPlainText("NexShare WebDAV", url.toString()));
+            Toast.makeText(this, "WebDAV URL copied", Toast.LENGTH_SHORT).show();
+        });
+        tunCard.addView(tunDav);
+
+        tunDesc = text("Works from anywhere (schools, restricted networks, 4G/5G) without opening router ports. With WebDAV on, you also get a public HTTPS network-drive URL.", 12, 0xFF8A96A3, false);
+        tunDesc.setPadding(0, dp(6), 0, 0);
+        tunCard.addView(tunDesc);
 
         LinearLayout permCard = card(body);
         permNote = text("", 14, 0xFF1D2733, false);
@@ -493,6 +587,49 @@ public class MainActivity extends Activity {
                 davHint.setText("WebDAV: No login required (anonymous LAN access)\nCommand: net use * http://" + ipOrHost + "/dav/");
             }
             davHint.setAlpha(davOn && on ? 1f : 0.4f);
+        }
+
+        if (tunSwitch != null && tunStatus != null) {
+            TunnelManager tm = TunnelManager.get(this);
+            TunnelManager.State ts = tm.state();
+            tunSwitch.setChecked(ts != TunnelManager.State.OFF);
+            if (ts == TunnelManager.State.CONNECTED) {
+                tunStatus.setText("✓ Connected to the internet (Cloudflare)");
+                tunStatus.setTextColor(0xFF16A34A);
+                String u = tm.url();
+                if (u != null && !u.isEmpty()) {
+                    tunUrl.setText(u);
+                    tunUrl.setTag(u);
+                    tunUrl.setVisibility(View.VISIBLE);
+                    tunCopy.setVisibility(View.VISIBLE);
+                    tunShare.setVisibility(View.VISIBLE);
+                    boolean davPublic = Settings.webdavEnabled(this);
+                    tunDav.setText(davPublic ? "WebDAV: " + u + "/dav/  (tap to copy)" : "");
+                    tunDav.setTag(davPublic ? u + "/dav/" : null);
+                    tunDav.setVisibility(davPublic ? View.VISIBLE : View.GONE);
+                }
+            } else if (ts == TunnelManager.State.STARTING) {
+                tunStatus.setText("Connecting Cloudflare tunnel...");
+                tunStatus.setTextColor(0xFFD97706);
+                tunUrl.setVisibility(View.GONE);
+                tunCopy.setVisibility(View.GONE);
+                tunShare.setVisibility(View.GONE);
+                if (tunDav != null) tunDav.setVisibility(View.GONE);
+            } else if (ts == TunnelManager.State.ERROR) {
+                tunStatus.setText("Tunnel error: " + tm.error());
+                tunStatus.setTextColor(0xFFE5484D);
+                tunUrl.setVisibility(View.GONE);
+                tunCopy.setVisibility(View.GONE);
+                tunShare.setVisibility(View.GONE);
+                if (tunDav != null) tunDav.setVisibility(View.GONE);
+            } else {
+                tunStatus.setText("Off — local Wi-Fi only.");
+                tunStatus.setTextColor(0xFF6B7785);
+                tunUrl.setVisibility(View.GONE);
+                tunCopy.setVisibility(View.GONE);
+                tunShare.setVisibility(View.GONE);
+                if (tunDav != null) tunDav.setVisibility(View.GONE);
+            }
         }
 
         boolean access = hasFileAccess();

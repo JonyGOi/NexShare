@@ -70,14 +70,20 @@ public class TunnelManager {
     /** The bundled cloudflared binary, extracted to the app's native lib dir and executable. */
     public File binary() {
         File f = new File(ctx.getApplicationInfo().nativeLibraryDir, "libcloudflared.so");
-        if (f.exists() && f.canExecute()) return f;
+        if (f.exists()) return f;
 
         File local = new File(new File(ctx.getFilesDir(), "bin"), "cloudflared");
-        if (local.exists() && local.canExecute()) return local;
+        if (local.exists()) return local;
 
         // Try extracting from APK if native library directory didn't extract it
         tryExtractFromApk(local);
-        if (local.exists() && local.canExecute()) return local;
+        if (local.exists()) {
+            local.setExecutable(true, false);
+            return local;
+        }
+
+        File tmp = new File("/data/local/tmp/libcloudflared.so");
+        if (tmp.exists()) return tmp;
 
         return f;
     }
@@ -117,7 +123,8 @@ public class TunnelManager {
     }
 
     public boolean supported() {
-        return binary().exists();
+        File b = binary();
+        return b != null && b.exists();
     }
 
     public static String sanitizeToken(String raw) {
@@ -141,6 +148,7 @@ public class TunnelManager {
 
     public synchronized void start(String mode, String token) throws Exception {
         if (!supported()) throw new Exception("This device is not supported (no cloudflared binary for this CPU architecture)");
+        Settings.requireLogin(ctx); // never expose the files to the internet without a login
         desiredMode = mode == null ? "off" : mode;
         desiredToken = token == null ? "" : sanitizeToken(token);
         Settings.setTunnel(ctx, desiredMode, desiredToken);
@@ -274,7 +282,24 @@ public class TunnelManager {
             pb.environment().put("TUNNEL_TOKEN", token);
         }
 
-        final Process p = pb.start();
+        Process startedProcess;
+        try {
+            startedProcess = pb.start();
+        } catch (java.io.IOException ioe) {
+            if (Flavor.ROOT && RootShell.available()) {
+                File tmpBin = new File("/data/local/tmp/libcloudflared.so");
+                RootShell.main().exec("cp -f " + RootShell.q(cf.getAbsolutePath()) + " " + RootShell.q(tmpBin.getAbsolutePath()) + " && chmod 755 " + RootShell.q(tmpBin.getAbsolutePath()), 5000);
+                cmd.set(0, tmpBin.getAbsolutePath());
+                ProcessBuilder pbRoot = new ProcessBuilder(cmd);
+                pbRoot.redirectErrorStream(true);
+                pbRoot.directory(home);
+                pbRoot.environment().putAll(pb.environment());
+                startedProcess = pbRoot.start();
+            } else {
+                throw ioe;
+            }
+        }
+        final Process p = startedProcess;
         synchronized (this) {
             proc = p;
         }

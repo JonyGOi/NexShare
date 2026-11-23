@@ -242,6 +242,8 @@ const APP_ICO = {
     <rect x="4" y="4" width="56" height="56" rx="14" fill="url(#smA)"/><rect x="20" y="12" width="24" height="40" rx="5" fill="none" stroke="#fff" stroke-width="3.2"/><circle cx="32" cy="46" r="2.4" fill="#fff"/><path d="M27 26l6 4-6 4z" fill="#fff"/></svg>`,
   remote: `<svg viewBox="0 0 64 64"><defs><linearGradient id="raA" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ff9d4d"/><stop offset="1" stop-color="#f06a1e"/></linearGradient></defs>
     <rect x="4" y="4" width="56" height="56" rx="14" fill="url(#raA)"/><circle cx="32" cy="32" r="16" fill="none" stroke="#fff" stroke-width="3"/><path d="M16 32h32M32 16c6 5 6 27 0 32M32 16c-6 5-6 27 0 32" fill="none" stroke="#fff" stroke-width="2.6"/></svg>`,
+  debrid: `<svg viewBox="0 0 64 64"><defs><linearGradient id="dbA" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#00c6ff"/><stop offset="1" stop-color="#0072ff"/></linearGradient></defs>
+    <rect x="4" y="4" width="56" height="56" rx="14" fill="url(#dbA)"/><path d="M36 10L18 34h12l-4 20 20-26H34z" fill="#fff"/></svg>`,
   packagecenter: `<svg viewBox="0 0 64 64"><defs><linearGradient id="pkA" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffd15c"/><stop offset="1" stop-color="#f3932b"/></linearGradient></defs>
     <rect x="4" y="4" width="56" height="56" rx="14" fill="url(#pkA)"/><path d="M32 14l16 8v20l-16 8-16-8V22z" fill="none" stroke="#fff" stroke-width="3.2" stroke-linejoin="round"/><path d="M16 22l16 8 16-8M32 30v20" fill="none" stroke="#fff" stroke-width="3.2" stroke-linejoin="round"/></svg>`,
   group: `<svg viewBox="0 0 64 64"><rect x="4" y="4" width="56" height="56" rx="14" fill="rgba(30,40,55,.55)"/>
@@ -263,7 +265,7 @@ function fileIcon(kind) {
 
 // ---------------------------------------------------------------- state
 
-const State = { roots: [], sys: null, notes: [], clipboard: null, isRoot: false, flavor: 'normal', authMode: 'pin', webdavEnabled: false };
+const State = { roots: [], sys: null, notes: [], clipboard: null, isRoot: false, flavor: 'normal', authMode: 'pin', webdavEnabled: false, apiKey: '', tunnelUrl: '' };
 
 function rootOf(p) {
   let best = null;
@@ -417,6 +419,7 @@ function openApp(id, arg) {
 const DESKTOP = [
   { app: 'filestation' },
   { app: 'download' },
+  { app: 'debrid' },
   { group: 'Multimedia', ico: 'group', apps: ['player', 'photos', 'videos', 'music', 'wallpaper'] },
   { app: 'monitor' },
   { app: 'remote' },
@@ -1082,23 +1085,27 @@ function ControlPanel(body) {
           el('dl', { class: 'kv' },
             el('dt', { text: 'HTTPS WebDAV (Recomendado)' }), el('dd', { class: 'mono', style: { cursor: 'pointer', color: '#16a34a', fontWeight: 'bold' }, title: 'Click to copy', onclick: e => { navigator.clipboard?.writeText(e.target.textContent); toast('HTTPS WebDAV URL copied'); }, text: (s.ip ? `https://${s.ip}:${s.httpsPort || 8443}/dav/` : `https://${s.host || 'nexshare.local'}:${s.httpsPort || 8443}/dav/`) }),
             el('dt', { text: 'HTTP WebDAV' }), el('dd', { class: 'mono', style: { cursor: 'pointer', color: '#1e6fd9' }, title: 'Click to copy', onclick: e => { navigator.clipboard?.writeText(e.target.textContent); toast('HTTP WebDAV URL copied'); }, text: (s.ip ? `http://${s.ip}:${s.port || 8080}/dav/` : `http://${s.host || 'nexshare.local'}:${s.port || 8080}/dav/`) }),
+            State.tunnelUrl ? el('dt', { text: 'Público (Internet) ⭐' }) : null,
+            State.tunnelUrl ? el('dd', { class: 'mono', style: { cursor: 'pointer', color: '#7c3aed', fontWeight: 'bold' }, title: 'Click to copy', onclick: e => { navigator.clipboard?.writeText(e.target.textContent); toast('URL pública WebDAV copiada'); }, text: State.tunnelUrl + '/dav/' }) : null,
             el('dt', { text: 'Username' }), el('dd', { class: 'mono', text: (s.authMode === 'password' && s.username ? s.username : (s.authMode === 'none' ? 'Nenhum' : 'nexshare (ou qualquer nome)')) }),
             el('dt', { text: 'Password' }), el('dd', { text: (s.authMode === 'password' ? 'Sua senha configurada no app' : (s.authMode === 'none' ? 'Nenhuma (acesso livre)' : 'PIN de 6 dígitos exibido no app')) }),
             el('dt', { text: 'Windows CMD (HTTPS)' }), el('dd', { class: 'mono', style: { fontSize: '11px', wordBreak: 'break-all' }, text: (s.authMode === 'none' ? `net use * https://${s.ip || 'IP'}:${s.httpsPort || 8443}/dav/` : `net use * https://${s.ip || 'IP'}:${s.httpsPort || 8443}/dav/ /user:${(s.authMode === 'password' && s.username ? s.username : 'nexshare')} *`) }),
-            el('dt', { text: 'Windows CMD (HTTP)' }), el('dd', { class: 'mono', style: { fontSize: '11px', wordBreak: 'break-all' }, text: (s.authMode === 'none' ? `net use * http://${s.ip || 'IP'}:${s.port || 8080}/dav/` : `net use * http://${s.ip || 'IP'}:${s.port || 8080}/dav/ /user:${(s.authMode === 'password' && s.username ? s.username : 'nexshare')} *`) })
+            el('dt', { text: 'Windows CMD (HTTP)' }), el('dd', { class: 'mono', style: { fontSize: '11px', wordBreak: 'break-all' }, text: (s.authMode === 'none' ? `net use * http://${s.ip || 'IP'}:${s.port || 8080}/dav/` : `net use * http://${s.ip || 'IP'}:${s.port || 8080}/dav/ /user:${(s.authMode === 'password' && s.username ? s.username : 'nexshare')} *`) }),
+            State.tunnelUrl ? el('dt', { text: 'Windows CMD (Internet, funciona em faculdade/empresa)' }) : null,
+            State.tunnelUrl ? el('dd', { class: 'mono', style: { fontSize: '11px', wordBreak: 'break-all' }, text: (s.authMode === 'none' ? `net use * ${State.tunnelUrl}/dav/` : `net use * ${State.tunnelUrl}/dav/ /user:${(s.authMode === 'password' && s.username ? s.username : 'nexshare')} *`) }) : null
           ),
           el('div', { style: { display: 'flex', gap: '8px', marginTop: '10px', flexWrap: 'wrap' } },
             el('a', { class: 'btn', href: '/api/cert', download: 'nexshare-ca.crt' }, icon('download'), 'Baixar Certificado SSL (nexshare-ca.crt)'),
             el('a', { class: 'btn', href: '/api/webdav/reg', download: 'windows-webdav.reg' }, icon('download'), 'Baixar windows-webdav.reg')
           ),
-          el('div', { class: 'hint', style: { marginTop: '8px', fontSize: '12px', lineHeight: '1.4' }, html: '<b>Dica Windows:</b> O Windows bloqueia autenticação em WebDAV sem SSL por padrão. Com <b>HTTPS</b> funciona direto! Se usar HTTP puro, execute o <code>windows-webdav.reg</code> uma vez.' })
+          el('div', { class: 'hint', style: { marginTop: '8px', fontSize: '12px', lineHeight: '1.5' }, html: '<b>Erro 67 / “rede não encontrada”?</b> Redes de instituição e empresas bloqueiam portas e o Windows recusa autenticação WebDAV sem SSL. Ligue o <b>Acesso Remoto</b> (Cloudflare) e use a URL <b>pública HTTPS</b> acima — ela passa pela porta 443 e dispensa qualquer ajuste no registro.' })
         ) : el('div', { class: 'hint', text: 'Ative para mapear os arquivos do celular como unidade de rede Z: no Windows.' })
       ),
       el('div', { class: 'card' },
         el('h3', { text: 'App Updates', style: { marginTop: 0 } }),
         el('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' } },
           el('div', null,
-            el('b', { text: `NexShare v${s.version || '1.5.7'}` }),
+            el('b', { text: `NexShare v${s.version || '1.6.0'}` }),
             el('span', { style: { marginLeft: '8px', fontSize: '11px', textTransform: 'uppercase', background: '#eef3fb', color: '#1e6fd9', padding: '2px 6px', borderRadius: '4px' }, text: (s.flavor || 'normal') + ' edition' })
           ),
           el('button', {
@@ -2456,91 +2463,375 @@ function RemoteAccess(body, win) {
   body.append(pane);
   let timer, lastState = null, logOpen = false;
 
+  const dot = el('span', { style: { width: '12px', height: '12px', borderRadius: '50%', background: '#9aa6b2', flex: 'none' } });
+  const stateLabel = el('b', { text: 'Checking status...' });
+  const modePill = el('span', { class: 'st-pill', style: { display: 'none' } });
+  const statusRow = el('div', { style: { display: 'flex', alignItems: 'center', gap: '10px' } }, dot, stateLabel, modePill);
+
+  const urlBox = el('div', { style: { display: 'none', marginTop: '12px' } });
+  const urlLink = el('a', { class: 'mono', target: '_blank', style: { fontSize: '16px', color: 'var(--accent)', wordBreak: 'break-all' } });
+  const copyBtn = el('button', { class: 'btn', onclick: () => copy(urlLink.href) }, icon('link'), ' Copiar Link');
+  const davHint = el('div', { style: { display: 'none', marginTop: '10px', fontSize: '12px', color: 'var(--text-2)', lineHeight: 1.6 } });
+  urlBox.append(
+    el('div', { style: { fontSize: '12px', color: 'var(--text-3)', marginBottom: '4px' }, text: 'Link Público (Acessível em qualquer lugar do mundo):' }),
+    el('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' } }, urlLink, copyBtn),
+    davHint
+  );
+
+  const errNotice = el('div', { class: 'notice danger', style: { display: 'none', margin: '12px 0 0', color: '#e5484d' } });
+  const statusCard = el('div', { class: 'card' }, statusRow, urlBox, errNotice);
+
+  const quickBtn = el('button', { class: 'btn primary', style: { fontSize: '14px', padding: '10px 16px' }, onclick: () => act('start', { mode: 'quick' }) }, icon('link'), ' ⚡ Conectar Quick Tunnel (Grátis / 1 Clique)');
+  const stopBtn = el('button', { class: 'btn danger', style: { display: 'none' }, onclick: () => act('stop') }, icon('x'), ' Parar Túnel');
+  const reconnectBtn = el('button', { class: 'btn', style: { display: 'none' }, onclick: () => act('start', { mode: (lastState && lastState.mode === 'named') ? 'named' : 'quick' }) }, icon('refresh'), ' Reconectar');
+
   const tokenInput = el('input', {
     type: 'text',
-    placeholder: 'Paste tunnel token (eyJh...) here',
+    placeholder: 'Cole seu token do Cloudflare Zero Trust (eyJh...) aqui',
     style: { fontFamily: 'monospace', flex: '1', minWidth: '220px', padding: '8px 10px', borderRadius: '6px', border: '1px solid #cbd5e1' }
   });
   let userEdited = false;
   tokenInput.addEventListener('input', () => { userEdited = true; });
 
+  const tokenBtn = el('button', {
+    class: 'btn',
+    onclick: () => {
+      const val = tokenInput.value.trim();
+      act('start', { mode: 'named', token: val || undefined });
+    }
+  }, icon('link'), ' Conectar com Token');
+
+  const clearTokenBtn = el('button', {
+    class: 'btn',
+    style: { display: 'none' },
+    onclick: () => { tokenInput.value = ''; userEdited = true; tokenInput.placeholder = 'Cole o token aqui'; tokenInput.focus(); }
+  }, 'Limpar');
+
+  const actionsCard = el('div', { class: 'card' },
+    el('h3', { style: { marginTop: 0 }, text: '⚡ Acesso Remoto com 1 Clique (Recomendado)' }),
+    el('div', { class: 'notice', style: { margin: '0 0 12px' }, text: 'O Quick Tunnel permite acessar o celular pela internet sem precisar criar conta, sem configurar portas e sem tokens. Funciona em faculdades, Wi-Fi institucional e redes móveis.' }),
+    el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '16px' } }, quickBtn, stopBtn, reconnectBtn),
+    el('h3', { text: 'Ou usar Domínio Próprio (Named Tunnel)' }),
+    el('div', { class: 'hint', style: { marginBottom: '8px' }, html: 'Cloudflare Zero Trust → Networks → Tunnels → Criar Túnel → Cole o token abaixo apontando para <span class="mono">http://localhost:' + (Stats.last ? Stats.last.port : 8080) + '</span>' }),
+    el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' } }, tokenInput, tokenBtn, clearTokenBtn)
+  );
+
+  const logPre = el('pre', { class: 'mono', style: { display: 'none', marginTop: '10px', maxHeight: '220px', overflow: 'auto', background: '#0d1117', color: '#c9d1d9', padding: '12px', borderRadius: '8px', fontSize: '11px', whiteSpace: 'pre-wrap', userSelect: 'text' } });
+  const logsCard = el('div', { class: 'card' },
+    el('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }, onclick: () => { logOpen = !logOpen; renderLogs(); } },
+      el('h3', { style: { margin: 0 }, text: 'Logs do Túnel' }), icon('chev')),
+    logPre
+  );
+
+  pane.append(
+    el('h2', null, 'Acesso Remoto (Cloudflare Tunnel)'),
+    statusCard,
+    actionsCard,
+    logsCard
+  );
+
   async function act(path, payload) {
     try {
       const r = await api('tunnel/' + path, null, payload ? { method: 'POST', body: JSON.stringify(payload) } : { method: 'POST' });
       render(r);
-    } catch (e) { toast('Failed: ' + e.message, 4000); refresh(); }
+    } catch (e) { toast('Falha: ' + e.message, 4000); refresh(); }
+  }
+
+  function renderLogs() {
+    logPre.style.display = logOpen ? 'block' : 'none';
+    if (lastState && lastState.log) logPre.textContent = lastState.log;
   }
 
   function render(s) {
     lastState = s;
     const connected = s.state === 'connected';
-    const dotColor = { off: '#9aa6b2', starting: '#f0a020', connected: '#2fb36b', error: '#e5484d' }[s.state];
+    const starting = s.state === 'starting';
+    const isError = s.state === 'error';
+    const dotColor = { off: '#9aa6b2', starting: '#f0a020', connected: '#2fb36b', error: '#e5484d' }[s.state] || '#9aa6b2';
 
-    if (!userEdited && !tokenInput.value && s.hasToken) {
-      tokenInput.placeholder = 'Token is saved on device (paste new to overwrite)';
+    dot.style.background = dotColor;
+    stateLabel.textContent = TUN_STATE[s.state] || s.state;
+
+    if (s.mode && s.mode !== 'off') {
+      modePill.style.display = 'inline-block';
+      modePill.textContent = s.mode === 'named' ? 'Custom Domain' : 'Quick Tunnel';
+    } else {
+      modePill.style.display = 'none';
     }
 
-    const showLogs = logOpen || s.state === 'error';
+    if (connected && s.url) {
+      urlBox.style.display = 'block';
+      urlLink.href = s.url;
+      urlLink.textContent = s.url;
+      State.tunnelUrl = s.url;
+      if (State.webdavEnabled) {
+        const dav = s.url + '/dav/';
+        davHint.style.display = 'block';
+        davHint.replaceChildren(
+          el('div', null, el('b', { text: 'WebDAV público (Windows): ' }), el('span', { class: 'mono', text: dav })),
+          el('div', { style: { marginTop: '4px', opacity: .85 }, text: 'Use HTTPS: funciona em redes que bloqueiam portas e não exige ajuste no registro do Windows.' }),
+          el('button', { class: 'btn', style: { marginTop: '6px' }, onclick: () => copy(dav) }, icon('link'), ' Copiar URL WebDAV')
+        );
+      } else {
+        davHint.style.display = 'none';
+      }
+    } else if (connected && s.mode === 'named' && !s.url) {
+      urlBox.style.display = 'block';
+      urlLink.href = '#';
+      urlLink.textContent = 'Conectado — acessível pelo domínio configurado no Cloudflare';
+      davHint.style.display = 'none';
+      State.tunnelUrl = '';
+    } else {
+      urlBox.style.display = 'none';
+      State.tunnelUrl = '';
+    }
 
-    fill(pane,
-      el('h2', null, 'Remote Access (Cloudflare Tunnel)'),
-      !s.supported ? el('div', { class: 'notice', text: 'This device is not supported (no cloudflared binary for this CPU) — local Wi-Fi only' }) : null,
-      el('div', { class: 'card' },
-        el('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', marginBottom: connected || s.state === 'error' ? '12px' : 0 } },
-          el('span', { style: { width: '12px', height: '12px', borderRadius: '50%', background: dotColor, flex: 'none' } }),
-          el('b', { text: TUN_STATE[s.state] || s.state }),
-          s.mode && s.mode !== 'off' ? el('span', { class: 'st-pill', text: s.mode === 'named' ? 'Custom Domain' : 'Quick Tunnel' }) : null),
-        connected && s.url ? el('div', null,
-          el('div', { style: { fontSize: '12px', color: 'var(--text-3)', marginBottom: '4px' }, text: 'Public URL (accessible anywhere):' }),
-          el('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' } },
-            el('a', { class: 'mono', href: s.url, target: '_blank', style: { fontSize: '16px', color: 'var(--accent)', wordBreak: 'break-all' }, text: s.url }),
-            el('button', { class: 'btn', onclick: () => copy(s.url) }, icon('link'), 'Copy'))) : null,
-        connected && s.mode === 'named' && !s.url ? el('div', { class: 'mono', style: { color: 'var(--text-2)' }, text: 'Connected — accessible via your configured domain in Cloudflare' }) : null,
-        s.state === 'error' ? el('div', { class: 'notice danger', style: { margin: '0', color: '#e5484d' }, text: s.error || 'Connection failed' }) : null),
+    if (isError && s.error) {
+      errNotice.style.display = 'block';
+      errNotice.textContent = s.error;
+    } else {
+      errNotice.style.display = 'none';
+    }
 
-      s.state === 'off' || s.state === 'error'
-        ? el('div', { class: 'card' },
-            el('h3', { style: { marginTop: 0 }, text: 'Start Tunnel' }),
-            el('div', { class: 'notice', style: { margin: '0 0 12px' }, text: 'When enabled, your server is accessible over the internet. PIN login will be enforced automatically.' }),
-            el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '14px' } },
-              el('button', { class: 'btn primary', disabled: !s.supported, onclick: () => act('start', { mode: 'quick' }) }, icon('link'), 'Quick Tunnel (trycloudflare.com)')),
-            el('h3', { text: 'Or use your own domain (Named Tunnel)' }),
-            el('div', { class: 'hint', style: { marginBottom: '8px' }, html: 'Go to Cloudflare Zero Trust → Networks → Tunnels → Create tunnel → paste token below, and set Public hostname pointing to <span class="mono">http://localhost:' + (Stats.last ? Stats.last.port : 8080) + '</span>' }),
-            el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' } },
-              tokenInput,
-              el('button', {
-                class: 'btn',
-                disabled: !s.supported,
-                onclick: () => {
-                  const val = tokenInput.value.trim();
-                  act('start', { mode: 'named', token: val || undefined });
-                }
-              }, icon('link'), 'Connect with token'),
-              s.hasToken ? el('button', {
-                class: 'btn',
-                onclick: () => { tokenInput.value = ''; userEdited = true; tokenInput.placeholder = 'Paste token here'; tokenInput.focus(); }
-              }, 'Clear') : null))
-        : el('div', { class: 'card' },
-            el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
-              el('button', { class: 'btn danger', onclick: () => act('stop') }, icon('x'), 'Stop Tunnel'),
-              el('button', { class: 'btn', onclick: () => act('start', { mode: s.mode === 'named' ? 'named' : 'quick' }) }, icon('refresh'), 'Reconnect'))),
+    quickBtn.disabled = !s.supported;
+    tokenBtn.disabled = !s.supported;
 
-      el('div', { class: 'card' },
-        el('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }, onclick: () => { logOpen = !logOpen; render(lastState); } },
-          el('h3', { style: { margin: 0 }, text: 'Process Logs' }), icon(showLogs ? 'min' : 'chev')),
-        showLogs ? el('pre', { class: 'mono', style: { marginTop: '10px', maxHeight: '220px', overflow: 'auto', background: '#0d1117', color: '#c9d1d9', padding: '12px', borderRadius: '8px', fontSize: '11px', whiteSpace: 'pre-wrap', userSelect: 'text' }, text: s.log || '(No logs yet)' }) : null));
+    if (connected || starting) {
+      stopBtn.style.display = 'inline-flex';
+      reconnectBtn.style.display = 'inline-flex';
+      quickBtn.style.display = 'none';
+    } else {
+      stopBtn.style.display = 'none';
+      reconnectBtn.style.display = 'none';
+      quickBtn.style.display = 'inline-flex';
+    }
+
+    if (!userEdited && !tokenInput.value && s.hasToken) {
+      tokenInput.placeholder = 'Token salvo no dispositivo (cole novo para alterar)';
+    }
+    clearTokenBtn.style.display = s.hasToken ? 'inline-flex' : 'none';
+
+    renderLogs();
   }
+
   function copy(url) {
-    if (navigator.clipboard && isSecureContext) navigator.clipboard.writeText(url).then(() => toast('Link copied to clipboard'));
-    else dialog({ title: 'Public Link', input: url, cancel: false });
+    if (navigator.clipboard && isSecureContext) navigator.clipboard.writeText(url).then(() => toast('Link copiado para a área de transferência!'));
+    else dialog({ title: 'Link Público', input: url, cancel: false });
   }
+
   async function refresh() {
     try { render(await api('tunnel/status')); } catch { /* offline */ }
   }
+
   refresh();
-  timer = setInterval(() => { if (!lastState || lastState.state === 'starting' || logOpen) refresh(); }, 2000);
+  // Always poll while the window is open: a Quick Tunnel gets a new URL when it reconnects.
+  timer = setInterval(() => refresh(), 3000);
   return { destroy() { clearInterval(timer); } };
 }
+
+// ---------------------------------------------------------------- Debrid Hub
+
+function DebridHub(body, win) {
+  const pane = el('div', { class: 'pane' });
+  body.append(pane);
+
+  const st = { task: null, files: [], active: [], timer: null, tab: 'stream', busy: false };
+
+  const tabStream = el('button', { class: 'btn primary', text: '⚡ Desbridar & Assistir', onclick: () => switchTab('stream') });
+  const tabGuide = el('button', { class: 'btn', text: '🔌 Usar no VLC / Stremio / Windows', onclick: () => switchTab('guide') });
+  const tabBar = el('div', { style: { display: 'flex', gap: '8px', marginBottom: '14px', flexWrap: 'wrap' } }, tabStream, tabGuide);
+
+  // ---------- stream tab ----------
+  const input = el('textarea', {
+    placeholder: 'Cole um magnet link (magnet:?xt=urn:btih:...) ou uma URL de .torrent / vídeo direto',
+    rows: 3,
+    style: { width: '100%', boxSizing: 'border-box', fontFamily: 'monospace', fontSize: '13px', padding: '10px', borderRadius: '8px', border: '1px solid #cbd5e1', resize: 'vertical' }
+  });
+  const goBtn = el('button', { class: 'btn primary', style: { padding: '9px 16px' }, onclick: () => unrestrict(input.value.trim()) }, icon('play'), ' Desbridar & Transmitir');
+  const pasteBtn = el('button', {
+    class: 'btn',
+    onclick: async () => {
+      try {
+        const text = await navigator.clipboard.readText();
+        if (text) { input.value = text; input.focus(); }
+      } catch { toast('Use Ctrl+V para colar no campo'); input.focus(); }
+    }
+  }, icon('link'), ' Colar');
+  const statusMsg = el('div', { style: { marginTop: '10px', fontSize: '13px', color: 'var(--text-2)' } });
+  const filesBox = el('div', { style: { marginTop: '14px' } });
+  const activeBox = el('div', { style: { marginTop: '18px' } });
+
+  const streamCard = el('div', { class: 'card' },
+    el('h3', { style: { marginTop: 0 }, text: '⚡ Desbridador de Torrents' }),
+    el('div', { class: 'notice', style: { margin: '0 0 12px' }, text: 'O download é feito em ordem (streaming sequencial) começando pelo arquivo de vídeo, então a reprodução começa em segundos — como no Real-Debrid.' }),
+    input,
+    el('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', marginTop: '10px', flexWrap: 'wrap' } }, goBtn, pasteBtn, el('span', { class: 'dim', style: { fontSize: '12px' }, text: 'Aceita magnet, .torrent e links http(s) diretos.' })),
+    statusMsg,
+    filesBox,
+    activeBox
+  );
+
+  // ---------- setup tab ----------
+  const apiBase = () => (State.tunnelUrl || location.origin) + '/rest/1.0/';
+  const apiKey = () => State.apiKey || '';
+  const lanBase = () => location.origin;
+
+  const code = (text) => el('div', { class: 'mono', style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', background: '#f1f5f9', border: '1px solid #e2e8f0', borderRadius: '6px', padding: '8px 10px', fontSize: '12px', wordBreak: 'break-all' } },
+    el('span', { style: { flex: 1 }, text }),
+    el('button', { class: 'btn', style: { padding: '3px 10px', fontSize: '12px' }, onclick: () => copyText(text, 'Copiado!') }, 'Copiar'));
+
+  const keyRow = code(apiKey() || '(faça login no painel para gerar a chave)');
+  const guideCard = el('div', { class: 'card', style: { display: 'none' } },
+    el('h3', { style: { marginTop: 0 }, text: '🔌 NexShare como serviço Debrid' }),
+    el('div', { class: 'notice', style: { margin: '0 0 14px' }, text: 'A API é compatível com o formato do Real-Debrid (/rest/1.0), então VLC, Stremio, Kodi e qualquer cliente que fale a API do RD podem usar o celular como fonte.' }),
+    el('h4', { style: { margin: '0 0 6px' }, text: 'Chave de API' }), keyRow,
+    el('div', { style: { marginTop: '6px' } },
+      el('button', {
+        class: 'btn',
+        onclick: async () => {
+          const go = await dialog({ title: 'Gerar nova chave?', message: 'Os links já copiados no VLC/Stremio deixam de funcionar.', okText: 'Gerar', danger: true });
+          if (!go) return;
+          try {
+            const r = await api('debrid/rotatekey', null, { method: 'POST' });
+            State.apiKey = r.apiKey;
+            keyRow.replaceChildren(el('span', { style: { flex: 1 }, text: r.apiKey }), el('button', { class: 'btn', style: { padding: '3px 10px', fontSize: '12px' }, onclick: () => copyText(r.apiKey, 'Copiado!') }, 'Copiar'));
+            toast('Nova chave gerada');
+          } catch (e) { toast('Falha: ' + e.message); }
+        }
+      }, 'Gerar nova chave')),
+    el('h4', { style: { margin: '14px 0 6px' }, text: 'Endpoint na rede local' }), code(lanBase() + '/rest/1.0/'),
+    el('h4', { style: { margin: '14px 0 6px' }, text: 'Endpoint pela internet (Cloudflare)' }),
+    code(State.tunnelUrl ? State.tunnelUrl + '/rest/1.0/' : 'Ligue o Acesso Remoto em Remote Access para ter uma URL pública HTTPS'),
+    el('h4', { style: { margin: '16px 0 6px', color: '#1e6fd9' }, text: '1. VLC / MPV / Smart TV' }),
+    el('ol', { style: { margin: 0, paddingLeft: '20px', lineHeight: 1.7, fontSize: '13px' } },
+      el('li', null, 'Na aba "Desbridar", cole o magnet e clique em Desbridar.'),
+      el('li', null, 'Clique em "Copiar link VLC" no arquivo desejado.'),
+      el('li', null, 'No VLC: Mídia → Abrir Fluxo de Rede (Ctrl+N), cole o link e clique em Reproduzir.'),
+      el('li', null, 'O vídeo toca enquanto baixa (não precisa esperar o torrent terminar).')),
+    el('h4', { style: { margin: '16px 0 6px', color: '#1e6fd9' }, text: '2. Stremio (addon com suporte a Real-Debrid)' }),
+    el('div', { style: { fontSize: '13px', lineHeight: 1.7 } },
+      el('p', { style: { margin: '0 0 6px' }, text: 'No addon / configuração de debrid do Stremio, informe:' }),
+      el('ul', { style: { margin: 0, paddingLeft: '20px' } },
+        el('li', null, el('b', { text: 'API URL: ' }), el('span', { class: 'mono', text: apiBase() })),
+        el('li', null, el('b', { text: 'API Key: ' }), el('span', { class: 'mono', text: apiKey() || '(veja acima)' }))),
+      el('p', { class: 'dim', style: { margin: '8px 0 0', fontSize: '12px' }, text: 'Fora de casa use a URL pública: ligue o Acesso Remoto e copie o endpoint HTTPS acima.' })),
+    el('h4', { style: { margin: '16px 0 6px', color: '#1e6fd9' }, text: '3. Windows: unidade de rede (WebDAV)' }),
+    el('div', { style: { fontSize: '13px', lineHeight: 1.7 } },
+      el('p', { style: { margin: '0 0 8px' }, text: 'Os arquivos ficam em Download/NexShare no celular. Habilite o WebDAV no Control Panel e use HTTPS (funciona em redes de instituição, sem ajustar o registro do Windows):' }),
+      code(`net use Z: ${(State.tunnelUrl || lanBase())}/dav/ /user:nexshare <SEU_PIN>`))
+  );
+
+  pane.append(tabBar, streamCard, guideCard);
+
+  function switchTab(t) {
+    st.tab = t;
+    tabStream.className = 'btn' + (t === 'stream' ? ' primary' : '');
+    tabGuide.className = 'btn' + (t === 'guide' ? ' primary' : '');
+    streamCard.style.display = t === 'stream' ? 'block' : 'none';
+    guideCard.style.display = t === 'guide' ? 'block' : 'none';
+  }
+
+  function copyText(text, msg) {
+    if (!text) { toast('Nada para copiar'); return; }
+    if (navigator.clipboard && isSecureContext) navigator.clipboard.writeText(text).then(() => toast(msg || 'Copiado!'), () => dialog({ title: 'Link', input: text, cancel: false }));
+    else dialog({ title: 'Link', input: text, cancel: false });
+  }
+
+  function setStatus(text, kind) {
+    statusMsg.textContent = text || '';
+    statusMsg.style.color = kind === 'error' ? '#e5484d' : (kind === 'ok' ? '#16a34a' : 'var(--text-2)');
+  }
+
+  async function unrestrict(value) {
+    if (st.busy) return;
+    if (!value) { toast('Cole um link magnet ou URL primeiro'); return; }
+    st.busy = true;
+    goBtn.disabled = true;
+    setStatus('⏳ Buscando metadados no swarm…');
+    try {
+      const r = await api('debrid/unrestrict', null, { method: 'POST', body: JSON.stringify({ magnet: value }) });
+      st.task = r.task;
+      setStatus('✓ Torrent adicionado — procurando metadados e priorizando o vídeo…', 'ok');
+      renderFiles(r.files || [], r);
+      refreshActive();
+    } catch (e) {
+      setStatus('Erro: ' + e.message, 'error');
+    } finally {
+      st.busy = false;
+      goBtn.disabled = false;
+    }
+  }
+
+  function streamFor(f, local) {
+    return local ? f.streamUrl : (f.remoteStreamUrl || f.streamUrl);
+  }
+
+  function renderFiles(files, data) {
+    st.files = files;
+    if (!files.length) {
+      filesBox.replaceChildren(el('div', { class: 'dim', style: { fontSize: '13px' }, text: st.task ? 'Aguardando metadados do torrent (depende dos seeders)…' : '' }));
+      return;
+    }
+    const entryOf = (f) => ({ path: f.fullPath, name: f.name, dir: false, size: f.size });
+    const videoFiles = files.filter(f => /\.(mp4|mkv|avi|mov|webm|flv|m4v|ts|mpg|mpeg|wmv)$/i.test(f.name));
+
+    filesBox.replaceChildren(
+      el('h4', { style: { margin: '0 0 10px', color: '#1e6fd9' }, text: `🎬 Arquivos (${files.length})` }),
+      ...files.map(f => {
+        const pct = Math.max(0, Math.min(100, Number(f.progress) || 0));
+        const isVideo = /\.(mp4|mkv|avi|mov|webm|flv|m4v|ts|mpg|mpeg|wmv)$/i.test(f.name);
+        const isDirect = /^https?:/i.test(f.fullPath || '');
+        const btns = [
+          (isVideo || isDirect) ? el('button', {
+            class: 'btn primary',
+            onclick: () => isDirect ? window.open(f.streamUrl, '_blank') : openApp('player', { entry: entryOf(f), list: videoFiles.map(entryOf) })
+          }, icon('play'), ' Assistir aqui') : null,
+          isDirect ? null : el('button', { class: 'btn', onclick: () => { api('debrid/prioritize', null, { method: 'POST', body: JSON.stringify({ id: st.task && st.task.id, fileIndex: f.id }) }).catch(() => { }); toast('Priorizando este arquivo'); } }, icon('download'), ' Priorizar'),
+          el('button', { class: 'btn', onclick: () => copyText(streamFor(f, true), 'Link local copiado (VLC)') }, icon('link'), ' Link VLC'),
+          (f.remoteStreamUrl ? el('button', { class: 'btn', onclick: () => copyText(f.remoteStreamUrl, 'Link público copiado') }, icon('open'), ' Link público') : null),
+        ].filter(Boolean);
+        return el('div', { class: 'card', style: { background: '#f8fafc', border: '1px solid #e2e8f0', marginBottom: '8px', padding: '12px' } },
+          el('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', marginBottom: '6px' } },
+            el('b', { style: { fontSize: '14px', wordBreak: 'break-all' }, text: f.name }),
+            el('span', { class: 'dim', style: { fontSize: '12px', flex: 'none' }, text: fmtSize(f.size) })),
+          el('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' } },
+            el('div', { class: 'bar', style: { flex: 1, height: '6px' } }, el('i', { style: { width: pct.toFixed(1) + '%' } })),
+            el('span', { style: { fontSize: '11px', color: 'var(--text-3)', flex: 'none' }, text: pct.toFixed(0) + '% baixado' })),
+          el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } }, ...btns));
+      })
+    );
+  }
+
+  async function refreshActive() {
+    try {
+      if (st.task) {
+        const det = await api('debrid/files', { id: st.task.id });
+        if (det.task) st.task = det.task;
+        if (det.files && det.files.length) renderFiles(det.files, det);
+      }
+      const list = await api('dl/list');
+      const torrents = (list.tasks || []).filter(t => t.type === 'torrent');
+      if (!torrents.length) { activeBox.replaceChildren(); return; }
+      activeBox.replaceChildren(
+        el('h4', { style: { margin: '0 0 10px', color: '#1e6fd9' }, text: `📥 Torrents no celular (${torrents.length})` }),
+        ...torrents.map(t => {
+          const pct = t.total > 0 ? (t.done / t.total * 100) : 0;
+          return el('div', { class: 'card', style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px', padding: '10px 14px', marginBottom: '6px', background: '#f8fafc' } },
+            el('div', { style: { minWidth: 0, flex: 1 } },
+              el('div', { style: { fontWeight: 'bold', fontSize: '13px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }, text: t.name }),
+              el('div', { class: 'dim', style: { fontSize: '11px', marginTop: '2px' }, text: `${fmtSize(t.done)} / ${fmtSize(t.total)} (${pct.toFixed(0)}%) · ▼ ${fmtRate(t.speed)} · ${t.status}` })),
+            el('button', { class: 'btn', onclick: () => { st.task = t; api('debrid/files', { id: t.id }).then(r => renderFiles(r.files || [], r)).catch(() => { }); } }, 'Arquivos'));
+        })
+      );
+    } catch { /* offline */ }
+  }
+
+  refreshActive();
+  st.timer = setInterval(() => { if (st.tab === 'stream') refreshActive(); }, 2500);
+  switchTab('stream');
+  return { destroy() { clearInterval(st.timer); }, handle(arg) { if (arg && arg.magnet) { input.value = arg.magnet; unrestrict(arg.magnet); } } };
+}
+
 // ---------------------------------------------------------------- auth & boot
 
 const Auth = {
@@ -2592,6 +2883,7 @@ const APPS = {
   control: { id: 'control', name: 'Control Panel', ico: 'control', w: 620, h: 600, mount: ControlPanel },
   help: { id: 'help', name: 'NexShare Help', ico: 'help', w: 640, h: 560, mount: Help },
   download: { id: 'download', name: 'Download Station', ico: 'download', w: 960, h: 560, mount: DownloadStation },
+  debrid: { id: 'debrid', name: 'Debrid Hub', ico: 'debrid', w: 900, h: 620, mount: DebridHub },
   player: { id: 'player', name: 'Media Player', ico: 'player', w: 1000, h: 600, mount: MediaPlayer },
   packagecenter: { id: 'packagecenter', name: 'Package Center', ico: 'packagecenter', w: 760, h: 580, mount: PackageCenter },
   terminal: { id: 'terminal', name: 'Terminal', ico: 'terminal', w: 820, h: 540, mount: Terminal, root: true },
@@ -2617,6 +2909,17 @@ addEventListener('resize', () => { renderDesktop(); });
 
 let started = false;
 async function start() {
+  try {
+    const s = await api('session');
+    if (s && s.auth) {
+      State.apiKey = s.apiKey || State.apiKey;
+      State.tunnelUrl = s.tunnelUrl || State.tunnelUrl;
+      State.webdavEnabled = !!s.webdavEnabled;
+      State.authMode = s.authMode || State.authMode;
+      State.isRoot = !!s.root;
+      State.flavor = s.flavor || State.flavor;
+    }
+  } catch { /* older build or offline */ }
   try {
     const r = await api('roots');
     State.roots = r.roots;
@@ -2668,6 +2971,8 @@ document.addEventListener('visibilitychange', () => {
     State.flavor = s.flavor || 'normal';
     State.isRoot = !!s.root;
     State.webdavEnabled = !!s.webdavEnabled;
+    State.apiKey = s.apiKey || '';
+    State.tunnelUrl = s.tunnelUrl || '';
     if (!s.auth) { Auth.show(); return; }
     start();
   } catch { toast('Cannot connect to phone'); }

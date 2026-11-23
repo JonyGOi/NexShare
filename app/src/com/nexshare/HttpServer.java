@@ -65,6 +65,18 @@ public class HttpServer {
             return null;
         }
 
+        /** Reads the whole request body (used for torrent file uploads over the REST API). */
+        public byte[] bodyBytes() throws IOException {
+            ByteArrayOutputStream bo = new ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = body.read(buf)) > 0) {
+                bo.write(buf, 0, n);
+                if (bo.size() > 64 * 1024 * 1024) throw new IOException("body too large");
+            }
+            return bo.toByteArray();
+        }
+
         public String bodyString(int max) throws IOException {
             ByteArrayOutputStream bo = new ByteArrayOutputStream();
             byte[] buf = new byte[4096];
@@ -82,6 +94,7 @@ public class HttpServer {
         boolean keepAlive;
         boolean sent;
         final Map<String, String> extra = new LinkedHashMap<>();
+        final List<String> extraLines = new ArrayList<>();
 
         Response(OutputStream out, boolean keepAlive) {
             this.out = out;
@@ -90,6 +103,11 @@ public class HttpServer {
 
         public void header(String k, String v) {
             extra.put(k, v);
+        }
+
+        /** Adds a header without replacing an existing one with the same name (e.g. several auth challenges). */
+        public void addHeader(String k, String v) {
+            extraLines.add(k + ": " + v);
         }
 
         /** Writes status + headers. length < 0 means unknown length: connection closes after body. */
@@ -105,6 +123,8 @@ public class HttpServer {
             sb.append("Connection: ").append(keepAlive ? "keep-alive" : "close").append("\r\n");
             for (Map.Entry<String, String> e : extra.entrySet())
                 sb.append(e.getKey()).append(": ").append(e.getValue()).append("\r\n");
+            for (String line : extraLines)
+                sb.append(line).append("\r\n");
             sb.append("\r\n");
             out.write(sb.toString().getBytes(StandardCharsets.UTF_8));
             return out;

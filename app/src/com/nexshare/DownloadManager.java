@@ -32,6 +32,9 @@ public class DownloadManager {
         public String id, type, url, name, dest, status, error, hash;
         public long total = -1, done, speed, upSpeed, created;
         public int peers, seeds;
+        /** File index being streamed (Debrid); TorrentEngine.NO_STREAM when none. */
+        public int priorityFile = TorrentEngine.NO_STREAM;
+        public boolean prioApplied;
         volatile boolean stop;
         Thread thread;
 
@@ -98,11 +101,100 @@ public class DownloadManager {
         t.status = "downloading";
         te.add(t, magnet, torrentFile, dir);
         for (Task other : tasks.values()) {
-            if (t.hash != null && t.hash.equals(other.hash)) return other;
+            if (t.hash != null && t.hash.equals(other.hash)) {
+                // Already in the list: drop the duplicate handle and reuse the existing task.
+                te.remove(t, false);
+                return other;
+            }
         }
         tasks.put(t.id, t);
         save();
         return t;
+    }
+
+    /** Reference to a file that is currently being streamed from a torrent. */
+    public static class StreamRef {
+        private final TorrentEngine engine;
+        private final Task task;
+        private final int index;
+        private final long size;
+
+        StreamRef(TorrentEngine engine, Task task, int index, long size) {
+            this.engine = engine;
+            this.task = task;
+            this.index = index;
+            this.size = size;
+        }
+
+        public long downloaded() {
+            return engine.fileDownloaded(task, index);
+        }
+
+        public long size() {
+            return size;
+        }
+
+        public boolean complete() {
+            return size <= 0 || downloaded() >= size;
+        }
+    }
+
+    /**
+     * Finds the torrent/file behind an absolute path, so /api/file can throttle playback
+     * until the pieces being read have actually been downloaded (debrid style streaming).
+     */
+    public StreamRef locateTorrentFile(File file) {
+        if (file == null) return null;
+        List<Task> snapshot;
+        synchronized (this) {
+            if (tasks.isEmpty()) return null;
+            snapshot = new ArrayList<>(tasks.values());
+        }
+        String path = file.getAbsolutePath();
+        Task owner = null;
+        for (Task t : snapshot) {
+            if (!"torrent".equals(t.type) || t.dest == null) continue;
+            String base = new File(t.dest).getAbsolutePath();
+            if (path.equals(base) || path.startsWith(base + File.separator)) { owner = t; break; }
+        }
+        if (owner == null) return null;
+        TorrentEngine te = torrentEngine();
+        if (te == null) return null;
+        int idx = te.indexOfFile(owner, path);
+        if (idx < 0) return null;
+        List<JSONObject> files = te.listFiles(owner);
+        long size = idx < files.size() ? files.get(idx).optLong("size", 0) : 0;
+        return new StreamRef(te, owner, idx, size);
+    }
+
+    public synchronized Task getTask(String id) {
+        if (id == null) return null;
+        return tasks.get(id);
+    }
+
+    public synchronized Task findByHash(String hash) {
+        if (hash == null) return null;
+        for (Task t : tasks.values()) {
+            if (hash.equalsIgnoreCase(t.hash)) return t;
+        }
+        return null;
+    }
+
+    public synchronized List<Task> getTorrentTasks() {
+        if (torrents != null) torrents.refresh(tasks.values());
+        List<Task> res = new ArrayList<>();
+        for (Task t : tasks.values()) {
+            if ("torrent".equals(t.type)) res.add(t);
+        }
+        return res;
+    }
+
+    public TorrentEngine torrentEngine() {
+        try {
+            return torrents();
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     public synchronized void pause(String id) {
