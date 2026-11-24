@@ -79,6 +79,8 @@ The **Debrid Hub** app in the web desktop turns magnet links into instant stream
 3. Pick a file and either **Assistir aqui** (in-browser player) or **Link VLC** and open it
    in VLC/MPV/Kodi/Smart TV. Playback starts right away — the HTTP server writes only the
    bytes already on disk and waits for the pieces being read, instead of serving zeros.
+4. Each torrent has a **⋯ menu**: *Pausar*, *Retomar*, *Remover torrent* (keeps the files)
+   and *Remover e apagar arquivos do celular*.
 
 Every link carries the device API key, so it keeps working after restarts.
 
@@ -98,6 +100,29 @@ Implemented endpoints: `/user`, `/torrents`, `/torrents/addMagnet`, `/torrents/a
 `/torrents/info/{id}`, `/torrents/selectFiles/{id}`, `/torrents/delete/{id}`,
 `/torrents/instantAvailability/{hash}`, `/unrestrict/link`, `/hosts/domains`, `/time/iso`.
 The API requires the same login as the rest of NexShare (PIN or username+password).
+
+## Desktop app (Windows): NexShare Debrid
+
+`desktop/NexShareDebrid.ps1` (+ `NexShareDebrid.cmd`) is a small Windows app that uses the
+phone as a debrid server and **downloads straight to the PC** — no browser, no Explorer.
+
+- Needs only Windows 10/11 (PowerShell 5.1 is built in). Nothing to install.
+- Double-click **`NexShareDebrid.cmd`**.
+- Fill **Servidor** (`http://<phone-ip>:8080` or the public tunnel URL) and **API key**
+  (Debrid Hub → *Usar no VLC / Stremio / Windows*), then **Conectar**.
+- Paste a magnet (or **Abrir .torrent...**) → the torrent appears with progress, speed and
+  seeders. Select it to see the files.
+- Select a file and **Baixar para o PC** (progress bar and cancel), **Copiar link** or
+  **Abrir no VLC** (streams while the phone downloads).
+- **Remover** asks whether to delete the files from the phone too.
+- Downloads go to `%USERPROFILE%\Downloads\NexShare` by default (**Pasta...** changes it).
+  Settings live in `%APPDATA%\NexShareDebrid\config.json`.
+
+```
+desktop/
+  NexShareDebrid.ps1   the app (WinForms UI, API client, downloader)
+  NexShareDebrid.cmd   launcher (hidden console)
+```
 
 ## Remote access in restricted networks
 
@@ -256,6 +281,7 @@ app/src/com/nexshare/*.java  HTTP server, mDNS, file/download/root APIs, Android
 app/assets/web/              the web desktop (index.html, style.css, app.js)
 app/res/                     launcher icon
 build.ps1 / setup.ps1        Gradle-less build + toolchain bootstrap
+desktop/                     Windows debrid client (PowerShell, no install)
 libs/                        libtorrent4j jars + cloudflared + busybox (fetched by setup.ps1)
 ```
 

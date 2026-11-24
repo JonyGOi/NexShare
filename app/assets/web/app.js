@@ -1105,7 +1105,7 @@ function ControlPanel(body) {
         el('h3', { text: 'App Updates', style: { marginTop: 0 } }),
         el('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' } },
           el('div', null,
-            el('b', { text: `NexShare v${s.version || '1.6.1'}` }),
+            el('b', { text: `NexShare v${s.version || '1.7.0'}` }),
             el('span', { style: { marginLeft: '8px', fontSize: '11px', textTransform: 'uppercase', background: '#eef3fb', color: '#1e6fd9', padding: '2px 6px', borderRadius: '4px' }, text: (s.flavor || 'normal') + ' edition' })
           ),
           el('button', {
@@ -2877,10 +2877,60 @@ function DebridHub(body, win) {
             el('div', { style: { minWidth: 0, flex: 1 } },
               el('div', { style: { fontWeight: 'bold', fontSize: '13px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }, text: t.name }),
               el('div', { class: 'dim', style: { fontSize: '11px', marginTop: '2px' }, text: `${fmtSize(t.done)} / ${fmtSize(t.total)} (${pct.toFixed(0)}%) · ▼ ${fmtRate(t.speed)} · ${t.status}` })),
-            el('button', { class: 'btn', onclick: () => { st.task = t; api('debrid/files', { id: t.id }).then(r => renderFiles(r.files || [], r)).catch(() => { }); } }, 'Arquivos'));
+            el('div', { style: { display: 'flex', gap: '6px', flex: 'none' } },
+              el('button', { class: 'btn', onclick: () => { st.task = t; api('debrid/files', { id: t.id }).then(r => renderFiles(r.files || [], r)).catch(() => { }); } }, 'Arquivos'),
+              el('button', {
+                class: 'btn',
+                title: 'Opções do torrent',
+                onclick: e => menuAt(e.currentTarget, [
+                  t.status === 'paused'
+                    ? { label: 'Retomar download', ico: 'play', run: () => torrentAction(t, 'resume') }
+                    : { label: 'Pausar download', ico: 'pause', run: () => torrentAction(t, 'pause') },
+                  '-',
+                  { label: 'Remover torrent (manter arquivos)', ico: 'trash', run: () => removeTorrent(t, false) },
+                  { label: 'Remover e apagar arquivos do celular', ico: 'trash', run: () => removeTorrent(t, true) },
+                ])
+              }, '⋯')));
         })
       );
     } catch { /* offline */ }
+  }
+
+  async function torrentAction(t, what) {
+    try {
+      await api('dl/' + what, { id: t.id });
+      toast(what === 'pause' ? 'Download pausado' : 'Download retomado');
+      refreshActive();
+    } catch (e) { toast('Falha: ' + e.message); }
+  }
+
+  async function removeTorrent(t, deleteFiles) {
+    const ok = await dialog({
+      title: deleteFiles ? 'Remover e apagar arquivos?' : 'Remover torrent?',
+      message: deleteFiles
+        ? `O torrent e os arquivos baixados serão apagados do celular.
+
+${t.name}`
+        : `O torrent sai da lista, mas os arquivos continuam no celular.
+
+${t.name}`,
+      okText: 'Remover', danger: true
+    });
+    if (!ok) return;
+    try {
+      await api('dl/remove', { id: t.id, files: deleteFiles ? 1 : null });
+      if (st.task && st.task.id === t.id) dismissTask();
+      toast(deleteFiles ? 'Torrent e arquivos removidos' : 'Torrent removido');
+      refreshActive();
+    } catch (e) { toast('Falha ao remover: ' + e.message); }
+  }
+
+  /** Forgets the torrent currently shown in the file list (after it was removed). */
+  function dismissTask() {
+    st.task = null;
+    st.files = [];
+    filesBox.replaceChildren();
+    setStatus('');
   }
 
   refreshActive();

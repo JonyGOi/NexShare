@@ -1648,6 +1648,8 @@ public class WebApi implements HttpServer.Handler {
                     put(fo, "id", i + 1);
                     put(fo, "path", "/" + fi.optString("path"));
                     put(fo, "bytes", fi.optLong("size"));
+                    put(fo, "done", fi.optLong("done"));
+                    put(fo, "progress", fi.optDouble("progress", 0));
                     put(fo, "selected", 1);
                     filesArr.put(fo);
                     linksArr.put(remoteUrl + "/rest/1.0/unrestrict/link?id=" + t.id + "&file=" + i);
@@ -1698,10 +1700,32 @@ public class WebApi implements HttpServer.Handler {
             return;
         }
 
-        if (p.startsWith("/rest/1.0/torrents/delete/")) {
-            String id = p.substring("/rest/1.0/torrents/delete/".length()).trim();
+        if (p.startsWith("/rest/1.0/torrents/delete/") || p.equals("/rest/1.0/torrents/delete")) {
+            String id = p.startsWith("/rest/1.0/torrents/delete/")
+                ? p.substring("/rest/1.0/torrents/delete/".length()).trim()
+                : req.param("id");
+            if (id == null || id.isEmpty()) id = req.param("id");
+            String files = req.param("files");
+            boolean deleteFiles = "1".equals(files) || "true".equalsIgnoreCase(files) || "all".equalsIgnoreCase(files);
+            if (id != null) dm.remove(id, deleteFiles);
+            res.json(200, "{\"status\":\"ok\"}");
+            return;
+        }
+
+        if (p.startsWith("/rest/1.0/torrents/pause/") || p.startsWith("/rest/1.0/torrents/resume/")) {
+            boolean pause = p.startsWith("/rest/1.0/torrents/pause/");
+            String prefix = pause ? "/rest/1.0/torrents/pause/" : "/rest/1.0/torrents/resume/";
+            String id = p.substring(prefix.length()).trim();
             if (id.isEmpty()) id = req.param("id");
-            if (id != null) dm.remove(id, false);
+            if (id != null) {
+                try {
+                    if (pause) dm.pause(id);
+                    else dm.resume(id);
+                } catch (Exception e) {
+                    res.error(409, e.getMessage());
+                    return;
+                }
+            }
             res.json(200, "{\"status\":\"ok\"}");
             return;
         }
