@@ -1141,6 +1141,25 @@ public class WebApi implements HttpServer.Handler {
         put(o, "eco", ServerService.isEcoMode());
         put(o, "rx", TrafficStats.getTotalRxBytes());
         put(o, "tx", TrafficStats.getTotalTxBytes());
+
+        // Usage panel: is anything actually happening right now?
+        put(o, "transfers", TransferTracker.getActiveCount());
+        put(o, "lastTransfer", TransferTracker.getLastTransferEndTime());
+        DownloadManager dm0 = DownloadManager.get(ctx);
+        long tDown = 0, tUp = 0;
+        int activeTorrents = 0, streaming = 0;
+        for (DownloadManager.Task task : dm0.getTorrentTasks()) {
+            if (task.speed > 0) activeTorrents++;
+            if (task.upSpeed > 0) tUp += task.upSpeed;
+            if (task.speed > 0) tDown += task.speed;
+            if (task.priorityFile >= 0 && ("downloading".equals(task.status) || "seeding".equals(task.status))) streaming++;
+        }
+        put(o, "activeTorrents", activeTorrents);
+        put(o, "streaming", streaming);
+        put(o, "torrentDown", tDown);
+        put(o, "torrentUp", tUp);
+        put(o, "webdav", Settings.webdavEnabled(ctx));
+        put(o, "tunnel", tunnelPublicUrl());
         put(o, "time", System.currentTimeMillis());
         put(o, "version", Flavor.VERSION);
         put(o, "flavor", Flavor.ROOT ? "root" : "normal");

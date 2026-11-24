@@ -64,6 +64,10 @@ root prompt.
 - **Auto-Reconnection** — dynamically monitors network state; when Wi-Fi or internet connection drops, the service automatically stays alive, updates notifications, rejoins mDNS, and keeps reconnecting the Cloudflare internet tunnel until restored.
 - **Network Drive (WebDAV)** — map your Android phone's storage directly as a Windows network
   drive (e.g. `Z:`) over HTTP/WebDAV. Open, edit, copy, and stream files natively from File Explorer.
+- **Usage Monitor** (web) — one screen that answers *is the phone being used right now?*:
+  a big **Em uso / Ocioso** state (with what is driving it), live ↓/↑ rates, open connections,
+  files being served, storage used/free with a bar, the torrents that are downloading/seeding
+  (speed + progress), totals since boot and since you opened the window.
 - **System widgets** — System Health, Resource Monitor (CPU/RAM/network),
   Storage, battery.
 - Reachable at `nexshare.local` via a built-in mDNS responder, with IP fallback.

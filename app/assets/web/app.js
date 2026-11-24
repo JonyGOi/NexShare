@@ -66,6 +66,16 @@ function fmtSize(n) {
   return (n >= 100 ? n.toFixed(0) : n.toFixed(1)) + ' ' + u[i];
 }
 const fmtRate = n => fmtSize(Math.max(0, n)).replace(' B', ' B') + '/s';
+function fmtAgo(ms) {
+  if (ms == null || ms < 0) return '-';
+  const s = Math.round(ms / 1000);
+  if (s < 5) return 'agora';
+  if (s < 60) return s + 's';
+  const m = Math.round(s / 60);
+  if (m < 60) return m + ' min';
+  const h = Math.round(m / 60);
+  return h + ' h';
+}
 function fmtDate(ms) {
   const d = new Date(ms);
   const p = n => String(n).padStart(2, '0');
@@ -1000,9 +1010,64 @@ function ResourceMonitor(body) {
     const cv = el('canvas', { class: 'chart' });
     return { card: el('div', { class: 'card' }, el('h4', { text: title }), val, sub, cv), val, sub, cv };
   };
-  const cpu = mk('CPU'), ram = mk('Memory (RAM)'), net = mk('Network'), conn = mk('Connections');
-  conn.cv.remove();
-  body.append(el('div', { class: 'pane' }, el('div', { class: 'rm-grid' }, cpu.card, ram.card, net.card, conn.card)));
+  const cpu = mk('CPU'), ram = mk('Memory (RAM)'), net = mk('Network');
+
+  // ---- big state card: is the phone being used right now?
+  const stateDot = el('span', { style: { fontSize: '30px', lineHeight: '1' }, text: '○' });
+  const stateTitle = el('div', { style: { fontSize: '20px', fontWeight: '700' }, text: 'Checking…' });
+  const stateSub = el('div', { class: 'dim', style: { fontSize: '12px', marginTop: '2px' }, text: '' });
+  const stateCard = el('div', {
+    class: 'card',
+    style: { display: 'flex', alignItems: 'center', gap: '14px', gridColumn: '1 / -1', padding: '14px 16px' }
+  }, stateDot, el('div', { style: { minWidth: 0, flex: 1 } }, stateTitle, stateSub));
+
+  // ---- small cards
+  const miniCard = (title) => {
+    const box = el('div', { style: { display: 'flex', flexDirection: 'column', gap: '2px' } });
+    return { card: el('div', { class: 'card' }, el('h4', { text: title }), box), box };
+  };
+  const netNow = miniCard('Network now');
+  const netDown = el('div', { style: { fontSize: '22px', fontWeight: '700', color: 'var(--down)' }, text: '▼ -' });
+  const netUp = el('div', { style: { fontSize: '22px', fontWeight: '700', color: 'var(--up)' }, text: '▲ -' });
+  const netExtra = el('div', { class: 'dim', style: { fontSize: '12px', marginTop: '4px' }, text: '' });
+  netNow.box.append(netDown, netUp, netExtra);
+
+  const dial = miniCard('Connected clients / transfers');
+  const dialVal = el('div', { style: { fontSize: '22px', fontWeight: '700' }, text: '-' });
+  const dialExtra = el('div', { class: 'dim', style: { fontSize: '12px', marginTop: '4px' }, text: '' });
+  dial.box.append(dialVal, dialExtra);
+
+  const store = miniCard('Storage (phone)');
+  const storeVal = el('div', { style: { fontSize: '22px', fontWeight: '700' }, text: '-' });
+  const storeBar = el('div', { class: 'bar', style: { height: '8px', margin: '6px 0' } }, el('i', { style: { width: '0%' } }));
+  const storeExtra = el('div', { class: 'dim', style: { fontSize: '12px' }, text: '' });
+  store.box.append(storeVal, storeBar, storeExtra);
+
+  // ---- active transfers
+  const txBody = el('div', { style: { display: 'flex', flexDirection: 'column', gap: '6px' } });
+  const txCard = el('div', { class: 'card', style: { gridColumn: '1 / -1' } },
+    el('h4', { style: { margin: '0 0 8px' }, text: 'Active transfers' }), txBody);
+
+  // ---- session
+  const sessBody = el('div', { class: 'dim', style: { fontSize: '12px', lineHeight: '1.7' }, text: '' });
+  const sessCard = el('div', { class: 'card', style: { gridColumn: '1 / -1' } },
+    el('h4', { style: { margin: '0 0 6px' }, text: 'This session (since you opened this window)' }), sessBody);
+
+  body.append(el('div', { class: 'pane' },
+    el('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: '10px' } },
+      stateCard, netNow.card, dial.card, store.card, cpu.card, ram.card, net.card, txCard, sessCard)));
+
+  const sess = { start: Date.now(), rx0: null, tx0: null, samples: 0 };
+  let tasksTimer = null;
+
+  const setBusy = (busy, title, sub) => {
+    stateDot.textContent = busy ? '●' : '○';
+    stateDot.style.color = busy ? '#16a34a' : 'var(--text-3)';
+    stateTitle.textContent = title;
+    stateTitle.style.color = busy ? '#15803d' : 'var(--text-2)';
+    stateSub.textContent = sub;
+  };
+
   const update = s => {
     const H = Stats.hist;
     cpu.val.textContent = s.cpu >= 0 ? s.cpu.toFixed(0) + '%' : 'N/A';
@@ -1015,12 +1080,92 @@ function ResourceMonitor(body) {
     net.val.replaceChildren(el('span', { style: { color: 'var(--up)' }, text: '▲ ' + fmtRate(Stats.up) }), ' ', el('span', { style: { color: 'var(--down)', fontSize: '20px' }, text: '▼ ' + fmtRate(Stats.down) }));
     net.sub.textContent = 'Total RX ' + fmtSize(s.rx) + ' · Total TX ' + fmtSize(s.tx);
     drawChart(net.cv, [{ data: H.up, color: '#2a8cf0' }, { data: H.down, color: '#32b67a' }]);
-    conn.val.textContent = s.connections;
-    conn.sub.textContent = 'Active connections · ' + (s.eco ? '🌱 Eco (Idle)' : '⚡ Active') + (s.temp ? ' · Temp ' + s.temp + '°C' : (s.batteryTemp ? ' · Temp ' + s.batteryTemp + '°C' : '')) + (s.battery >= 0 ? ' · Battery ' + s.battery + '%' : '');
+
+    // network now
+    netDown.textContent = '▼ ' + fmtRate(Stats.down);
+    netUp.textContent = '▲ ' + fmtRate(Stats.up);
+    netExtra.textContent = `Session: ↓ ${fmtSize(sess.down)} · ↑ ${fmtSize(sess.up)}`;
+
+    // clients / transfers
+    const conns = s.connections || 0, files = s.transfers || 0, tor = s.activeTorrents || 0;
+    dialVal.textContent = files > 0 ? `${files} file transfer${files > 1 ? 's' : ''}` : (conns > 0 ? `${conns} connection${conns > 1 ? 's' : ''}` : '0');
+    const bits = [];
+    if (conns) bits.push(`${conns} open connection${conns > 1 ? 's' : ''}`);
+    if (files) bits.push(`serving ${files} file${files > 1 ? 's' : ''}`);
+    if (tor) bits.push(`downloading ${tor} torrent${tor > 1 ? 's' : ''}`);
+    if (s.streaming) bits.push(`${s.streaming} streaming`);
+    if (s.webdav) bits.push('WebDAV on');
+    if (s.tunnel) bits.push('tunnel up');
+    dialExtra.textContent = bits.length ? bits.join(' · ') : 'nothing open';
+
+    // storage
+    const dTotal = s.diskTotal || 0, dFree = s.diskFree || 0;
+    const dPct = dTotal > 0 ? ((dTotal - dFree) / dTotal) * 100 : 0;
+    storeVal.textContent = dTotal > 0 ? Math.round(dPct) + '% used' : '-';
+    storeBar.firstChild.style.width = dPct.toFixed(1) + '%';
+    storeBar.firstChild.style.background = dPct >= 90 ? '#e5484d' : (dPct >= 75 ? '#f0a020' : '#2fb36b');
+    storeExtra.textContent = dTotal > 0 ? `${fmtSize(dFree)} free of ${fmtSize(dTotal)}` : '-';
+
+    // session counters
+    if (sess.rx0 == null) { sess.rx0 = s.rx; sess.tx0 = s.tx; }
+    sess.down = Math.max(0, s.rx - sess.rx0);
+    sess.up = Math.max(0, s.tx - sess.tx0);
+    sess.samples++;
+    const mins = Math.max(1, Math.round((Date.now() - sess.start) / 60000));
+    sessBody.textContent = `↓ ${fmtSize(sess.down)} received · ↑ ${fmtSize(sess.up)} sent in ${mins} min` +
+      (s.uptime ? ` · phone uptime ${fmtUptime(s.uptime)}` : '') +
+      (s.battery >= 0 ? ` · battery ${s.battery}%${s.charging ? ' (charging)' : ''}` : '') +
+      (s.temp || s.batteryTemp ? ` · ${(s.temp || s.batteryTemp)}°C` : '');
+
+    // state
+    const torrentDown = s.torrentDown || 0, torrentUp = s.torrentUp || 0;
+    const busy = files > 0 || torrentDown > 4096 || torrentUp > 4096 || Stats.down > 51200 || Stats.up > 51200;
+    if (busy) {
+      const why = [];
+      if (files > 0) why.push(`servindo ${files} arquivo${files > 1 ? 's' : ''}`);
+      if (torrentDown > 4096) why.push('baixando do swarm ' + fmtRate(torrentDown));
+      if (s.streaming) why.push(`${s.streaming} em reprodução`);
+      if (Stats.up > 51200) why.push('enviando ' + fmtRate(Stats.up));
+      setBusy(true, 'Em uso agora', why.join(' · ') || 'tráfego de rede');
+    } else {
+      const last = s.lastTransfer || 0;
+      const idle = last ? ` — último arquivo servido há ${fmtAgo(Date.now() - last)}` : '';
+      setBusy(false, 'Ocioso', 'nada sendo transferido ou assistido agora' + idle);
+    }
   };
+
+  async function loadTasks() {
+    try {
+      const r = await api('dl/list');
+      const tasks = (r.tasks || []).filter(t => t.type === 'torrent');
+      const active = tasks.filter(t => (t.speed || 0) > 0 || (t.upSpeed || 0) > 0);
+      if (!active.length) {
+        txBody.replaceChildren(el('div', { class: 'dim', style: { fontSize: '13px' }, text: 'Nothing downloading or seeding right now.' }));
+        return;
+      }
+      txBody.replaceChildren(...active.slice(0, 8).map(t => {
+        const pct = t.total > 0 ? Math.min(100, t.done / t.total * 100) : 0;
+        return el('div', { style: { display: 'flex', alignItems: 'center', gap: '10px' } },
+          el('div', { style: { flex: 1, minWidth: 0 } },
+            el('div', { style: { fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: t.name, text: t.name }),
+            el('div', { class: 'bar', style: { height: '5px', marginTop: '3px' } }, el('i', { style: { width: pct.toFixed(1) + '%' } }))),
+          el('div', { style: { fontSize: '11px', color: 'var(--text-3)', flex: 'none', textAlign: 'right' } },
+            el('div', { text: `▼ ${fmtRate(t.speed || 0)}` }),
+            el('div', { text: `${pct.toFixed(0)}% · ${t.status}` })));
+      }));
+    } catch { /* offline */ }
+  }
+
   Stats.listeners.add(update);
   if (Stats.last) update(Stats.last);
-  return { destroy() { Stats.listeners.delete(update); } };
+  loadTasks();
+  tasksTimer = setInterval(loadTasks, 2000);
+  return {
+    destroy() {
+      Stats.listeners.delete(update);
+      if (tasksTimer) clearInterval(tasksTimer);
+    }
+  };
 }
 
 const updateState = { info: null, checking: false, installing: false, progress: 0, statusMsg: '', pollTimer: null, autoUpdate: true, activeTransfers: 0, busy: false };
@@ -1105,7 +1250,7 @@ function ControlPanel(body) {
         el('h3', { text: 'App Updates', style: { marginTop: 0 } }),
         el('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' } },
           el('div', null,
-            el('b', { text: `NexShare v${s.version || '1.10.0'}` }),
+            el('b', { text: `NexShare v${s.version || '1.10.1'}` }),
             el('span', { style: { marginLeft: '8px', fontSize: '11px', textTransform: 'uppercase', background: '#eef3fb', color: '#1e6fd9', padding: '2px 6px', borderRadius: '4px' }, text: (s.flavor || 'normal') + ' edition' })
           ),
           el('button', {
@@ -3159,7 +3304,7 @@ const APPS = {
   photos: { id: 'photos', name: 'Photos', ico: 'photos', w: 900, h: 600, mount: MediaApp('image') },
   videos: { id: 'videos', name: 'Video Station', ico: 'videos', w: 900, h: 600, mount: MediaApp('video') },
   music: { id: 'music', name: 'Audio Station', ico: 'music', w: 640, h: 560, mount: MediaApp('audio') },
-  monitor: { id: 'monitor', name: 'Resource Monitor', ico: 'monitor', w: 760, h: 520, mount: ResourceMonitor },
+  monitor: { id: 'monitor', name: 'Usage Monitor', ico: 'monitor', w: 980, h: 720, mount: ResourceMonitor },
   control: { id: 'control', name: 'Control Panel', ico: 'control', w: 620, h: 600, mount: ControlPanel },
   help: { id: 'help', name: 'NexShare Help', ico: 'help', w: 640, h: 560, mount: Help },
   download: { id: 'download', name: 'Download Station', ico: 'download', w: 960, h: 560, mount: DownloadStation },
