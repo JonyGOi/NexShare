@@ -56,6 +56,7 @@ public class WebApi implements HttpServer.Handler {
     private final Set<String> tokens = Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>());
     private final Map<String, int[]> failures = new ConcurrentHashMap<>(); // ip -> {count, lockUntilSec}
     private final Map<String, byte[]> assetCache = new ConcurrentHashMap<>();
+    private final java.util.Map<String, String> hashes = new java.util.HashMap<>();
     private final LruCache<String, byte[]> thumbs = new LruCache<String, byte[]>(16 * 1024 * 1024) {
         @Override
         protected int sizeOf(String k, byte[] v) {
@@ -162,6 +163,7 @@ public class WebApi implements HttpServer.Handler {
             case "/api/search": search(req, res); break;
             case "/api/media": media(req, res); break;
             case "/api/file": file(req, res); break;
+            case "/api/hash": hash(req, res); break;
             case "/api/thumb": thumb(req, res); break;
             case "/api/zip": zip(req, res); break;
             case "/api/upload": upload(req, res); break;
@@ -565,6 +567,53 @@ public class WebApi implements HttpServer.Handler {
             pos += n;
         }
         out.flush();
+    }
+
+    /**
+     * SHA-256 of a file on the phone, so the PC can prove the copy it received is byte
+     * identical before the phone deletes anything. Results are cached by path+size+mtime.
+     */
+    private void hash(HttpServer.Request req, HttpServer.Response res) throws IOException {
+        File f = resolve(req.param("path"));
+        if (!f.isFile()) {
+            res.error(404, "not found");
+            return;
+        }
+        String key = f.getAbsolutePath() + "|" + f.length() + "|" + f.lastModified();
+        String sha;
+        synchronized (hashes) {
+            sha = hashes.get(key);
+        }
+        if (sha == null) {
+            sha = sha256Of(f);
+            synchronized (hashes) {
+                hashes.clear();
+                hashes.put(key, sha);
+            }
+        }
+        JSONObject o = new JSONObject();
+        put(o, "path", f.getAbsolutePath());
+        put(o, "size", f.length());
+        put(o, "sha256", sha);
+        res.json(200, o.toString());
+    }
+
+    private static String sha256Of(File f) throws IOException {
+        try (java.io.InputStream in = new java.io.FileInputStream(f)) {
+            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] buf = new byte[1 << 20];
+            int n;
+            while ((n = in.read(buf)) > 0) md.update(buf, 0, n);
+            byte[] d = md.digest();
+            StringBuilder sb = new StringBuilder(d.length * 2);
+            for (byte b : d) {
+                sb.append(Character.forDigit((b >> 4) & 0xF, 16));
+                sb.append(Character.forDigit(b & 0xF, 16));
+            }
+            return sb.toString();
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IOException("sha-256 unavailable");
+        }
     }
 
     private void thumb(HttpServer.Request req, HttpServer.Response res) throws IOException {
@@ -1595,6 +1644,7 @@ public class WebApi implements HttpServer.Handler {
             }
             DownloadManager.Task t = dm.addUrl(magnet, DownloadManager.defaultDir());
             if (te != null) te.autoPrioritize(t);
+            if (isOn(req, null, "paused")) dm.pause(t.id); // pick the files first, like qBittorrent
             JSONObject o = new JSONObject();
             put(o, "id", t.id);
             put(o, "uri", "/rest/1.0/torrents/info/" + t.id);
@@ -1610,6 +1660,7 @@ public class WebApi implements HttpServer.Handler {
             }
             DownloadManager.Task t = dm.addTorrent(null, torrentBytes, DownloadManager.defaultDir());
             if (te != null) te.autoPrioritize(t);
+            if (isOn(req, null, "paused")) dm.pause(t.id);
             JSONObject o = new JSONObject();
             put(o, "id", t.id);
             put(o, "uri", "/rest/1.0/torrents/info/" + t.id);
@@ -1874,6 +1925,8 @@ public class WebApi implements HttpServer.Handler {
         DownloadManager.Task t = dm.addUrl(magnet, dest);
         TorrentEngine te = dm.torrentEngine();
         if (te != null) te.autoPrioritize(t);
+        // Added paused on purpose: the file picker must come before any byte is downloaded.
+        if (body.optBoolean("paused", true)) dm.pause(t.id);
 
         String token = getOrCreateStreamToken();
         String host = req.header("host");
@@ -1969,6 +2022,7 @@ public class WebApi implements HttpServer.Handler {
             }
         }
         dm.save();
+        if (body.optBoolean("start", false)) dm.resume(t.id);
         res.json(200, debridPayload(req, t).toString());
     }
 
@@ -2009,6 +2063,21 @@ public class WebApi implements HttpServer.Handler {
             arr.put(fi);
         }
         return arr;
+    }
+
+    /** True when a boolean flag comes as ?flag=1 on the query or as flag=1 in a form body. */
+    private static boolean isOn(HttpServer.Request req, String body, String name) {
+        String v = req.param(name);
+        if (v == null && body != null) {
+            for (String part : body.split("&")) {
+                int eq = part.indexOf('=');
+                if (eq > 0 && name.equals(part.substring(0, eq).trim())) {
+                    v = part.substring(eq + 1).trim();
+                    break;
+                }
+            }
+        }
+        return v != null && (v.equals("1") || v.equalsIgnoreCase("true") || v.equalsIgnoreCase("yes") || v.equals("on"));
     }
 
     /** Issues a new API key, invalidating every stream/API link shared so far. */

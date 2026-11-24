@@ -74,8 +74,11 @@ root prompt.
 The **Debrid Hub** app in the web desktop turns magnet links into instant streaming:
 
 1. Open **Debrid Hub** → paste a magnet (or a `.torrent`/direct URL) → **Desbridar & Transmitir**.
-2. NexShare adds the torrent, waits for metadata, and prioritises the biggest video file
-   with a sequential piece range and piece deadlines.
+   The torrent is added **paused** (like qBittorrent's "add torrent" dialog), so nothing is
+   downloaded before you choose what you want.
+2. Wait for the metadata, tick the folders/files you want and press **▶ Aplicar e baixar**.
+   Only the ticked files are downloaded; the biggest selected video gets top priority with a
+   sequential piece range and piece deadlines.
 3. Pick a file and either **Assistir aqui** (in-browser player) or **Link VLC** and open it
    in VLC/MPV/Kodi/Smart TV. Playback starts right away — the HTTP server writes only the
    bytes already on disk and waits for the pieces being read, instead of serving zeros.
@@ -109,7 +112,10 @@ Implemented endpoints: `/user`, `/torrents`, `/torrents/addMagnet`, `/torrents/a
 `selectFiles` really applies the choice: ids not sent become *ignored* in libtorrent
 (`files=all` downloads everything, `files=none` downloads nothing), and `/torrents/info`
 reports `selected`/`done`/`progress` per file. Extra endpoints used by the bundled clients:
-`/torrents/pause/{id}`, `/torrents/resume/{id}`, `/torrents/delete/{id}?files=1`.
+`/torrents/pause/{id}`, `/torrents/resume/{id}`, `/torrents/delete/{id}?files=1`,
+`/api/hash?path=` (SHA-256 of a file, used to verify a copy before deleting it),
+`?paused=1` on `addMagnet`/`addTorrent` (add without downloading) and `eta` (seconds left)
+in the task JSON.
 The API requires the same login as the rest of NexShare (PIN or username+password).
 
 ## Desktop app (Windows): NexShare Debrid
@@ -134,6 +140,32 @@ phone as a debrid server and **downloads straight to the PC** — no browser, no
 - **Remover** asks whether to delete the files from the phone too.
 - Downloads go to `%USERPROFILE%\Downloads\NexShare` by default (**Pasta...** changes it).
   Settings live in `%APPDATA%\NexShareDebrid\config.json`.
+
+### Transfer queue: phone → PC, then free the phone
+
+The app keeps a **queue** (`queue.json`) so it can move a whole torrent to the PC in the
+background and only then delete it from the phone:
+
+- **Mandar pro PC automaticamente** (on by default): every file the phone finishes is queued
+  and transferred right away, one by one. Files still downloading wait their turn
+  (*"esperando o celular terminar"*).
+- **Resume**: the bytes already written stay in a `.part` file next to the destination and the
+  transfer continues with an HTTP `Range` request — close the app, reboot, whatever; it picks
+  up exactly where it stopped. `queue.json` remembers the file, the byte count and the status.
+- **ETA**: the status bar and the **Fila** window show speed, percentage and *faltam ~12min*
+  for the file being transferred.
+- **Safety margin before deleting**: a file is only accepted after a **SHA-256 comparison**
+  between the phone (`/api/hash`) and the PC copy (size alone is never enough; the fallback for
+  older phones is a size check plus 6 block comparisons spread across the file). If the hash
+  differs, nothing is deleted and the item shows *"verificação falhou — não apaguei do celular"*.
+- **apagar do celular depois de verificar** (on by default): when *every* selected file of a
+  torrent is on the PC and verified, the app removes the torrent **and its files** from the
+  phone (`torrents/delete?id&files=1`) and frees the space. Files are never deleted one by one
+  while the torrent is still seeding — that would make libtorrent re-download them.
+- **Espaço livre mínimo no PC** (default 5 GB, in the *Fila* window): the queue pauses instead
+  of filling the disk.
+- The **Fila** window lists everything: `No PC`, `Falta`, status, plus *Pausar fila*,
+  *Tentar de novo os que falharam* and *Limpar concluídos*.
 
 ```
 desktop/

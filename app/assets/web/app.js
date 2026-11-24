@@ -1105,7 +1105,7 @@ function ControlPanel(body) {
         el('h3', { text: 'App Updates', style: { marginTop: 0 } }),
         el('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' } },
           el('div', null,
-            el('b', { text: `NexShare v${s.version || '1.8.0'}` }),
+            el('b', { text: `NexShare v${s.version || '1.9.0'}` }),
             el('span', { style: { marginLeft: '8px', fontSize: '11px', textTransform: 'uppercase', background: '#eef3fb', color: '#1e6fd9', padding: '2px 6px', borderRadius: '4px' }, text: (s.flavor || 'normal') + ' edition' })
           ),
           el('button', {
@@ -2810,8 +2810,8 @@ function DebridHub(body, win) {
       st.task = r.task;
       st.dirty = false;
       setStatus((r.files && r.files.length)
-        ? '✓ Torrent adicionado — desmarque o que não quer baixar e clique em Aplicar seleção'
-        : '⏳ Torrent adicionado — buscando metadados… a lista de arquivos aparece aqui', 'ok');
+        ? '✓ Torrent adicionado pausado — desmarque o que não quer e clique em Aplicar e baixar'
+        : '⏳ Torrent adicionado pausado — buscando metadados… a lista de arquivos aparece aqui', 'ok');
       renderFiles(r.files || [], r, true);
       filesBox.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
       refreshActive();
@@ -2870,7 +2870,8 @@ function DebridHub(body, win) {
       return total;
     };
 
-    const applyBtn = el('button', { class: 'btn primary', onclick: () => applySelection() }, 'Aplicar seleção');
+    const paused = st.task && st.task.status === 'paused';
+    const applyBtn = el('button', { class: 'btn primary', onclick: () => applySelection() }, paused ? '▶ Aplicar e baixar' : 'Aplicar seleção');
     const countLabel = el('span', { class: 'dim', style: { fontSize: '12px' } });
 
     function refreshCount() {
@@ -2959,11 +2960,13 @@ function DebridHub(body, win) {
       applyBtn.disabled = true;
       toast('Aplicando seleção…');
       try {
-        const r = await api('debrid/select', null, { method: 'POST', body: JSON.stringify({ id: st.task.id, files: [...st.checked] }) });
+        const r = await api('debrid/select', null, { method: 'POST', body: JSON.stringify({ id: st.task.id, files: [...st.checked], start: true }) });
         st.dirty = false;
         if (r.task) st.task = r.task;
         renderFiles(r.files || [], r, true);
-        toast('Seleção aplicada — só os arquivos marcados serão baixados');
+        toast(st.checked.size === files.length
+          ? 'Download iniciado (todos os arquivos)'
+          : `Download iniciado — ${st.checked.size} de ${files.length} arquivos`);
       } catch (e) {
         toast('Falha ao aplicar seleção: ' + e.message);
       } finally {

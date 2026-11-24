@@ -41,13 +41,22 @@ public class DownloadManager {
         volatile boolean stop;
         Thread thread;
 
+        /** Remaining seconds at the current speed, or -1 when it cannot be estimated. */
+        long etaSeconds() {
+            if (speed <= 0 || total <= 0) return -1;
+            long left = total - done;
+            if (left <= 0) return 0;
+            return left / Math.max(1L, speed);
+        }
+
         JSONObject toJson() {
             JSONObject o = new JSONObject();
             try {
                 o.put("id", id).put("type", type).put("url", url).put("name", name).put("dest", dest)
                     .put("status", status).put("error", error == null ? JSONObject.NULL : error)
                     .put("total", total).put("done", done).put("speed", speed).put("upSpeed", upSpeed)
-                    .put("peers", peers).put("seeds", seeds).put("created", created);
+                    .put("peers", peers).put("seeds", seeds).put("created", created)
+                    .put("eta", etaSeconds());
                 if (hash != null) o.put("hash", hash);
                 if (selected != null) {
                     JSONArray sel = new JSONArray();

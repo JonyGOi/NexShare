@@ -29,6 +29,9 @@ $script:Cfg = @{
     url         = 'http://nexshare.local:8080'
     key         = ''
     downloadDir = (Join-Path $env:USERPROFILE 'Downloads\NexShare')
+    autoMove    = $true
+    deletePhone = $true
+    minFreeGb   = 5
 }
 if (Test-Path $script:ConfigPath) {
     try {
@@ -36,6 +39,9 @@ if (Test-Path $script:ConfigPath) {
         if ($saved.url) { $script:Cfg.url = $saved.url }
         if ($saved.key) { $script:Cfg.key = $saved.key }
         if ($saved.downloadDir) { $script:Cfg.downloadDir = $saved.downloadDir }
+        if ($null -ne $saved.autoMove) { $script:Cfg.autoMove = [bool]$saved.autoMove }
+        if ($null -ne $saved.deletePhone) { $script:Cfg.deletePhone = [bool]$saved.deletePhone }
+        if ($null -ne $saved.minFreeGb) { $script:Cfg.minFreeGb = [double]$saved.minFreeGb }
     } catch { }
 }
 
@@ -306,22 +312,47 @@ $barFiles.Padding = New-Object System.Windows.Forms.Padding(0, 6, 0, 0)
 $split.Panel2.Controls.Add($barFiles)
 
 $btnPick = New-SmallButton 'Selecionar arquivos...' { Pick-Files-ForCurrent }
+$btnQueue = New-SmallButton 'Fila' { Show-Queue }
 $btnDownload = New-SmallButton 'Baixar para o PC' { Start-Download }
 $btnCopyLink = New-SmallButton 'Copiar link' { Copy-Link }
 $btnVlc = New-SmallButton 'Abrir no VLC' { Open-Vlc }
 $btnOpenFolder = New-SmallButton 'Abrir pasta' { Open-Folder }
-$barFiles.Controls.AddRange(@($btnPick, $btnDownload, $btnCopyLink, $btnVlc, $btnOpenFolder))
+$chkAutoMove = New-Object System.Windows.Forms.CheckBox
+$chkAutoMove.Text = 'Mandar pro PC automaticamente'
+$chkAutoMove.AutoSize = $true
+$chkAutoMove.Checked = [bool]$script:Cfg.autoMove
+$chkAutoMove.Margin = New-Object System.Windows.Forms.Padding(10, 3, 10, 0)
+$chkAutoMove.Add_CheckedChanged({ $script:Cfg.autoMove = $chkAutoMove.Checked; Save-Config })
+
+$chkDeletePhone = New-Object System.Windows.Forms.CheckBox
+$chkDeletePhone.Text = 'apagar do celular depois de verificar'
+$chkDeletePhone.AutoSize = $true
+$chkDeletePhone.Checked = [bool]$script:Cfg.deletePhone
+$chkDeletePhone.Margin = New-Object System.Windows.Forms.Padding(0, 3, 10, 0)
+$chkDeletePhone.Add_CheckedChanged({ $script:Cfg.deletePhone = $chkDeletePhone.Checked; Save-Config })
+
+$barFiles.Controls.AddRange(@($btnPick, $btnDownload, $btnQueue, $btnCopyLink, $btnVlc, $btnOpenFolder, $chkAutoMove, $chkDeletePhone))
 
 # ---------------------------------------------------------------- estado
 
 $script:Torrents = @()
 $script:Current = $null
 $script:Files = @()
-$script:DownloadJob = $null
-$script:DownloadState = $null
-$script:DownloadProgress = $null
-$script:DownloadCancel = $null
-$script:DownloadName = ''
+$script:DownloadState = Join-Path $script:AppDir 'dl-state.txt'
+$script:DownloadProgress = Join-Path $script:AppDir 'dl-progress.txt'
+$script:DownloadCancel = Join-Path $script:AppDir 'dl-cancel.txt'
+$script:QueuePath = Join-Path $script:AppDir 'queue.json'
+$script:Queue = New-Object System.Collections.ArrayList
+$script:QueueJob = $null
+$script:QueueItem = $null
+$script:QueuePaused = $false
+$script:QueueInfo = @{}
+$script:QueueInfoAt = @{}
+$script:QueueForm = $null
+$script:QueueList = $null
+$script:QueueLabel = $null
+$script:QueueSig = ''
+$script:ScanDone = @{}
 $script:Refreshing = $false
 $script:Ticks = 0
 $script:SelectId = $null
@@ -738,62 +769,186 @@ function Open-Folder {
     Start-Process explorer.exe $dir
 }
 
-# ---------------------------------------------------------------- download
+# ---------------------------------------------------------------- fila de transferencia
 
-function Start-Download {
-    if ($script:DownloadJob) { Set-Status 'Já existe um download em andamento' 'error'; return }
-    if (-not $script:Current -or $lvFiles.SelectedItems.Count -eq 0) { Set-Status 'Selecione um arquivo' 'error'; return }
+function Format-Eta([double]$sec) {
+    if ($null -eq $sec -or $sec -lt 0 -or [double]::IsNaN($sec) -or [double]::IsInfinity($sec)) { return '-' }
+    if ($sec -lt 60) { return ('{0}s' -f [int]$sec) }
+    if ($sec -lt 3600) { return ('{0}min' -f [int][math]::Round($sec / 60)) }
+    return ('{0}h{1:00}' -f [int][math]::Floor($sec / 3600), [int][math]::Floor(($sec % 3600) / 60))
+}
+
+function Queue-Save {
     try {
-        $file = $lvFiles.SelectedItems[0].Tag
-        $info = Get-FileLink $file
-        if (-not $info.download) { throw 'o servidor não devolveu um link de download' }
+        $items = @()
+        foreach ($q in $script:Queue) {
+            $items += [ordered]@{
+                id = $q.id; fileId = $q.fileId; name = $q.name; path = $q.path
+                size = $q.size; bytes = $q.bytes; status = $q.status; dest = $q.dest
+                torrentName = $q.torrentName
+            }
+        }
+        (@{ items = $items } | ConvertTo-Json -Depth 5) | Set-Content -Path $script:QueuePath -Encoding UTF8
+    } catch { }
+}
 
-        $dir = $script:Cfg.downloadDir
-        New-Item -ItemType Directory -Force -Path $dir | Out-Null
-        $name = $info.filename
-        if (-not $name) { $name = Split-Path ([string]$file.path) -Leaf }
-        foreach ($c in [System.IO.Path]::GetInvalidFileNameChars()) { $name = $name.Replace([string]$c, '_') }
-        $dest = Join-Path $dir $name
+function Queue-Load {
+    if (-not (Test-Path $script:QueuePath)) { return }
+    try {
+        $data = Get-Content -Raw -Path $script:QueuePath | ConvertFrom-Json
+        foreach ($it in @($data.items)) {
+            if (-not $it) { continue }
+            $item = New-Object psobject -Property @{
+                id = [string]$it.id; fileId = [int]$it.fileId; name = [string]$it.name
+                path = [string]$it.path; size = [int64]$it.size; bytes = [int64]$it.bytes
+                status = [string]$it.status; dest = [string]$it.dest
+                torrentName = [string]$it.torrentName; speed = 0.0; eta = -1.0
+                link = $null; note = ''
+            }
+            if ($item.status -eq 'downloading' -or $item.status -eq 'verifying') { $item.status = 'queued' }
+            $part = "$($item.dest).part"
+            if (Test-Path -LiteralPath $part) {
+                # continua exatamente de onde parou
+                $item.bytes = (Get-Item -LiteralPath $part).Length
+                $item.status = 'queued'
+            }
+            if ($item.status -eq 'done' -and -not (Test-Path -LiteralPath $item.dest)) {
+                $item.status = 'queued'; $item.bytes = 0
+            }
+            [void]$script:Queue.Add($item)
+        }
+        if ($script:Queue.Count -gt 0) {
+            Set-Status ("Fila retomada: {0} arquivo(s) - {1} já no PC" -f $script:Queue.Count, @($script:Queue | Where-Object { $_.status -eq 'done' }).Count)
+        }
+    } catch { }
+}
 
-        $script:DownloadState = Join-Path $script:AppDir 'dl-state.txt'
-        $script:DownloadProgress = Join-Path $script:AppDir 'dl-progress.txt'
-        $script:DownloadCancel = Join-Path $script:AppDir 'dl-cancel.txt'
+function Queue-Contains([string]$id, [int]$fileId) {
+    foreach ($q in $script:Queue) {
+        if ($q.id -eq $id -and $q.fileId -eq $fileId -and $q.status -ne 'error') { return $true }
+    }
+    return $false
+}
+
+function Get-TorrentInfo([string]$id, [switch]$Force) {
+    $now = [DateTime]::UtcNow
+    if (-not $Force -and $script:QueueInfoAt.ContainsKey($id)) {
+        if (($now - $script:QueueInfoAt[$id]).TotalSeconds -lt 3) { return $script:QueueInfo[$id] }
+    }
+    $info = Api -Path ('torrents/info/' + $id)
+    $script:QueueInfo[$id] = $info
+    $script:QueueInfoAt[$id] = $now
+    return $info
+}
+
+function Queue-AddFile([string]$torrentId, [string]$torrentName, $file) {
+    if ($null -eq $file) { return 0 }
+    if ($null -ne $file.selected -and [int]$file.selected -eq 0) { return 0 }
+    if (Queue-Contains $torrentId ([int]$file.id)) { return 0 }
+    $rel = ([string]$file.path).TrimStart('/')
+    $dest = Join-Path $script:Cfg.downloadDir ($rel.Replace('/', '\'))
+    $item = New-Object psobject -Property @{
+        id = $torrentId; fileId = [int]$file.id; name = (Split-Path $rel -Leaf); path = $rel
+        size = [int64]$file.bytes; bytes = [int64]0; status = 'queued'; dest = $dest
+        torrentName = $torrentName; speed = 0.0; eta = -1.0; link = $null; note = ''
+    }
+    if ((Test-Path -LiteralPath $dest) -and ((Get-Item -LiteralPath $dest).Length -eq $item.size) -and $item.size -gt 0) {
+        $item.status = 'done'; $item.bytes = $item.size; $item.note = 'já estava no PC'
+    }
+    [void]$script:Queue.Add($item)
+    return 1
+}
+
+function Queue-AddTorrent([string]$torrentId, [string]$torrentName) {
+    $info = Get-TorrentInfo $torrentId -Force
+    $n = 0
+    foreach ($f in @($info.files)) { $n += Queue-AddFile $torrentId $torrentName $f }
+    if ($n -gt 0) { Queue-Save; Queue-UpdateUi }
+    return $n
+}
+
+function Get-FreeSpace([string]$path) {
+    try {
+        $dir = [System.IO.Path]::GetDirectoryName($path)
+        while ($dir -and -not (Test-Path -LiteralPath $dir)) { $dir = [System.IO.Path]::GetDirectoryName($dir) }
+        if (-not $dir) { return [int64]-1 }
+        $root = [System.IO.Path]::GetPathRoot($dir)
+        $di = New-Object System.IO.DriveInfo($root)
+        return [int64]$di.AvailableFreeSpace
+    } catch { return [int64]-1 }
+}
+
+function Queue-StartItem($item) {
+    try {
+        $parent = [System.IO.Path]::GetDirectoryName($item.dest)
+        if ($parent) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
+
+        # margem de seguranca: nao enche o disco do PC
+        $free = Get-FreeSpace $item.dest
+        $need = ($item.size - $item.bytes) + [int64]([double]$script:Cfg.minFreeGb * 1GB)
+        if ($free -ge 0 -and $free -lt $need) {
+            $item.status = 'error'
+            $item.note = ('sem espaço no PC (precisa de {0} livres)' -f (Format-Size $need))
+            $script:QueuePaused = $true
+            Set-Status ("Fila pausada: $($item.note)") 'error'
+            Queue-Save; Queue-UpdateUi
+            return
+        }
+
+        $info = Api -Method 'POST' -Path 'unrestrict/link' -Query @{ id = $item.id; file = ($item.fileId - 1) }
+        if (-not $info.download) { throw 'o celular não devolveu link de download' }
+        $item.link = [string]$info.download
+
+        $part = "$($item.dest).part"
+        $offset = [int64]0
+        if (Test-Path -LiteralPath $part) { $offset = [int64](Get-Item -LiteralPath $part).Length }
+        if ($item.size -gt 0 -and $offset -gt $item.size) { Remove-Item -LiteralPath $part -Force; $offset = 0 }
+        if ($item.size -gt 0 -and $offset -eq $item.size) { $offset = 0; Remove-Item -LiteralPath $part -Force }
+
         Remove-Item $script:DownloadState, $script:DownloadProgress, $script:DownloadCancel -ErrorAction SilentlyContinue
         'running' | Set-Content -Path $script:DownloadState -Encoding ASCII
-        ("0|{0}" -f $file.bytes) | Set-Content -Path $script:DownloadProgress -Encoding ASCII
+        ("{0}|{1}|0" -f $offset, $item.size) | Set-Content -Path $script:DownloadProgress -Encoding ASCII
 
-        $script:DownloadName = $name
-        $script:DownloadJob = Start-Job -ArgumentList $info.download, $dest, $script:DownloadProgress, $script:DownloadState, $script:DownloadCancel -ScriptBlock {
-            param($url, $dest, $progFile, $stateFile, $cancelFile)
-            $tmp = "$dest.part"
+        $script:QueueJob = Start-Job -ArgumentList $item.link, $part, $offset, $item.size, $script:DownloadProgress, $script:DownloadState, $script:DownloadCancel -ScriptBlock {
+            param($url, $tmp, $offset, $totalSize, $progFile, $stateFile, $cancelFile)
+            $why = ''
             try {
                 Add-Type -AssemblyName System.Net.Http
                 $client = New-Object System.Net.Http.HttpClient
-                $client.Timeout = [TimeSpan]::FromMinutes(60)
+                $client.Timeout = [TimeSpan]::FromHours(6)
+                if ($offset -gt 0) { [void]$client.DefaultRequestHeaders.Add('Range', "bytes=$offset-") }
                 $resp = $client.GetAsync($url, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
                 $resp.EnsureSuccessStatusCode() | Out-Null
-                $total = [int64]0
-                if ($resp.Content.Headers.ContentLength) { $total = [int64]$resp.Content.Headers.ContentLength }
+                if ($offset -gt 0 -and [int]$resp.StatusCode -ne 206) { $offset = 0 }  # servidor ignorou o Range: recomeca
+                $total = $totalSize
+                if ($resp.Content.Headers.ContentLength) { $total = $offset + [int64]$resp.Content.Headers.ContentLength }
                 $in = $resp.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
-                $out = [System.IO.File]::Create($tmp)
+                if ($offset -gt 0) { $out = New-Object System.IO.FileStream($tmp, [System.IO.FileMode]::Append, [System.IO.FileAccess]::Write) }
+                else { $out = New-Object System.IO.FileStream($tmp, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write) }
                 $buf = New-Object byte[] 1048576
-                $done = [int64]0
-                $last = [int64]0
+                $done = [int64]$offset
+                $lastTicks = [DateTime]::UtcNow
+                $lastBytes = [int64]$offset
                 while (($n = $in.Read($buf, 0, $buf.Length)) -gt 0) {
                     $out.Write($buf, 0, $n)
                     $done += $n
-                    if (($done - $last) -ge 1048576) {
-                        "$done|$total" | Set-Content -Path $progFile -Encoding ASCII
-                        $last = $done
+                    $nowT = [DateTime]::UtcNow
+                    $dt = ($nowT - $lastTicks).TotalSeconds
+                    if ($dt -ge 0.5) {
+                        $speed = [int64](($done - $lastBytes) / $dt)
+                        ("{0}|{1}|{2}" -f $done, $total, $speed) | Set-Content -Path $progFile -Encoding ASCII
+                        $lastTicks = $nowT; $lastBytes = $done
                     }
                     if (Test-Path $cancelFile) { break }
                 }
-                $out.Close(); $in.Close(); $client.Dispose()
+                $out.Flush(); $out.Close(); $in.Close(); $client.Dispose()
+                ("{0}|{1}|0" -f $done, $total) | Set-Content -Path $progFile -Encoding ASCII
                 if (Test-Path $cancelFile) {
-                    Remove-Item $tmp -Force -ErrorAction SilentlyContinue
                     'cancel' | Set-Content -Path $stateFile -Encoding ASCII
+                } elseif ($total -gt 0 -and (Get-Item -LiteralPath $tmp).Length -ne $total) {
+                    'error|tamanho recebido diferente do esperado' | Set-Content -Path $stateFile -Encoding ASCII
                 } else {
-                    Move-Item -Force $tmp $dest
+                    Move-Item -LiteralPath $tmp -Destination ($tmp -replace '\.part$', '') -Force
                     "done|$done|$total" | Set-Content -Path $stateFile -Encoding ASCII
                 }
             } catch {
@@ -801,68 +956,430 @@ function Start-Download {
             }
         }
 
-        $btnDownload.Enabled = $false
+        $item.status = 'downloading'
+        $item.note = if ($offset -gt 0) { 'retomando' } else { 'baixando' }
+        $script:QueueItem = $item
         $prog.Visible = $true
-        $prog.Value = 0
-        Set-Status "Baixando $name ..."
+        if ($item.size -gt 0) { $prog.Value = [int][math]::Min(100, [math]::Round($offset * 100 / $item.size)) } else { $prog.Value = 0 }
+        Set-Status ("Mandando pro PC: {0}{1}" -f $item.name, $(if ($offset -gt 0) { ' (retomando de ' + (Format-Size $offset) + ')' } else { '' }))
+        Queue-Save
+        Queue-UpdateUi
     } catch {
-        Set-Status "Falha ao baixar: $($_.Exception.Message)" 'error'
+        $item.status = 'error'
+        $item.note = $_.Exception.Message
+        Set-Status ("Falha ao transferir {0}: {1}" -f $item.name, $_.Exception.Message) 'error'
+        Queue-Save; Queue-UpdateUi
     }
 }
 
-function Poll-Download {
-    if (-not $script:DownloadJob) { return }
+function Raw-Get([string]$pathAndQuery) {
+    $base = $script:Cfg.url.Trim().TrimEnd('/')
+    $sep = if ($pathAndQuery.Contains('?')) { '&' } else { '?' }
+    $uri = "$base$pathAndQuery" + $sep + 'token=' + [uri]::EscapeDataString([string]$script:Cfg.key)
+    return Invoke-RestMethod -Uri $uri -Headers @{ Authorization = "Bearer $($script:Cfg.key)" } -TimeoutSec 900
+}
+
+function Get-PhonePath($item) {
+    try {
+        $list = Raw-Get '/api/dl/list'
+        $task = @($list.tasks) | Where-Object { [string]$_.id -eq [string]$item.id } | Select-Object -First 1
+        if (-not $task -or -not $task.dest) { return $null }
+        $sep = if ($task.dest.EndsWith('/')) { '' } else { '/' }
+        return ($task.dest + $sep + ([string]$item.path).TrimStart('/'))
+    } catch { return $null }
+}
+
+function Test-QueueItem($item) {
+    try {
+        if (-not (Test-Path -LiteralPath $item.dest)) { return $false }
+        $len = [int64](Get-Item -LiteralPath $item.dest).Length
+        if ($item.size -gt 0 -and $len -ne $item.size) { return $false }
+
+        # 1) garantia forte: SHA-256 do celular x SHA-256 do arquivo no PC
+        $phonePath = Get-PhonePath $item
+        if ($phonePath) {
+            try {
+                $h = Raw-Get ('/api/hash?path=' + [uri]::EscapeDataString($phonePath))
+                if ($h -and $h.sha256 -and $h.size -eq $len) {
+                    $localHash = (Get-FileHash -LiteralPath $item.dest -Algorithm SHA256).Hash.ToLower()
+                    if ([string]$h.sha256 -ne $localHash) {
+                        $item.note = 'sha-256 diferente'
+                        return $false
+                    }
+                    $item.note = 'verificado (sha-256)'
+                    return $true
+                }
+            } catch {
+                # celular antigo sem /api/hash: cai para a conferencia por amostragem
+            }
+        }
+        if (-not $item.link) {
+            $info = Api -Method 'POST' -Path 'unrestrict/link' -Query @{ id = $item.id; file = ($item.fileId - 1) }
+            $item.link = [string]$info.download
+        }
+        if (-not $item.link) { return $false }
+        Add-Type -AssemblyName System.Net.Http
+        $client = New-Object System.Net.Http.HttpClient
+        $client.Timeout = [TimeSpan]::FromMinutes(3)
+        try {
+            $fs = [System.IO.File]::OpenRead($item.dest)
+            try {
+                # confere 3 pedacos do arquivo contra o celular (nao baixa o arquivo de novo)
+                foreach ($frac in @(0.02, 0.2, 0.38, 0.56, 0.74, 0.95)) {
+                    $blockLen = [int64][math]::Min(16384, $len)
+                    if ($blockLen -le 0) { break }
+                    $off = [int64][math]::Floor($len * $frac)
+                    if ($off + $blockLen -gt $len) { $off = $len - $blockLen }
+                    $req = New-Object System.Net.Http.HttpRequestMessage('GET', $item.link)
+                    [void]$req.Headers.Add('Range', ("bytes={0}-{1}" -f $off, ($off + $blockLen - 1)))
+                    $resp = $client.SendAsync($req).GetAwaiter().GetResult()
+                    if (-not $resp.IsSuccessStatusCode) { return $false }
+                    $remote = $resp.Content.ReadAsByteArrayAsync().GetAwaiter().GetResult()
+                    $resp.Dispose(); $req.Dispose()
+                    if ($remote.Length -ne $blockLen) { return $false }
+                    [void]$fs.Seek($off, [System.IO.SeekOrigin]::Begin)
+                    $local = New-Object byte[] $blockLen
+                    $read = 0
+                    while ($read -lt $blockLen) {
+                        $n = $fs.Read($local, $read, $blockLen - $read)
+                        if ($n -le 0) { break }
+                        $read += $n
+                    }
+                    for ($i = 0; $i -lt $blockLen; $i++) { if ($local[$i] -ne $remote[$i]) { return $false } }
+                }
+            } finally { $fs.Close() }
+        } finally { $client.Dispose() }
+        return $true
+    } catch {
+        try { Add-Content -Path $script:LogPath -Value ("[{0}] verificação {1}: {2}" -f (Get-Date), $item.name, $_.Exception.Message) } catch { }
+        return $false
+    }
+}
+
+function Queue-StartNext {
+    if ($script:QueuePaused -or $script:QueueJob) { return }
+    foreach ($item in @($script:Queue)) {
+        if ($item.status -ne 'queued') { continue }
+        $info = $null
+        try { $info = Get-TorrentInfo $item.id } catch { continue }
+        $f = @($info.files) | Where-Object { [int]$_.id -eq $item.fileId } | Select-Object -First 1
+        if (-not $f) {
+            $item.status = 'error'; $item.note = 'torrent não está mais no celular'
+            Queue-Save; Queue-UpdateUi
+            continue
+        }
+        $item.size = [int64]$f.bytes
+        if ([double]$f.progress -lt 99.9 -and [int64]$f.done -lt $item.size) {
+            $item.note = 'esperando o celular terminar'
+            continue
+        }
+        Queue-StartItem $item
+        return
+    }
+}
+
+function Queue-Poll {
+    if (-not $script:QueueJob) { return }
     try {
         if (Test-Path $script:DownloadProgress) {
-            $line = Get-Content -Raw -Path $script:DownloadProgress -ErrorAction SilentlyContinue
-            if ($line) {
-                $parts = $line.Trim().Split('|')
+            $raw = (Get-Content -Raw -Path $script:DownloadProgress -ErrorAction SilentlyContinue)
+            if ($raw -and $script:QueueItem) {
+                $parts = $raw.Trim().Split('|')
                 if ($parts.Count -ge 2) {
-                    $done = [double]$parts[0]
-                    $total = [double]$parts[1]
+                    $done = [int64]$parts[0]; $total = [int64]$parts[1]
+                    $speed = if ($parts.Count -ge 3) { [double]$parts[2] } else { 0 }
+                    $script:QueueItem.bytes = $done
+                    $script:QueueItem.speed = $speed
+                    if ($speed -gt 0 -and $total -gt $done) { $script:QueueItem.eta = ($total - $done) / $speed } else { $script:QueueItem.eta = -1 }
                     if ($total -gt 0) {
-                        $pct = [int][math]::Min(100, [math]::Round(($done * 100) / $total))
+                        $pct = [int][math]::Min(100, [math]::Round($done * 100 / $total))
                         $prog.Value = $pct
-                        Set-Status ("Baixando {0}: {1} de {2} ({3}%)" -f $script:DownloadName, (Format-Size $done), (Format-Size $total), $pct)
-                    } else {
-                        Set-Status ("Baixando {0}: {1}" -f $script:DownloadName, (Format-Size $done))
+                        Set-Status ("{0}: {1} de {2} ({3}%) · {4}/s · faltam {5}" -f $script:QueueItem.name, (Format-Size $done), (Format-Size $total), $pct, (Format-Size $speed), (Format-Eta $script:QueueItem.eta))
                     }
+                    Queue-UpdateUi
                 }
             }
         }
         if (Test-Path $script:DownloadState) {
-            $state = (Get-Content -Raw -Path $script:DownloadState).Trim()
-            if ($state.StartsWith('done')) { Complete-Download 'done', $state }
-            elseif ($state.StartsWith('error')) { Complete-Download 'error', $state }
-            elseif ($state -eq 'cancel' -or $state -eq 'stop') { Complete-Download 'cancel', $state }
+            $state = (Get-Content -Raw -Path $script:DownloadState -ErrorAction SilentlyContinue)
+            if ($state) {
+                $state = $state.Trim()
+                if ($state.StartsWith('done') -or $state.StartsWith('error') -or $state -eq 'cancel' -or $state.StartsWith('stop')) {
+                    Queue-Finish $state
+                }
+            }
         }
     } catch { }
 }
 
-function Complete-Download([string]$result, [string]$raw) {
+function Queue-Finish([string]$state) {
+    $item = $script:QueueItem
     try {
-        if ($script:DownloadJob) {
-            Wait-Job $script:DownloadJob -Timeout 3 | Out-Null
-            Remove-Job $script:DownloadJob -Force -ErrorAction SilentlyContinue
+        if ($script:QueueJob) { Wait-Job $script:QueueJob -Timeout 5 | Out-Null; Remove-Job $script:QueueJob -Force -ErrorAction SilentlyContinue }
+    } catch { }
+    $script:QueueJob = $null
+    $prog.Visible = $false
+    Remove-Item $script:DownloadState, $script:DownloadProgress, $script:DownloadCancel -ErrorAction SilentlyContinue
+    if ($null -eq $item) { return }
+
+    if ($state.StartsWith('done')) {
+        $item.status = 'verifying'
+        Queue-UpdateUi
+        $ok = Test-QueueItem $item
+        if ($ok) {
+            $item.status = 'done'; $item.bytes = $item.size; $item.speed = 0; $item.eta = 0; $item.note = 'verificado'
+            Set-Status ("Chegou no PC e confere: {0}" -f $item.name) 'ok'
+        } else {
+            $item.status = 'error'; $item.note = 'verificação falhou — não apaguei do celular'
+            Set-Status ("Verificação falhou em {0} (nada foi apagado do celular)" -f $item.name) 'error'
+        }
+    } elseif ($state -eq 'cancel' -or $state.StartsWith('stop')) {
+        $item.status = 'queued'
+        $item.speed = 0
+        Set-Status 'Transferência pausada'
+    } else {
+        $msg = $state -replace '^error\|', ''
+        $item.status = 'error'; $item.note = $msg
+        Set-Status ("Falha em {0}: {1}" -f $item.name, $msg) 'error'
+    }
+    $script:QueueItem = $null
+    Queue-Save
+    Queue-AfterFinish
+    Queue-UpdateUi
+    if ($script:Current) { Load-Files $script:Current }
+}
+
+function Queue-AfterFinish {
+    if (-not $script:Cfg.deletePhone) { return }
+    $doneIds = @($script:Queue | Where-Object { $_.status -eq 'done' } | Select-Object -ExpandProperty id -Unique)
+    foreach ($id in $doneIds) {
+        $pending = @($script:Queue | Where-Object { $_.id -eq $id -and $_.status -ne 'done' })
+        if ($pending.Count -gt 0) { continue }
+        try {
+            $info = Get-TorrentInfo $id -Force
+            $files = @($info.files)
+            if (-not $files.Count) { continue }
+            $left = @($files | Where-Object { ($null -eq $_.selected -or [int]$_.selected -ne 0) -and -not (Queue-Contains $id ([int]$_.id)) })
+            if ($left.Count -gt 0) { continue }   # ainda falta coisa que não está na fila
+            $name = [string]$info.filename
+            Api -Method 'POST' -Path ('torrents/delete/' + $id) -Query @{ files = '1' } | Out-Null
+            foreach ($q in @($script:Queue)) { if ($q.id -eq $id) { [void]$script:Queue.Remove($q) } }
+            Queue-Save
+            Set-Status ("Tudo verificado no PC — '$name' saiu do celular e o espaço foi liberado") 'ok'
+            Refresh-Torrents
+        } catch { }
+    }
+}
+
+function Queue-AutoScan {
+    if (-not $script:Cfg.autoMove -or -not $script:Cfg.key) { return }
+    $added = 0
+    $scanned = 0
+    foreach ($t in @($script:Torrents)) {
+        if (-not $t.id) { continue }
+        if ($script:ScanDone.ContainsKey([string]$t.id)) { continue }
+        if ($scanned -ge 3) { break }   # no maximo 3 torrents por varredura
+        $scanned++
+        try {
+            $info = Get-TorrentInfo ([string]$t.id) -Force
+            $files = @($info.files)
+            if (-not $files.Count) { continue }
+            $pending = 0
+            foreach ($f in $files) {
+                if ($null -ne $f.selected -and [int]$f.selected -eq 0) { continue }
+                if ([double]$f.progress -lt 99.9) { $pending++; continue }
+                $added += Queue-AddFile ([string]$t.id) ([string]$t.filename) $f
+            }
+            if ($pending -eq 0) { $script:ScanDone[[string]$t.id] = $true }   # nada mais a transferir
+        } catch { }
+    }
+    if ($added -gt 0) {
+        Queue-Save
+        Queue-UpdateUi
+    }
+}
+
+function Queue-Tick {
+    if ($script:QueueJob) { Queue-Poll; return }
+    if ($script:QueuePaused) { return }
+    if ($script:Queue.Count -gt 0) { Queue-StartNext }
+}
+
+function Queue-UpdateUi {
+    if (-not $btnQueue) { return }
+    $total = $script:Queue.Count
+    $done = @($script:Queue | Where-Object { $_.status -eq 'done' }).Count
+    $btnQueue.Text = if ($total -gt 0) { "Fila ($done/$total)" } else { 'Fila' }
+    if (-not $script:QueueForm -or $script:QueueForm.IsDisposed -or -not $script:QueueList) { return }
+    try {
+        $sig = ($script:Queue | ForEach-Object { "$($_.name)|$($_.status)" }) -join ';'
+        if ($sig -ne $script:QueueSig) {
+            $script:QueueSig = $sig
+            $script:QueueList.BeginUpdate()
+            $script:QueueList.Items.Clear()
+            foreach ($q in $script:Queue) {
+                $pct = if ($q.size -gt 0) { [int][math]::Min(100, [math]::Round($q.bytes * 100 / $q.size)) } else { 0 }
+                $st = switch ($q.status) {
+                    'queued' { if ($q.note) { $q.note } else { 'na fila' } }
+                    'downloading' { 'baixando' }
+                    'verifying' { 'verificando' }
+                    'done' { 'no PC ✓' }
+                    default { if ($q.note) { $q.note } else { 'falhou' } }
+                }
+                $it = New-Object System.Windows.Forms.ListViewItem($q.path)
+                [void]$it.SubItems.Add((Format-Size $q.size))
+                [void]$it.SubItems.Add(("{0} ({1}%)" -f (Format-Size $q.bytes), $pct))
+                [void]$it.SubItems.Add((Format-Eta $q.eta))
+                [void]$it.SubItems.Add($st)
+                if ($q.status -eq 'error') { $it.ForeColor = [System.Drawing.Color]::FromArgb(190, 60, 60) }
+                elseif ($q.status -eq 'done') { $it.ForeColor = [System.Drawing.Color]::FromArgb(25, 130, 75) }
+                [void]$script:QueueList.Items.Add($it)
+            }
+            $script:QueueList.EndUpdate()
+        }
+        if ($script:QueueLabel) {
+            $pend = $total - $done
+            $eta = -1.0
+            foreach ($q in $script:Queue) { if ($q.status -eq 'downloading' -and $q.eta -gt 0) { $eta = $q.eta } }
+            $script:QueueLabel.Text = if ($total -eq 0) { 'Fila vazia.' } else {
+                ("{0} arquivo(s) na fila · {1} no PC · {2} faltando{3}{4}" -f $total, $done, $pend,
+                    $(if ($eta -gt 0) { ' · faltam ~' + (Format-Eta $eta) } else { '' }),
+                    $(if ($script:QueuePaused) { ' · PAUSADA' } else { '' }))
+            }
         }
     } catch { }
-    $script:DownloadJob = $null
-    $btnDownload.Enabled = $true
-    $prog.Visible = $false
-    if ($result -eq 'done') {
-        Set-Status ("Download concluído: {0} ({1})" -f $script:DownloadName, $script:Cfg.downloadDir) 'ok'
-        if ([System.Windows.Forms.MessageBox]::Show("Download concluído:`n$($script:DownloadName)`n`nAbrir a pasta?", 'NexShare Debrid', 'YesNo', 'Information') -eq 'Yes') {
-            Open-Folder
-        }
-    } elseif ($result -eq 'cancel') {
-        Set-Status 'Download cancelado'
+}
+
+function Show-Queue {
+    if ($script:QueueForm -and -not $script:QueueForm.IsDisposed) { $script:QueueForm.Activate(); return }
+
+    $qf = New-Object System.Windows.Forms.Form
+    $qf.Text = 'Fila de transferência (celular → PC)'
+    $qf.Size = New-Object System.Drawing.Size(820, 480)
+    $qf.MinimumSize = New-Object System.Drawing.Size(620, 360)
+    $qf.StartPosition = 'CenterParent'
+    $qf.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+    $qf.BackColor = [System.Drawing.Color]::FromArgb(244, 247, 251)
+
+    $lbl = New-Object System.Windows.Forms.Label
+    $lbl.Dock = 'Top'
+    $lbl.Height = 34
+    $lbl.Padding = New-Object System.Windows.Forms.Padding(10, 9, 10, 0)
+    $lbl.Text = 'Fila vazia.'
+    $qf.Controls.Add($lbl)
+
+    $lv = New-Object System.Windows.Forms.ListView
+    $lv.Dock = 'Fill'
+    $lv.View = 'Details'
+    $lv.FullRowSelect = $true
+    $lv.MultiSelect = $false
+    [void]$lv.Columns.Add('Arquivo', 330)
+    [void]$lv.Columns.Add('Tamanho', 95)
+    [void]$lv.Columns.Add('No PC', 130)
+    [void]$lv.Columns.Add('Falta', 80)
+    [void]$lv.Columns.Add('Status', 170)
+    $qf.Controls.Add($lv)
+
+    $qb = New-Object System.Windows.Forms.FlowLayoutPanel
+    $qb.Dock = 'Bottom'
+    $qb.Height = 50
+    $qb.Padding = New-Object System.Windows.Forms.Padding(8, 10, 8, 0)
+    $qb.BackColor = [System.Drawing.Color]::White
+    $qf.Controls.Add($qb)
+
+    $bPause = New-Object System.Windows.Forms.Button
+    $bPause.Text = if ($script:QueuePaused) { 'Retomar fila' } else { 'Pausar fila' }
+    $bPause.AutoSize = $true
+    $bPause.FlatStyle = 'Flat'
+    $bPause.Margin = New-Object System.Windows.Forms.Padding(0, 0, 8, 0)
+    $bPause.Add_Click({
+            $script:QueuePaused = -not $script:QueuePaused
+            $bPause.Text = if ($script:QueuePaused) { 'Retomar fila' } else { 'Pausar fila' }
+            if ($script:QueuePaused -and $script:QueueJob) { 'stop' | Set-Content -Path $script:DownloadCancel -Encoding ASCII }
+            Set-Status ($(if ($script:QueuePaused) { 'Fila pausada' } else { 'Fila retomada' })) 'ok'
+            Queue-UpdateUi
+        })
+    $qb.Controls.Add($bPause)
+
+    $bRetry = New-Object System.Windows.Forms.Button
+    $bRetry.Text = 'Tentar de novo os que falharam'
+    $bRetry.AutoSize = $true
+    $bRetry.FlatStyle = 'Flat'
+    $bRetry.Margin = New-Object System.Windows.Forms.Padding(0, 0, 8, 0)
+    $bRetry.Add_Click({
+            foreach ($q in $script:Queue) {
+                if ($q.status -eq 'error') { $q.status = 'queued'; $q.note = ''; $q.bytes = 0 }
+            }
+            $script:QueuePaused = $false
+            Queue-Save; Queue-UpdateUi
+        })
+    $qb.Controls.Add($bRetry)
+
+    $bClear = New-Object System.Windows.Forms.Button
+    $bClear.Text = 'Limpar concluídos'
+    $bClear.AutoSize = $true
+    $bClear.FlatStyle = 'Flat'
+    $bClear.Margin = New-Object System.Windows.Forms.Padding(0, 0, 8, 0)
+    $bClear.Add_Click({
+            foreach ($q in @($script:Queue)) { if ($q.status -eq 'done') { [void]$script:Queue.Remove($q) } }
+            Queue-Save; Queue-UpdateUi
+        })
+    $qb.Controls.Add($bClear)
+
+    $lblFree = New-Object System.Windows.Forms.Label
+    $lblFree.Text = 'Espaço livre mínimo no PC:'
+    $lblFree.AutoSize = $true
+    $lblFree.Margin = New-Object System.Windows.Forms.Padding(12, 6, 4, 0)
+    $qb.Controls.Add($lblFree)
+
+    $numFree = New-Object System.Windows.Forms.NumericUpDown
+    $numFree.Minimum = 0
+    $numFree.Maximum = 500
+    $numFree.DecimalPlaces = 0
+    $numFree.Width = 60
+    $numFree.Value = [decimal][double]$script:Cfg.minFreeGb
+    $numFree.Margin = New-Object System.Windows.Forms.Padding(0, 3, 4, 0)
+    $numFree.Add_ValueChanged({ $script:Cfg.minFreeGb = [double]$numFree.Value; Save-Config })
+    $qb.Controls.Add($numFree)
+
+    $lblGb = New-Object System.Windows.Forms.Label
+    $lblGb.Text = 'GB'
+    $lblGb.AutoSize = $true
+    $lblGb.Margin = New-Object System.Windows.Forms.Padding(0, 6, 8, 0)
+    $qb.Controls.Add($lblGb)
+
+    $bClose = New-Object System.Windows.Forms.Button
+    $bClose.Text = 'Fechar'
+    $bClose.AutoSize = $true
+    $bClose.FlatStyle = 'Flat'
+    $bClose.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 0)
+    $bClose.Add_Click({ $qf.Close() })
+    $qb.Controls.Add($bClose)
+
+    $qf.Add_FormClosed({ $script:QueueForm = $null; $script:QueueList = $null; $script:QueueLabel = $null; $script:QueueSig = '' })
+
+    $script:QueueForm = $qf
+    $script:QueueList = $lv
+    $script:QueueLabel = $lbl
+    $script:QueueSig = ''
+    $qf.Show()
+    Queue-UpdateUi
+}
+
+function Start-Download {
+    if (-not $script:Current) { Set-Status 'Selecione um torrent' 'error'; return }
+    $n = 0
+    if ($lvFiles.SelectedItems.Count -gt 0) {
+        foreach ($si in $lvFiles.SelectedItems) { $n += Queue-AddFile ([string]$script:Current.id) ([string]$script:Current.filename) $si.Tag }
     } else {
-        $msg = $raw -replace '^error\|', ''
-        Set-Status "Falha no download: $msg" 'error'
-        [System.Windows.Forms.MessageBox]::Show("O download falhou:`n$msg", 'NexShare Debrid', 'OK', 'Error') | Out-Null
+        $n = Queue-AddTorrent ([string]$script:Current.id) ([string]$script:Current.filename)
     }
-    Remove-Item $script:DownloadState, $script:DownloadProgress, $script:DownloadCancel -ErrorAction SilentlyContinue
-    if ($script:Current) { Load-Files $script:Current }
+    if ($n -eq 0) { Set-Status 'Nada novo: já está na fila ou já está no PC' ; return }
+    $script:QueuePaused = $false
+    Queue-Save
+    Queue-UpdateUi
+    Set-Status ("{0} arquivo(s) na fila - vão sendo passados pro PC conforme o celular termina" -f $n) 'ok'
+    Queue-Tick
 }
 
 # ---------------------------------------------------------------- eventos
@@ -910,6 +1427,7 @@ $btnChooseDir.Add_Click({
 $btnOpenFolderTop.Add_Click({ Open-Folder })
 $btnOpenFolder.Add_Click({ Open-Folder })
 $btnDownload.Add_Click({ Start-Download })
+$btnQueue.Add_Click({ Show-Queue })
 $btnCopyLink.Add_Click({ Copy-Link })
 $btnVlc.Add_Click({ Open-Vlc })
 
@@ -923,11 +1441,12 @@ $dg.Add_SelectionChanged({
 $lvFiles.Add_DoubleClick({ Start-Download })
 
 $form.Add_FormClosing({
-        if ($script:DownloadJob) {
-            'stop' | Set-Content -Path $script:DownloadCancel -Encoding ASCII -ErrorAction SilentlyContinue
-            Stop-Job $script:DownloadJob -ErrorAction SilentlyContinue
-            Remove-Job $script:DownloadJob -Force -ErrorAction SilentlyContinue
+        if ($script:QueueJob) {
+            'stop' | Set-Content -Path $script:DownloadCancel -Encoding ASCII
+            Stop-Job $script:QueueJob -ErrorAction SilentlyContinue
+            Remove-Job $script:QueueJob -Force -ErrorAction SilentlyContinue
         }
+        Queue-Save
         Save-Config
     })
 
@@ -937,6 +1456,8 @@ $timerTorrents.Add_Tick({
         if (-not $form.Visible) { return }
         if (-not $script:Cfg.key) { return }
         Refresh-Torrents
+        Queue-AutoScan
+        if (-not $script:QueueJob) { Queue-Tick }
         if ($script:PendingSelect -and -not $script:Picking) {
             try {
                 $pendingId = [string]$script:PendingSelect
@@ -964,8 +1485,8 @@ $timerTorrents.Add_Tick({
 $timerTorrents.Start()
 
 $timerDownload = New-Object System.Windows.Forms.Timer
-$timerDownload.Interval = 700
-$timerDownload.Add_Tick({ Poll-Download })
+$timerDownload.Interval = 800
+$timerDownload.Add_Tick({ Queue-Tick })
 $timerDownload.Start()
 
 $form.Add_Shown({
@@ -973,6 +1494,8 @@ $form.Add_Shown({
             $cue = Add-Type -MemberDefinition '[DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, string lParam);' -Name Cue -Namespace NexShare -PassThru -ErrorAction Stop
             [void]$cue::SendMessage($txtMagnet.Handle, 0x1501, [IntPtr]1, 'magnet:?xt=urn:btih:... ou URL .torrent')
         } catch { }
+        Queue-Load
+        Queue-UpdateUi
         if ($script:Cfg.key) { Connect-Server }
         else { Set-Status 'Informe o servidor e a API key (Debrid Hub -> Usar no VLC / Stremio / Windows).' }
     })
