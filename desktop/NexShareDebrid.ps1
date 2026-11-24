@@ -353,6 +353,9 @@ $script:QueueList = $null
 $script:QueueLabel = $null
 $script:QueueSig = ''
 $script:ScanDone = @{}
+$script:PhoneFree = -1
+$script:PhoneTotal = -1
+$script:PhoneFreeAt = [DateTime]::MinValue
 $script:Refreshing = $false
 $script:Ticks = 0
 $script:SelectId = $null
@@ -785,7 +788,7 @@ function Queue-Save {
             $items += [ordered]@{
                 id = $q.id; fileId = $q.fileId; name = $q.name; path = $q.path
                 size = $q.size; bytes = $q.bytes; status = $q.status; dest = $q.dest
-                torrentName = $q.torrentName
+                torrentName = $q.torrentName; purged = [bool]$q.purged
             }
         }
         (@{ items = $items } | ConvertTo-Json -Depth 5) | Set-Content -Path $script:QueuePath -Encoding UTF8
@@ -803,7 +806,7 @@ function Queue-Load {
                 path = [string]$it.path; size = [int64]$it.size; bytes = [int64]$it.bytes
                 status = [string]$it.status; dest = [string]$it.dest
                 torrentName = [string]$it.torrentName; speed = 0.0; eta = -1.0
-                link = $null; note = ''
+                link = $null; note = ''; purged = [bool]$it.purged
             }
             if ($item.status -eq 'downloading' -or $item.status -eq 'verifying') { $item.status = 'queued' }
             $part = "$($item.dest).part"
@@ -850,7 +853,7 @@ function Queue-AddFile([string]$torrentId, [string]$torrentName, $file) {
     $item = New-Object psobject -Property @{
         id = $torrentId; fileId = [int]$file.id; name = (Split-Path $rel -Leaf); path = $rel
         size = [int64]$file.bytes; bytes = [int64]0; status = 'queued'; dest = $dest
-        torrentName = $torrentName; speed = 0.0; eta = -1.0; link = $null; note = ''
+        torrentName = $torrentName; speed = 0.0; eta = -1.0; link = $null; note = ''; purged = $false
     }
     if ((Test-Path -LiteralPath $dest) -and ((Get-Item -LiteralPath $dest).Length -eq $item.size) -and $item.size -gt 0) {
         $item.status = 'done'; $item.bytes = $item.size; $item.note = 'já estava no PC'
@@ -1070,7 +1073,9 @@ function Queue-StartNext {
         }
         $item.size = [int64]$f.bytes
         if ([double]$f.progress -lt 99.9 -and [int64]$f.done -lt $item.size) {
-            $item.note = 'esperando o celular terminar'
+            $phoneErr = [string]$info.error
+            if ($phoneErr) { $item.note = 'celular: ' + $phoneErr }
+            else { $item.note = 'esperando o celular terminar' }
             continue
         }
         Queue-StartItem $item
@@ -1149,25 +1154,66 @@ function Queue-Finish([string]$state) {
     if ($script:Current) { Load-Files $script:Current }
 }
 
+function Test-TorrentFullyOnPc([string]$id) {
+    try { $info = Get-TorrentInfo $id -Force } catch { return $false }
+    $files = @($info.files)
+    if (-not $files.Count) { return $false }
+    foreach ($f in $files) {
+        if ($null -ne $f.selected -and [int]$f.selected -eq 0) { continue }   # já saiu do celular
+        $q = @($script:Queue | Where-Object { $_.id -eq $id -and $_.fileId -eq [int]$f.id -and $_.status -eq 'done' })
+        if ($q.Count -eq 0) { return $false }
+    }
+    return $true
+}
+
+function Queue-DropTorrent([string]$id) {
+    try {
+        $info = Get-TorrentInfo $id -Force
+        Api -Method 'POST' -Path ('torrents/delete/' + $id) -Query @{ files = '1' } | Out-Null
+        foreach ($q in @($script:Queue)) { if ($q.id -eq $id) { [void]$script:Queue.Remove($q) } }
+        Queue-Save
+        Set-Status ("Tudo verificado no PC — '{0}' saiu do celular e o espaço foi liberado" -f $info.filename) 'ok'
+        Refresh-Torrents
+    } catch { }
+}
+
 function Queue-AfterFinish {
     if (-not $script:Cfg.deletePhone) { return }
     $doneIds = @($script:Queue | Where-Object { $_.status -eq 'done' } | Select-Object -ExpandProperty id -Unique)
     foreach ($id in $doneIds) {
+        # 1) o torrent inteiro já está no PC e verificado -> sai do celular de uma vez
+        if (Test-TorrentFullyOnPc $id) { Queue-DropTorrent $id; continue }
+
+        # 2) janela deslizante: libera cada arquivo já verificado, para um torrent maior
+        #    que o espaço do celular continuar baixando o resto
+        $info = $null
+        try { $info = Get-TorrentInfo $id -Force } catch { continue }
+        $files = @($info.files)
+        if (-not $files.Count) { continue }
         $pending = @($script:Queue | Where-Object { $_.id -eq $id -and $_.status -ne 'done' })
-        if ($pending.Count -gt 0) { continue }
-        try {
-            $info = Get-TorrentInfo $id -Force
-            $files = @($info.files)
-            if (-not $files.Count) { continue }
-            $left = @($files | Where-Object { ($null -eq $_.selected -or [int]$_.selected -ne 0) -and -not (Queue-Contains $id ([int]$_.id)) })
-            if ($left.Count -gt 0) { continue }   # ainda falta coisa que não está na fila
-            $name = [string]$info.filename
-            Api -Method 'POST' -Path ('torrents/delete/' + $id) -Query @{ files = '1' } | Out-Null
-            foreach ($q in @($script:Queue)) { if ($q.id -eq $id) { [void]$script:Queue.Remove($q) } }
-            Queue-Save
-            Set-Status ("Tudo verificado no PC — '$name' saiu do celular e o espaço foi liberado") 'ok'
-            Refresh-Torrents
-        } catch { }
+        $outside = @($files | Where-Object { ($null -eq $_.selected -or [int]$_.selected -ne 0) -and -not (Queue-Contains $id ([int]$_.id)) })
+
+        if ($pending.Count -eq 0 -and $outside.Count -eq 0) { Queue-DropTorrent $id; continue }
+
+        foreach ($q in @($script:Queue | Where-Object { $_.id -eq $id -and $_.status -eq 'done' -and -not $_.purged })) {
+            try {
+                $r = Api -Method 'POST' -Path ('torrents/purgeFile/' + $id) -Query @{ file = $q.fileId }
+                if ($r.ok) {
+                    $q.purged = $true
+                    if ($null -ne $r.freeSpace) { $script:PhoneFree = [double]$r.freeSpace }
+                    $livre = if ($script:PhoneFree -gt 0) { (Format-Size $script:PhoneFree) + ' livres' } else { 'liberado' }
+                    Set-Status ("'{0}' já está no PC — apagado do celular ({1})" -f $q.name, $livre) 'ok'
+                    if ($script:PhoneFree -gt (2GB)) {
+                        try { Api -Method 'POST' -Path ('torrents/resume/' + $id) | Out-Null } catch { }
+                    }
+                } else {
+                    $q.note = 'não consegui apagar do celular'
+                }
+            } catch { }
+        }
+        Queue-Save
+        # depois de liberar, se não sobrou nada no celular, remove o torrent também
+        if (Test-TorrentFullyOnPc $id) { Queue-DropTorrent $id }
     }
 }
 
@@ -1241,10 +1287,15 @@ function Queue-UpdateUi {
             $pend = $total - $done
             $eta = -1.0
             foreach ($q in $script:Queue) { if ($q.status -eq 'downloading' -and $q.eta -gt 0) { $eta = $q.eta } }
-            $script:QueueLabel.Text = if ($total -eq 0) { 'Fila vazia.' } else {
-                ("{0} arquivo(s) na fila · {1} no PC · {2} faltando{3}{4}" -f $total, $done, $pend,
+            $phone = if ($script:PhoneFree -ge 0) {
+                $p = ' · celular: ' + (Format-Size $script:PhoneFree) + ' livres'
+                if ($script:PhoneTotal -gt 0) { $p += ' de ' + (Format-Size $script:PhoneTotal) }
+                $p
+            } else { '' }
+            $script:QueueLabel.Text = if ($total -eq 0) { 'Fila vazia.' + $phone } else {
+                ("{0} arquivo(s) na fila · {1} no PC · {2} faltando{3}{4}{5}" -f $total, $done, $pend,
                     $(if ($eta -gt 0) { ' · faltam ~' + (Format-Eta $eta) } else { '' }),
-                    $(if ($script:QueuePaused) { ' · PAUSADA' } else { '' }))
+                    $(if ($script:QueuePaused) { ' · PAUSADA' } else { '' }), $phone)
             }
         }
     } catch { }
@@ -1457,6 +1508,7 @@ $timerTorrents.Add_Tick({
         if (-not $script:Cfg.key) { return }
         Refresh-Torrents
         Queue-AutoScan
+        Update-PhoneSpace
         if (-not $script:QueueJob) { Queue-Tick }
         if ($script:PendingSelect -and -not $script:Picking) {
             try {

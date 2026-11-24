@@ -1534,6 +1534,9 @@ public class WebApi implements HttpServer.Handler {
             put(u, "type", "premium");
             put(u, "premium", 9999999999L);
             put(u, "expiration", "2039-12-31T23:59:59.000Z");
+            File storage = DownloadManager.defaultDir();
+            put(u, "free_space", TorrentEngine.freeSpace(storage));
+            put(u, "total_space", TorrentEngine.totalSpace(storage));
             res.json(200, u.toString());
             return;
         }
@@ -1689,6 +1692,7 @@ public class WebApi implements HttpServer.Handler {
             put(o, "added", HttpServer.httpDate(t.created));
             put(o, "speed", t.speed);
             put(o, "seeders", t.seeds);
+            put(o, "error", t.error == null ? "" : t.error);
 
             JSONArray filesArr = new JSONArray();
             JSONArray linksArr = new JSONArray();
@@ -1710,6 +1714,27 @@ public class WebApi implements HttpServer.Handler {
             }
             put(o, "files", filesArr);
             put(o, "links", linksArr);
+            res.json(200, o.toString());
+            return;
+        }
+
+        if (p.startsWith("/rest/1.0/torrents/purgeFile/")) {
+            String id = p.substring("/rest/1.0/torrents/purgeFile/".length()).trim();
+            DownloadManager.Task t = dm.getTask(id);
+            if (t == null) {
+                res.error(404, "torrent not found");
+                return;
+            }
+            int idx = -1;
+            try {
+                idx = Integer.parseInt(req.param("file")) - 1; // 1-based like Real-Debrid
+            } catch (Exception ignored) { }
+            boolean ok = te != null && te.purgeFile(t, idx);
+            dm.save();
+            JSONObject o = new JSONObject();
+            put(o, "ok", ok);
+            put(o, "freeSpace", TorrentEngine.freeSpace(new File(t.dest)));
+            put(o, "totalSpace", TorrentEngine.totalSpace(new File(t.dest)));
             res.json(200, o.toString());
             return;
         }

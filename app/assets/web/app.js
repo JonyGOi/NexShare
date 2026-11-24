@@ -1105,7 +1105,7 @@ function ControlPanel(body) {
         el('h3', { text: 'App Updates', style: { marginTop: 0 } }),
         el('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' } },
           el('div', null,
-            el('b', { text: `NexShare v${s.version || '1.9.0'}` }),
+            el('b', { text: `NexShare v${s.version || '1.9.1'}` }),
             el('span', { style: { marginLeft: '8px', fontSize: '11px', textTransform: 'uppercase', background: '#eef3fb', color: '#1e6fd9', padding: '2px 6px', borderRadius: '4px' }, text: (s.flavor || 'normal') + ' edition' })
           ),
           el('button', {
@@ -3013,7 +3013,8 @@ function DebridHub(body, win) {
           return el('div', { class: 'card', style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px', padding: '10px 14px', marginBottom: '6px', background: '#f8fafc' } },
             el('div', { style: { minWidth: 0, flex: 1 } },
               el('div', { style: { fontWeight: 'bold', fontSize: '13px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }, text: t.name }),
-              el('div', { class: 'dim', style: { fontSize: '11px', marginTop: '2px' }, text: `${fmtSize(t.done)} / ${fmtSize(t.total)} (${pct.toFixed(0)}%) · ▼ ${fmtRate(t.speed)} · ${t.status}` })),
+              el('div', { class: 'dim', style: { fontSize: '11px', marginTop: '2px' }, text: `${fmtSize(t.done)} / ${fmtSize(t.total)} (${pct.toFixed(0)}%) · ▼ ${fmtRate(t.speed)} · ${t.status}` }),
+              t.error ? el('div', { style: { fontSize: '11px', marginTop: '2px', color: '#b91c1c' }, text: '⚠ ' + t.error }) : null),
             el('div', { style: { display: 'flex', gap: '6px', flex: 'none' } },
               el('button', { class: 'btn', onclick: () => { st.task = t; st.dirty = false; api('debrid/files', { id: t.id }).then(r => { renderFiles(r.files || [], r, true); filesBox.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }).catch(() => { }); } }, 'Arquivos'),
               el('button', {

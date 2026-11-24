@@ -1,6 +1,7 @@
 package com.nexshare;
 
 import android.content.Context;
+import android.os.StatFs;
 
 import org.libtorrent4j.AddTorrentParams;
 import org.libtorrent4j.FileStorage;
@@ -88,7 +89,101 @@ public class TorrentEngine {
         }
     }
 
+    private static final long SPACE_LOW = 2L * 1024 * 1024 * 1024;
+    private static final long SPACE_HIGH = 3L * 1024 * 1024 * 1024;
+    private long lastSpaceCheck;
+
+    /** Free bytes on the volume that holds a path, or -1 when unknown. */
+    public static long freeSpace(File dir) {
+        if (dir == null) return -1;
+        try {
+            StatFs st = new StatFs(dir.getAbsolutePath());
+            return st.getAvailableBytes();
+        } catch (Throwable e) {
+            try { return dir.getUsableSpace(); } catch (Throwable e2) { return -1; }
+        }
+    }
+
+    public static long totalSpace(File dir) {
+        if (dir == null) return -1;
+        try {
+            StatFs st = new StatFs(dir.getAbsolutePath());
+            return st.getTotalBytes();
+        } catch (Throwable e) {
+            try { return dir.getTotalSpace(); } catch (Throwable e2) { return -1; }
+        }
+    }
+
+    private static boolean isActive(String status) {
+        return "downloading".equals(status) || "metadata".equals(status) || "checking".equals(status);
+    }
+
+    /**
+     * Stops downloading before the phone runs out of space, and resumes by itself once the
+     * space is freed (the PC purges the files it already has).
+     */
+    private void checkSpace(Collection<DownloadManager.Task> tasks) {
+        long now = System.currentTimeMillis();
+        if (now - lastSpaceCheck < 5000) return;
+        lastSpaceCheck = now;
+        for (DownloadManager.Task t : tasks) {
+            if (!t.type.equals("torrent")) continue;
+            long free = freeSpace(new File(t.dest));
+            if (free < 0) continue;
+            TorrentHandle h = handle(t);
+            if (h == null || !h.isValid()) continue;
+            if (free < SPACE_LOW && !t.spacePaused && isActive(t.status)) {
+                try { h.pause(); } catch (Throwable ignored) { }
+                t.status = "paused";
+                t.speed = t.upSpeed = 0;
+                t.spacePaused = true;
+                t.error = "Pouco espaço no celular (" + (free / (1024L * 1024L * 1024L))
+                    + " GB livres). Transfira para o PC e apague para liberar.";
+            } else if (free > SPACE_HIGH && t.spacePaused) {
+                try { h.resume(); } catch (Throwable ignored) { }
+                t.status = "downloading";
+                t.spacePaused = false;
+                t.error = null;
+            }
+        }
+    }
+
+    /**
+     * Forgets a file that is already safe on the PC: removes it from the selection, tells
+     * libtorrent to ignore it (so it is never downloaded again) and deletes it from disk.
+     * This is what makes a torrent bigger than the phone's free space possible.
+     */
+    public boolean purgeFile(DownloadManager.Task t, int fileIndex) {
+        if (t == null) return false;
+        TorrentHandle h = handle(t);
+        if (h == null || !h.isValid()) return false;
+        TorrentInfo ti = h.torrentFile();
+        if (ti == null) return false;
+        FileStorage fs = ti.files();
+        if (fileIndex < 0 || fileIndex >= fs.numFiles()) return false;
+        boolean[] want = wantedMask(t, fs.numFiles());
+        java.util.List<Integer> keep = new java.util.ArrayList<>();
+        for (int i = 0; i < fs.numFiles(); i++) {
+            if (i == fileIndex) continue;
+            if (want == null || want[i]) keep.add(i);
+        }
+        int[] ids = new int[keep.size()];
+        for (int k = 0; k < ids.length; k++) ids[k] = keep.get(k);
+        t.selected = ids;
+        t.selectionApplied = false;
+        t.prioApplied = false;
+        applyPriority(t);
+        File f = new File(t.dest, fs.filePath(fileIndex));
+        for (int attempt = 0; attempt < 4; attempt++) {
+            try { Thread.sleep(200); } catch (InterruptedException ignored) { }
+            if (!f.exists()) return true;
+            if (f.delete()) return true;
+        }
+        return !f.exists();
+    }
+
     void refresh(Collection<DownloadManager.Task> tasks) {
+        checkSpace(tasks);
         for (DownloadManager.Task t : tasks) {
             if (!t.type.equals("torrent")) continue;
             TorrentHandle h = handle(t);
@@ -273,7 +368,9 @@ public class TorrentEngine {
                 if (sp + 1 <= ep) h.setPieceDeadline(sp + 1, 1000);
                 if (ep > sp + 1) h.setPieceDeadline(ep, 1500);
             } else {
-                h.unsetFlags(TorrentFlags.SEQUENTIAL_DOWNLOAD);
+                // Sequential anyway: downloads happen in file order, so finished files can be
+                // moved to the PC and deleted even when the torrent is bigger than the disk.
+                h.setFlags(TorrentFlags.SEQUENTIAL_DOWNLOAD);
             }
 
             Priority[] prios = new Priority[n];

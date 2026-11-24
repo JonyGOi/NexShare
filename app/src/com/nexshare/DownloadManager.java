@@ -38,6 +38,8 @@ public class DownloadManager {
         /** Indices of the files to download; null = every file, empty = none. */
         public int[] selected;
         public boolean selectionApplied;
+        /** True when the phone paused this torrent because the disk was almost full. */
+        public boolean spacePaused;
         volatile boolean stop;
         Thread thread;
 

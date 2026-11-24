@@ -114,6 +114,8 @@ Implemented endpoints: `/user`, `/torrents`, `/torrents/addMagnet`, `/torrents/a
 reports `selected`/`done`/`progress` per file. Extra endpoints used by the bundled clients:
 `/torrents/pause/{id}`, `/torrents/resume/{id}`, `/torrents/delete/{id}?files=1`,
 `/api/hash?path=` (SHA-256 of a file, used to verify a copy before deleting it),
+`/torrents/purgeFile/{id}?file=N` (forget + delete one file, frees space while the rest still
+downloads), `free_space`/`total_space` in `/user`, `error` in `/torrents/info`,
 `?paused=1` on `addMagnet`/`addTorrent` (add without downloading) and `eta` (seconds left)
 in the task JSON.
 The API requires the same login as the rest of NexShare (PIN or username+password).
@@ -166,6 +168,21 @@ background and only then delete it from the phone:
   of filling the disk.
 - The **Fila** window lists everything: `No PC`, `Falta`, status, plus *Pausar fila*,
   *Tentar de novo os que falharam* and *Limpar concluídos*.
+
+### Torrent bigger than the phone can hold (90 GB on a 50 GB phone)
+
+No problem — it downloads in a rolling window instead of all at once:
+
+1. Torrents download **in file order** (sequential), so early files finish first.
+2. As soon as a file is verified on the PC it is **removed from the phone**
+   (`torrents/purgeFile`, which marks the file *ignored* in libtorrent so it is never
+   downloaded again) and the space comes back for the next file.
+3. The phone also protects itself: below **2 GB free** it pauses the torrent by itself with a
+   clear message (*"Pouco espaço no celular…"*), and resumes automatically once the PC frees
+   space (above 3 GB).
+
+Only a **single file larger than the free space** is physically impossible (the phone cannot
+hold it at all) — the app pauses with that message instead of filling the disk.
 
 ```
 desktop/
