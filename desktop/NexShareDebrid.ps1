@@ -530,6 +530,34 @@ function Show-FilePicker([string]$torrentId) {
         $hint.Height = 28
         $hint.Padding = New-Object System.Windows.Forms.Padding(8, 7, 8, 0)
         $hint.ForeColor = [System.Drawing.Color]::FromArgb(60, 70, 85)
+
+        $savePanel = New-Object System.Windows.Forms.Panel
+        $savePanel.Dock = 'Top'
+        $savePanel.Height = 32
+        $lblSave = New-Object System.Windows.Forms.Label
+        $lblSave.Text = 'Salvar em:'
+        $lblSave.AutoSize = $true
+        $lblSave.Location = New-Object System.Drawing.Point(8, 9)
+        $savePanel.Controls.Add($lblSave)
+        $txtSave = New-Object System.Windows.Forms.TextBox
+        $txtSave.Text = [string]$script:Cfg.downloadDir
+        $txtSave.Location = New-Object System.Drawing.Point(78, 6)
+        $txtSave.Size = New-Object System.Drawing.Size(([Math]::Max(200, $pf.ClientSize.Width - 190)), 23)
+        $txtSave.Anchor = 'Top,Left,Right'
+        $savePanel.Controls.Add($txtSave)
+        $btnSavePick = New-Object System.Windows.Forms.Button
+        $btnSavePick.Text = '...'
+        $btnSavePick.Size = New-Object System.Drawing.Size(28, 23)
+        $btnSavePick.Location = New-Object System.Drawing.Point(($pf.ClientSize.Width - 108), 5)
+        $btnSavePick.Anchor = 'Top,Right'
+        $btnSavePick.Add_Click({
+                $fbd = New-Object System.Windows.Forms.FolderBrowserDialog
+                $fbd.SelectedPath = $txtSave.Text
+                if ($fbd.ShowDialog($pf) -eq 'OK') { $txtSave.Text = $fbd.SelectedPath }
+            })
+        $savePanel.Controls.Add($btnSavePick)
+
+        $pf.Controls.Add($savePanel)
         $pf.Controls.Add($hint)
 
         $tv = New-Object System.Windows.Forms.TreeView
@@ -557,6 +585,18 @@ function Show-FilePicker([string]$torrentId) {
             if ($onClick) { $b.Add_Click($onClick) }
             return $b
         }
+
+        $pRefresh = New-PickButton 'Atualizar' {
+            try {
+                $info2 = Api -Path ("torrents/info/" + $torrentId)
+                $list2 = @($info2.files)
+                if (-not $list2.Count) { $pCount.Text = 'metadados ainda nao chegaram - clique de novo em instantes'; return }
+                $keep = @(Get-CheckedIds $tv.Nodes)
+                Build-PickTree $list2 $keep
+                Set-Status ("{0} arquivo(s) no torrent" -f $list2.Count)
+            } catch { $pCount.Text = 'falha ao atualizar: ' + $_.Exception.Message }
+        }
+        $pbar.Controls.Add($pRefresh)
 
         $pAll = New-PickButton 'Marcar tudo' { $script:TreeGuard = $true; try { Set-NodeChecked $tv.Nodes $true } finally { $script:TreeGuard = $false }; & $updateCount }
         $pbar.Controls.Add($pAll)
@@ -609,14 +649,15 @@ function Show-FilePicker([string]$torrentId) {
         $pf.AcceptButton = $pOk
         $pf.CancelButton = $pCancel
 
+        $script:PickFiles = @($files)
+        $script:PickSize = @{}
+        $hintBase = $hint.Text
         $updateCount = {
             $ids = @(Get-CheckedIds $tv.Nodes)
             $sum = [int64]0
-            foreach ($i in $ids) { if ($sizeByIdx.ContainsKey($i)) { $sum += $sizeByIdx[$i] } }
-            $pCount.Text = ("{0} de {1} marcados - {2}" -f $ids.Count, $files.Count, (Format-Size $sum))
+            foreach ($i in $ids) { if ($script:PickSize.ContainsKey($i)) { $sum += $script:PickSize[$i] } }
+            $pCount.Text = ("{0} de {1} marcados - {2}" -f $ids.Count, $script:PickFiles.Count, (Format-Size $sum))
         }
-
-        $sizeByIdx = @{}
 
         # folders show their total size, like qBittorrent's add dialog
         function Add-FolderSizes($nodes) {
@@ -633,10 +674,14 @@ function Show-FilePicker([string]$torrentId) {
             return $total
         }
 
-        $script:TreeGuard = $true
-        try {
+        # builds/rebuilds the tree; $keepIds preserves the current checks when refreshing
+        function Build-PickTree($list, $keepIds) {
+            $script:PickFiles = @($list)
+            $script:PickSize = @{}
+            $script:TreeGuard = $true
+            try {
             $map = @{}
-            foreach ($f in $files) {
+            foreach ($f in $list) {
                 $full = ([string]$f.path).Trim()
                 while ($full.StartsWith('/') -or $full.StartsWith('\')) { $full = $full.Substring(1) }
                 $full = $full.Replace('\', '/')
@@ -661,16 +706,20 @@ function Show-FilePicker([string]$torrentId) {
                 $fsize = [int64]$f.bytes
                 $leaf = New-Object System.Windows.Forms.TreeNode("$leafName   ($(Format-Size $fsize))")
                 $leaf.Tag = @{ kind = 'file'; index = [int]$f.id; name = $leafName; size = $fsize }
-                $leaf.Checked = ($null -eq $f.selected -or [int]$f.selected -ne 0)
+                if ($null -ne $keepIds) { $leaf.Checked = ($keepIds -contains [int]$f.id) }
+                else { $leaf.Checked = ($null -eq $f.selected -or [int]$f.selected -ne 0) }
                 [void]$parentNodes.Add($leaf)
-                $sizeByIdx[[int]$f.id] = $fsize
+                $script:PickSize[[int]$f.id] = $fsize
             }
             Update-Parents $tv.Nodes
             $allTotal = Add-FolderSizes $tv.Nodes
-            if ($allTotal -gt 0) { $hint.Text = $hint.Text + ("  Total: " + (Format-Size $allTotal) + ".") }
-        } finally { $script:TreeGuard = $false }
+            if ($allTotal -gt 0) { $hint.Text = $hintBase + ("  Total: " + (Format-Size $allTotal) + ".") }
+            $tv.ExpandAll()
+            } finally { $script:TreeGuard = $false }
+            & $updateCount
+        }
 
-        & $updateCount
+        Build-PickTree $files $null
 
         $tv.Add_AfterCheck({
                 param($sender, $e)
@@ -694,13 +743,26 @@ function Show-FilePicker([string]$torrentId) {
         $answer = $pf.ShowDialog()
         if ($answer -eq 'OK') {
             $ids = @(Get-CheckedIds $tv.Nodes)
+            $sd = $txtSave.Text.Trim()
+            if ($sd -and $sd -ne $script:Cfg.downloadDir) {
+                try {
+                    if (-not (Test-Path -LiteralPath $sd)) { [void][System.IO.Directory]::CreateDirectory($sd) }
+                    $script:Cfg.downloadDir = $sd
+                    Save-Config
+                } catch { }
+            }
             Apply-Selection $torrentId $ids $files.Count
+            if ($script:NeedsStart -and [string]$script:NeedsStart -eq [string]$torrentId) {
+                try { Api -Method 'POST' -Path ("torrents/resume/" + $torrentId) | Out-Null } catch { }
+                $script:NeedsStart = $null
+            }
             Set-Status ("Selecao aplicada: {0} de {1} arquivo(s) serao baixados" -f $ids.Count, $files.Count) 'ok'
             $script:SelectId = $torrentId
             Refresh-Torrents
             if ($script:Current -and [string]$script:Current.id -eq $torrentId) { Load-Files $script:Current }
         } else {
-            Set-Status 'Selecao mantida como estava'
+            $pn = if ($script:NeedsStart) { ' - torrent pausado: escolha os arquivos e Aplicar para comecar' } else { '' }
+            Set-Status ('Selecao mantida como estava' + $pn)
         }
     } catch {
         Set-Status "Falha ao escolher arquivos: $($_.Exception.Message)" 'error'
@@ -715,10 +777,11 @@ function Add-Magnet([string]$magnet) {
     try {
         Set-Status 'Adicionando torrent...'
         $body = 'magnet=' + [uri]::EscapeDataString($magnet)
-        $r = Api -Method 'POST' -Path 'torrents/addMagnet' -Body $body -ContentType 'application/x-www-form-urlencoded'
+        $r = Api -Method 'POST' -Path 'torrents/addMagnet' -Body $body -ContentType 'application/x-www-form-urlencoded' -Query @{ paused = '1' }
         $txtMagnet.Text = ''
         $script:SelectId = [string]$r.id
         $script:PendingSelect = [string]$r.id
+        $script:NeedsStart = [string]$r.id
         Set-Status "Torrent adicionado - buscando metadados para voce escolher os arquivos" 'ok'
         Start-Sleep -Milliseconds 700
         Refresh-Torrents
@@ -1498,9 +1561,10 @@ $btnTorrentFile.Add_Click({
             try {
                 $bytes = [System.IO.File]::ReadAllBytes($ofd.FileName)
                 Set-Status 'Enviando .torrent...'
-                $r = Api -Method 'POST' -Path 'torrents/addTorrent' -Body $bytes -ContentType 'application/x-bittorrent'
+                $r = Api -Method 'POST' -Path 'torrents/addTorrent' -Body $bytes -ContentType 'application/x-bittorrent' -Query @{ paused = '1' }
                 $script:SelectId = [string]$r.id
                 $script:PendingSelect = [string]$r.id
+                $script:NeedsStart = [string]$r.id
                 Set-Status 'Torrent enviado - buscando metadados para voce escolher os arquivos' 'ok'
                 Start-Sleep -Milliseconds 700
                 Refresh-Torrents
