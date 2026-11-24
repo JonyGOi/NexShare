@@ -881,6 +881,22 @@ function Get-FreeSpace([string]$path) {
     } catch { return [int64]-1 }
 }
 
+function Update-PhoneSpace {
+    if (-not $script:Cfg.key) { return }
+    $now = Get-Date
+    try {
+        if ($script:PhoneFreeAt -and ($now - $script:PhoneFreeAt).TotalSeconds -lt 15) { return }
+    } catch { }
+    $script:PhoneFreeAt = $now
+    try {
+        $u = Api -Path 'user'
+        if ($null -ne $u) {
+            if ($null -ne $u.free_space) { $script:PhoneFree = [double]$u.free_space }
+            if ($null -ne $u.total_space) { $script:PhoneTotal = [double]$u.total_space }
+        }
+    } catch { }
+}
+
 function Queue-StartItem($item) {
     try {
         $parent = [System.IO.Path]::GetDirectoryName($item.dest)
@@ -1505,6 +1521,7 @@ $form.Add_FormClosing({
 $timerTorrents = New-Object System.Windows.Forms.Timer
 $timerTorrents.Interval = 3000
 $timerTorrents.Add_Tick({
+      try {
         if (-not $form.Visible) { return }
         if (-not $script:Cfg.key) { return }
         Refresh-Torrents
@@ -1534,12 +1551,19 @@ $timerTorrents.Add_Tick({
             if ($lvFiles.SelectedIndices.Count -gt 0) { $sel = $lvFiles.SelectedIndices[0] }
             Load-Files $script:Current $sel
         }
+      } catch {
+        try { Add-Content -LiteralPath $script:LogPath -Value ('[tick] ' + $_.Exception.Message) -Encoding UTF8 } catch { }
+      }
     })
 $timerTorrents.Start()
 
 $timerDownload = New-Object System.Windows.Forms.Timer
 $timerDownload.Interval = 800
-$timerDownload.Add_Tick({ Queue-Tick })
+$timerDownload.Add_Tick({
+      try { Queue-Tick } catch {
+        try { Add-Content -LiteralPath $script:LogPath -Value ('[tick2] ' + $_.Exception.Message) -Encoding UTF8 } catch { }
+      }
+    })
 $timerDownload.Start()
 
 $form.Add_Shown({
