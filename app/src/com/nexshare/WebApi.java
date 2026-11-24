@@ -1148,12 +1148,31 @@ public class WebApi implements HttpServer.Handler {
         DownloadManager dm0 = DownloadManager.get(ctx);
         long tDown = 0, tUp = 0;
         int activeTorrents = 0, streaming = 0;
+        JSONArray tlist = new JSONArray();
         for (DownloadManager.Task task : dm0.getTorrentTasks()) {
             if (task.speed > 0) activeTorrents++;
             if (task.upSpeed > 0) tUp += task.upSpeed;
             if (task.speed > 0) tDown += task.speed;
             if (task.priorityFile >= 0 && ("downloading".equals(task.status) || "seeding".equals(task.status))) streaming++;
+            boolean working = "downloading".equals(task.status) || "metadata".equals(task.status)
+                || "checking".equals(task.status) || "seeding".equals(task.status)
+                || task.speed > 0 || task.upSpeed > 0;
+            if (working && tlist.length() < 6) {
+                JSONObject tb = new JSONObject();
+                put(tb, "id", task.id);
+                put(tb, "name", task.name);
+                put(tb, "status", task.status);
+                put(tb, "speed", task.speed);
+                put(tb, "upSpeed", task.upSpeed);
+                put(tb, "done", task.done);
+                put(tb, "total", task.total);
+                put(tb, "eta", task.etaSeconds());
+                put(tb, "addon", task.fromAddon);
+                put(tb, "streaming", task.priorityFile >= 0);
+                tlist.put(tb);
+            }
         }
+        put(o, "torrents", tlist);
         put(o, "activeTorrents", activeTorrents);
         put(o, "streaming", streaming);
         put(o, "torrentDown", tDown);
@@ -2138,8 +2157,13 @@ public class WebApi implements HttpServer.Handler {
         put(m, "name", "NexShare Debrid");
         put(m, "description", "Seu celular como debrid: escolha o stream e ele baixa e entrega na hora.");
         put(m, "types", new JSONArray().put("movie").put("series"));
-        put(m, "resources", new JSONArray().put("stream"));
-        put(m, "idPrefixes", new JSONArray().put("tt"));
+        JSONArray idPrefixes = new JSONArray().put("tt");
+        JSONObject streamRes = new JSONObject();
+        put(streamRes, "name", "stream");
+        put(streamRes, "types", new JSONArray().put("movie").put("series"));
+        put(streamRes, "idPrefixes", idPrefixes);
+        put(m, "resources", new JSONArray().put(streamRes));
+        put(m, "idPrefixes", idPrefixes);
         put(m, "catalogs", new JSONArray());
         res.header("Access-Control-Allow-Origin", "*");
         res.json(200, m.toString());

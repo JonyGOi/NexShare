@@ -1016,10 +1016,11 @@ function ResourceMonitor(body) {
   const stateDot = el('span', { style: { fontSize: '30px', lineHeight: '1' }, text: '○' });
   const stateTitle = el('div', { style: { fontSize: '20px', fontWeight: '700' }, text: 'Checking…' });
   const stateSub = el('div', { class: 'dim', style: { fontSize: '12px', marginTop: '2px' }, text: '' });
+  const stateRaw = el('div', { class: 'dim', style: { fontSize: '11px', marginTop: '4px', opacity: '.75', fontFamily: 'monospace' }, text: '' });
   const stateCard = el('div', {
     class: 'card',
     style: { display: 'flex', alignItems: 'center', gap: '14px', gridColumn: '1 / -1', padding: '14px 16px' }
-  }, stateDot, el('div', { style: { minWidth: 0, flex: 1 } }, stateTitle, stateSub));
+  }, stateDot, el('div', { style: { minWidth: 0, flex: 1 } }, stateTitle, stateSub, stateRaw));
 
   // ---- small cards
   const miniCard = (title) => {
@@ -1058,7 +1059,27 @@ function ResourceMonitor(body) {
       stateCard, netNow.card, dial.card, store.card, cpu.card, ram.card, net.card, txCard, sessCard)));
 
   const sess = { start: Date.now(), rx0: null, tx0: null, samples: 0 };
-  let tasksTimer = null;
+
+  /** Torrents the phone is working on, straight from /api/system (one request, always in sync). */
+  function renderTasks(list) {
+    const rows = (list || []).slice(0, 6);
+    if (!rows.length) {
+      txBody.replaceChildren(el('div', { class: 'dim', style: { fontSize: '13px' }, text: 'Nothing downloading, seeding or streaming right now.' }));
+      return;
+    }
+    txBody.replaceChildren(...rows.map(t => {
+      const pct = t.total > 0 ? Math.min(100, (t.done / t.total) * 100) : 0;
+      const rate = (t.speed || 0) > 0 ? `▼ ${fmtRate(t.speed)}` : ((t.upSpeed || 0) > 0 ? `▲ ${fmtRate(t.upSpeed)}` : 'idle');
+      const eta = (t.eta > 0 && (t.speed || 0) > 0) ? ' · ' + fmtEta(t.eta) : '';
+      return el('div', { style: { display: 'flex', alignItems: 'center', gap: '10px' } },
+        el('div', { style: { flex: 1, minWidth: 0 } },
+          el('div', { style: { fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: t.name, text: t.name }),
+          el('div', { class: 'bar', style: { height: '5px', marginTop: '3px' } }, el('i', { style: { width: pct.toFixed(1) + '%' } }))),
+        el('div', { style: { fontSize: '11px', color: 'var(--text-3)', flex: 'none', textAlign: 'right' } },
+          el('div', { text: rate + eta }),
+          el('div', { text: `${pct.toFixed(0)}% · ${t.status}${t.addon ? ' · Nuvio' : ''}${t.streaming ? ' · ▶' : ''}` })));
+    }));
+  }
 
   const setBusy = (busy, title, sub) => {
     stateDot.textContent = busy ? '●' : '○';
@@ -1117,20 +1138,32 @@ function ResourceMonitor(body) {
       (s.battery >= 0 ? ` · battery ${s.battery}%${s.charging ? ' (charging)' : ''}` : '') +
       (s.temp || s.batteryTemp ? ` · ${(s.temp || s.batteryTemp)}°C` : '');
 
-    // state
+    // state: any torrent the phone is working on counts as "in use"
+    const list = s.torrents || [];
+    renderTasks(list);
     const torrentDown = s.torrentDown || 0, torrentUp = s.torrentUp || 0;
-    const busy = files > 0 || torrentDown > 4096 || torrentUp > 4096 || Stats.down > 51200 || Stats.up > 51200;
+    const working = list.filter(t => (t.speed || 0) > 0 || (t.upSpeed || 0) > 0
+      || t.status === 'downloading' || t.status === 'metadata' || t.status === 'checking');
+    const busy = files > 0 || working.length > 0 || torrentDown > 4096 || torrentUp > 4096
+      || Stats.down > 51200 || Stats.up > 51200;
+    stateRaw.textContent = `files ${files} · torrents ${list.length} (${working.length} ativos) · swarm ↓ ${fmtRate(torrentDown)} ↑ ${fmtRate(torrentUp)} · net ↓ ${fmtRate(Stats.down || 0)} · conexões ${conns}`;
     if (busy) {
       const why = [];
+      if (working.length) {
+        const t = working[0];
+        const pct = t.total > 0 ? Math.round((t.done / t.total) * 100) : 0;
+        why.push(`"${t.name.slice(0, 48)}" ${t.status} ${pct}%` + (t.speed > 0 ? ' · ' + fmtRate(t.speed) : ''));
+        if (working.length > 1) why.push(`+${working.length - 1} torrent(s)`);
+      }
       if (files > 0) why.push(`servindo ${files} arquivo${files > 1 ? 's' : ''}`);
-      if (torrentDown > 4096) why.push('baixando do swarm ' + fmtRate(torrentDown));
       if (s.streaming) why.push(`${s.streaming} em reprodução`);
-      if (Stats.up > 51200) why.push('enviando ' + fmtRate(Stats.up));
+      if (!working.length && Stats.up > 51200) why.push('enviando ' + fmtRate(Stats.up));
       setBusy(true, 'Em uso agora', why.join(' · ') || 'tráfego de rede');
     } else {
       const last = s.lastTransfer || 0;
       const idle = last ? ` — último arquivo servido há ${fmtAgo(Date.now() - last)}` : '';
-      setBusy(false, 'Ocioso', 'nada sendo transferido ou assistido agora' + idle);
+      const paused = list.filter(t => t.status === 'paused').length;
+      setBusy(false, 'Ocioso', 'nada sendo transferido ou assistido agora' + idle + (paused ? ` · ${paused} torrent(s) pausado(s)` : ''));
     }
   };
 
@@ -1158,12 +1191,9 @@ function ResourceMonitor(body) {
 
   Stats.listeners.add(update);
   if (Stats.last) update(Stats.last);
-  loadTasks();
-  tasksTimer = setInterval(loadTasks, 2000);
   return {
     destroy() {
       Stats.listeners.delete(update);
-      if (tasksTimer) clearInterval(tasksTimer);
     }
   };
 }
@@ -1250,7 +1280,7 @@ function ControlPanel(body) {
         el('h3', { text: 'App Updates', style: { marginTop: 0 } }),
         el('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' } },
           el('div', null,
-            el('b', { text: `NexShare v${s.version || '1.10.1'}` }),
+            el('b', { text: `NexShare v${s.version || '1.10.2'}` }),
             el('span', { style: { marginLeft: '8px', fontSize: '11px', textTransform: 'uppercase', background: '#eef3fb', color: '#1e6fd9', padding: '2px 6px', borderRadius: '4px' }, text: (s.flavor || 'normal') + ' edition' })
           ),
           el('button', {
