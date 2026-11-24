@@ -35,6 +35,9 @@ public class DownloadManager {
         /** File index being streamed (Debrid); TorrentEngine.NO_STREAM when none. */
         public int priorityFile = TorrentEngine.NO_STREAM;
         public boolean prioApplied;
+        /** Indices of the files to download; null = every file, empty = none. */
+        public int[] selected;
+        public boolean selectionApplied;
         volatile boolean stop;
         Thread thread;
 
@@ -46,6 +49,11 @@ public class DownloadManager {
                     .put("total", total).put("done", done).put("speed", speed).put("upSpeed", upSpeed)
                     .put("peers", peers).put("seeds", seeds).put("created", created);
                 if (hash != null) o.put("hash", hash);
+                if (selected != null) {
+                    JSONArray sel = new JSONArray();
+                    for (int i : selected) sel.put(i);
+                    o.put("selected", sel);
+                }
             } catch (Exception ignored) { }
             return o;
         }
@@ -492,6 +500,13 @@ public class DownloadManager {
                 t.done = o.optLong("done");
                 t.created = o.optLong("created");
                 t.hash = o.has("hash") ? o.getString("hash") : null;
+                if (o.has("selected") && !o.isNull("selected")) {
+                    JSONArray sel = o.optJSONArray("selected");
+                    if (sel != null) {
+                        t.selected = new int[sel.length()];
+                        for (int k = 0; k < sel.length(); k++) t.selected[k] = sel.optInt(k);
+                    }
+                }
                 if (t.type.equals("http") && (t.status.equals("downloading") || t.status.equals("queued"))) t.status = "paused";
                 tasks.put(t.id, t);
             }

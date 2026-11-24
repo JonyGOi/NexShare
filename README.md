@@ -79,7 +79,14 @@ The **Debrid Hub** app in the web desktop turns magnet links into instant stream
 3. Pick a file and either **Assistir aqui** (in-browser player) or **Link VLC** and open it
    in VLC/MPV/Kodi/Smart TV. Playback starts right away — the HTTP server writes only the
    bytes already on disk and waits for the pieces being read, instead of serving zeros.
-4. Each torrent has a **⋯ menu**: *Pausar*, *Retomar*, *Remover torrent* (keeps the files)
+4. Right below the torrent list, the **torrent contents** appear as a folder tree with
+   checkboxes — exactly how it will be written to the phone:
+   `📁 Serie/` → `📁 Temporada 1/` → `ep01.mkv`, `ep02.mkv`…
+   Uncheck whole folders or single files and press **Aplicar seleção**; only what is
+   checked is downloaded (`Marcar tudo`, `Desmarcar` and `Só vídeos` do it in one click,
+   which is handy for skipping samples, `.nfo`, subtitles you don't need or extra languages).
+   The choice is saved with the torrent, so it survives restarts.
+5. Each torrent has a **⋯ menu**: *Pausar*, *Retomar*, *Remover torrent* (keeps the files)
    and *Remover e apagar arquivos do celular*.
 
 Every link carries the device API key, so it keeps working after restarts.
@@ -99,6 +106,10 @@ Send the key as `Authorization: Bearer <key>`, `X-Api-Key: <key>` or `?token=<ke
 Implemented endpoints: `/user`, `/torrents`, `/torrents/addMagnet`, `/torrents/addTorrent`,
 `/torrents/info/{id}`, `/torrents/selectFiles/{id}`, `/torrents/delete/{id}`,
 `/torrents/instantAvailability/{hash}`, `/unrestrict/link`, `/hosts/domains`, `/time/iso`.
+`selectFiles` really applies the choice: ids not sent become *ignored* in libtorrent
+(`files=all` downloads everything, `files=none` downloads nothing), and `/torrents/info`
+reports `selected`/`done`/`progress` per file. Extra endpoints used by the bundled clients:
+`/torrents/pause/{id}`, `/torrents/resume/{id}`, `/torrents/delete/{id}?files=1`.
 The API requires the same login as the rest of NexShare (PIN or username+password).
 
 ## Desktop app (Windows): NexShare Debrid
@@ -112,6 +123,12 @@ phone as a debrid server and **downloads straight to the PC** — no browser, no
   (Debrid Hub → *Usar no VLC / Stremio / Windows*), then **Conectar**.
 - Paste a magnet (or **Abrir .torrent...**) → the torrent appears with progress, speed and
   seeders. Select it to see the files.
+- As soon as the metadata arrives, a **"Escolher o que baixar"** window opens with the
+  torrent's folder tree (same tree the phone will create). Tick the folders/files you want,
+  use **Marcar tudo / Desmarcar tudo / Só vídeos**, then **Aplicar** — everything unticked is
+  ignored and never downloaded. Clear *Escolher arquivos antes de baixar* to skip this
+  window, and **Selecionar arquivos...** reopens it at any time (the file list shows
+  `ignorado (nao baixa)` in grey for what was left out).
 - Select a file and **Baixar para o PC** (progress bar and cancel), **Copiar link** or
   **Abrir no VLC** (streams while the phone downloads).
 - **Remover** asks whether to delete the files from the phone too.

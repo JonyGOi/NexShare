@@ -101,8 +101,8 @@ public class TorrentEngine {
                 if (s.hasMetadata()) {
                     t.name = s.name();
                     t.total = s.totalWanted();
-                    // Debrid streaming priorities requested before metadata arrived are applied now.
-                    if (!t.prioApplied && t.priorityFile != NO_STREAM) applyPriority(t);
+                    // Selection/streaming priorities requested before metadata arrived are applied now.
+                    if (!t.selectionApplied || !t.prioApplied) applyPriority(t);
                 }
                 t.done = s.totalWantedDone();
                 t.speed = s.downloadPayloadRate();
@@ -138,6 +138,7 @@ public class TorrentEngine {
         if (ti == null) return java.util.Collections.emptyList();
         FileStorage fs = ti.files();
         long[] progress = fileProgressOf(h, fs.numFiles());
+        boolean[] want = wantedMask(t, fs.numFiles());
         java.util.List<org.json.JSONObject> list = new java.util.ArrayList<>();
         String dest = t.dest;
         for (int i = 0; i < fs.numFiles(); i++) {
@@ -152,6 +153,7 @@ public class TorrentEngine {
                 long done = (progress != null && i < progress.length) ? progress[i] : 0;
                 o.put("done", done);
                 o.put("progress", sz > 0 ? Math.min(100.0, (done * 100.0) / sz) : 0);
+                o.put("selected", want == null || want[i] ? 1 : 0);
                 o.put("startPiece", fs.pieceIndexAtFile(i));
                 o.put("endPiece", fs.lastPieceIndexAtFile(i));
                 o.put("fullPath", new File(dest, rel).getAbsolutePath());
@@ -173,6 +175,32 @@ public class TorrentEngine {
     public void prioritizeFile(DownloadManager.Task t, int fileIndex) {
         if (t == null) return;
         t.priorityFile = Math.max(0, fileIndex);
+        if (t.selected != null && !contains(t.selected, t.priorityFile)) {
+            // Playing a file the user did not select: make sure it downloads too.
+            int[] grown = java.util.Arrays.copyOf(t.selected, t.selected.length + 1);
+            grown[grown.length - 1] = t.priorityFile;
+            java.util.Arrays.sort(grown);
+            t.selected = grown;
+            t.selectionApplied = false;
+        }
+        t.prioApplied = false;
+        applyPriority(t);
+    }
+
+    /**
+     * Chooses which files of the torrent to download.
+     * null = everything, empty array = nothing, otherwise the 0-based file indices.
+     */
+    public void setSelection(DownloadManager.Task t, int[] indices) {
+        if (t == null) return;
+        if (indices == null) {
+            t.selected = null;
+        } else {
+            int[] copy = indices.clone();
+            java.util.Arrays.sort(copy);
+            t.selected = copy;
+        }
+        t.selectionApplied = false;
         t.prioApplied = false;
         applyPriority(t);
     }
@@ -181,69 +209,103 @@ public class TorrentEngine {
     public void clearPriority(DownloadManager.Task t) {
         if (t == null) return;
         t.priorityFile = NO_STREAM;
-        t.prioApplied = false;
-        TorrentHandle h = handle(t);
-        if (h == null) return;
-        try {
-            h.unsetFlags(TorrentFlags.SEQUENTIAL_DOWNLOAD);
-            TorrentInfo ti = h.torrentFile();
-            if (ti != null) {
-                Priority[] prios = new Priority[ti.files().numFiles()];
-                for (int i = 0; i < prios.length; i++) prios[i] = Priority.DEFAULT;
-                h.prioritizeFiles(prios);
-            }
-            t.prioApplied = true;
-        } catch (Throwable ignored) { }
+        setSelection(t, null);
     }
 
+    private static boolean contains(int[] arr, int value) {
+        for (int i : arr) if (i == value) return true;
+        return false;
+    }
+
+    private static boolean[] wantedMask(DownloadManager.Task t, int count) {
+        if (t.selected == null) return null;
+        boolean[] want = new boolean[count];
+        for (int i : t.selected) {
+            if (i >= 0 && i < count) want[i] = true;
+        }
+        return want;
+    }
+
+    /** Applies the current selection + streaming file to libtorrent. Safe to call repeatedly. */
     private void applyPriority(DownloadManager.Task t) {
-        if (t == null || t.priorityFile == NO_STREAM) return;
+        if (t == null) return;
         TorrentHandle h = handle(t);
         if (h == null) return;
         try {
-            h.setFlags(TorrentFlags.SEQUENTIAL_DOWNLOAD);
             TorrentInfo ti = h.torrentFile();
             if (ti == null) return; // metadata still loading; refresh() retries
             FileStorage fs = ti.files();
-            if (t.priorityFile == AUTO_STREAM) {
-                t.priorityFile = pickStreamFile(fs);
-                if (t.priorityFile < 0) { t.priorityFile = NO_STREAM; t.prioApplied = true; return; }
-            }
-            int idx = t.priorityFile;
-            if (idx < 0 || idx >= fs.numFiles()) return;
-            int sp = fs.pieceIndexAtFile(idx);
-            int ep = fs.lastPieceIndexAtFile(idx);
-            if (ep >= sp) h.setSequentialRange(sp, ep);
-            h.setPieceDeadline(sp, 500);
-            if (sp + 1 <= ep) h.setPieceDeadline(sp + 1, 1000);
-            if (ep > sp + 1) h.setPieceDeadline(ep, 1500);
+            int n = fs.numFiles();
+            boolean[] want = wantedMask(t, n);
 
-            Priority[] prios = new Priority[fs.numFiles()];
-            for (int i = 0; i < fs.numFiles(); i++) {
-                prios[i] = (i == idx) ? Priority.TOP_PRIORITY : Priority.DEFAULT;
+            int stream = t.priorityFile;
+            if (stream == AUTO_STREAM || (want != null && stream >= 0 && stream < n && !want[stream])) {
+                stream = pickStreamFile(fs, want);
+            }
+            if (stream >= n) stream = NO_STREAM;
+            if (want != null && stream >= 0 && !want[stream]) stream = NO_STREAM;
+
+            boolean any = false;
+            if (want == null) {
+                any = n > 0;
+            } else {
+                for (boolean b : want) if (b) { any = true; break; }
+            }
+
+            if (!any) {
+                // Nothing to download: ignore every file and stop prioritising.
+                h.unsetFlags(TorrentFlags.SEQUENTIAL_DOWNLOAD);
+                Priority[] none = new Priority[n];
+                for (int i = 0; i < n; i++) none[i] = Priority.IGNORE;
+                h.prioritizeFiles(none);
+                t.prioApplied = true;
+                t.selectionApplied = true;
+                t.total = 0;
+                return;
+            }
+
+            if (stream >= 0) {
+                h.setFlags(TorrentFlags.SEQUENTIAL_DOWNLOAD);
+                int sp = fs.pieceIndexAtFile(stream);
+                int ep = fs.lastPieceIndexAtFile(stream);
+                if (ep >= sp) h.setSequentialRange(sp, ep);
+                h.setPieceDeadline(sp, 500);
+                if (sp + 1 <= ep) h.setPieceDeadline(sp + 1, 1000);
+                if (ep > sp + 1) h.setPieceDeadline(ep, 1500);
+            } else {
+                h.unsetFlags(TorrentFlags.SEQUENTIAL_DOWNLOAD);
+            }
+
+            Priority[] prios = new Priority[n];
+            for (int i = 0; i < n; i++) {
+                if (want != null && !want[i]) prios[i] = Priority.IGNORE;
+                else if (i == stream) prios[i] = Priority.TOP_PRIORITY;
+                else prios[i] = Priority.DEFAULT;
             }
             h.prioritizeFiles(prios);
             t.prioApplied = true;
+            t.selectionApplied = true;
         } catch (Throwable ignored) { }
     }
 
-    /** Biggest playable video in the torrent (falls back to the biggest file). */
-    private static int pickStreamFile(FileStorage fs) {
+    static boolean isVideo(String name) {
+        String n = name.toLowerCase(java.util.Locale.ROOT);
+        return n.endsWith(".mp4") || n.endsWith(".mkv") || n.endsWith(".avi") || n.endsWith(".mov")
+            || n.endsWith(".webm") || n.endsWith(".m4v") || n.endsWith(".ts") || n.endsWith(".mpg")
+            || n.endsWith(".mpeg") || n.endsWith(".wmv") || n.endsWith(".flv");
+    }
+
+    /** Biggest playable video among the wanted files (falls back to the biggest file). */
+    private static int pickStreamFile(FileStorage fs, boolean[] want) {
         int best = -1, bestAny = -1;
         long bestSize = -1, bestAnySize = -1;
         for (int i = 0; i < fs.numFiles(); i++) {
+            if (want != null && !want[i]) continue;
             long size = fs.fileSize(i);
             if (size > bestAnySize) { bestAnySize = size; bestAny = i; }
             if (size > bestSize && isVideo(fs.fileName(i))) { bestSize = size; best = i; }
         }
         return best >= 0 ? best : bestAny;
-    }
-
-    private static boolean isVideo(String name) {
-        String n = name.toLowerCase(java.util.Locale.ROOT);
-        return n.endsWith(".mp4") || n.endsWith(".mkv") || n.endsWith(".avi") || n.endsWith(".mov")
-            || n.endsWith(".webm") || n.endsWith(".m4v") || n.endsWith(".ts") || n.endsWith(".mpg")
-            || n.endsWith(".mpeg") || n.endsWith(".wmv") || n.endsWith(".flv");
     }
 
     /** Index of a file inside a torrent by its absolute path, or -1. */

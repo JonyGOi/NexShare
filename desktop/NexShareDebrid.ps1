@@ -225,6 +225,14 @@ $btnOpenFolderTop.Size = New-Object System.Drawing.Size(100, 24)
 $btnOpenFolderTop.FlatStyle = 'Flat'
 $top.Controls.Add($btnOpenFolderTop)
 
+$chkAutoPick = New-Object System.Windows.Forms.CheckBox
+$chkAutoPick.Text = 'Escolher arquivos antes de baixar'
+$chkAutoPick.AutoSize = $true
+$chkAutoPick.Checked = $true
+$chkAutoPick.Location = New-Object System.Drawing.Point(612, 86)
+$chkAutoPick.Add_CheckedChanged({ $script:AutoPick = $chkAutoPick.Checked })
+$top.Controls.Add($chkAutoPick)
+
 # --- torrents grid
 $dg = New-Object System.Windows.Forms.DataGridView
 $dg.Dock = 'Fill'
@@ -297,11 +305,12 @@ $barFiles.Height = 42
 $barFiles.Padding = New-Object System.Windows.Forms.Padding(0, 6, 0, 0)
 $split.Panel2.Controls.Add($barFiles)
 
+$btnPick = New-SmallButton 'Selecionar arquivos...' { Pick-Files-ForCurrent }
 $btnDownload = New-SmallButton 'Baixar para o PC' { Start-Download }
 $btnCopyLink = New-SmallButton 'Copiar link' { Copy-Link }
 $btnVlc = New-SmallButton 'Abrir no VLC' { Open-Vlc }
 $btnOpenFolder = New-SmallButton 'Abrir pasta' { Open-Folder }
-$barFiles.Controls.AddRange(@($btnDownload, $btnCopyLink, $btnVlc, $btnOpenFolder))
+$barFiles.Controls.AddRange(@($btnPick, $btnDownload, $btnCopyLink, $btnVlc, $btnOpenFolder))
 
 # ---------------------------------------------------------------- estado
 
@@ -316,6 +325,10 @@ $script:DownloadName = ''
 $script:Refreshing = $false
 $script:Ticks = 0
 $script:SelectId = $null
+$script:PendingSelect = $null
+$script:Picking = $false
+$script:TreeGuard = $false
+$script:AutoPick = $true
 
 function Set-Status([string]$text, [string]$kind = 'info') {
     $lblStatus.Text = $text
@@ -392,12 +405,15 @@ function Load-Files($torrent, [int]$keepIndex = -1) {
         foreach ($f in $script:Files) {
             $name = [string]$f.path
             if ($name.StartsWith('/')) { $name = $name.Substring(1) }
+            $ignored = ($null -ne $f.selected -and [int]$f.selected -eq 0)
             $st = 'pronto'
             if ([double]$f.progress -lt 99.9) { $st = 'aguardando download' }
+            if ($ignored) { $st = 'ignorado (nao baixa)' }
             $item = New-Object System.Windows.Forms.ListViewItem($name)
             [void]$item.SubItems.Add((Format-Size $f.bytes))
             [void]$item.SubItems.Add((Format-Size $f.done))
             [void]$item.SubItems.Add($st)
+            if ($ignored) { $item.ForeColor = [System.Drawing.Color]::FromArgb(150, 158, 170) }
             $item.Tag = $f
             [void]$lvFiles.Items.Add($item)
         }
@@ -406,9 +422,228 @@ function Load-Files($torrent, [int]$keepIndex = -1) {
             $lvFiles.Items[$keepIndex].Selected = $true
             $lvFiles.Items[$keepIndex].Focused = $true
         }
-        Set-Status ("{0} arquivo(s) no torrent" -f $script:Files.Count)
+        $ign = @($script:Files | Where-Object { $null -ne $_.selected -and [int]$_.selected -eq 0 }).Count
+        $msg = "{0} arquivo(s) no torrent" -f $script:Files.Count
+        if ($ign -gt 0) { $msg += " - $ign ignorado(s)" }
+        Set-Status $msg
     } catch {
         Set-Status "Erro ao abrir torrent: $($_.Exception.Message)" 'error'
+    }
+}
+
+function Set-NodeChecked($nodes, [bool]$value) {
+    foreach ($n in $nodes) {
+        $n.Checked = $value
+        if ($n.Nodes.Count) { Set-NodeChecked $n.Nodes $value }
+    }
+}
+
+function Get-CheckedIds($nodes) {
+    $ids = New-Object System.Collections.Generic.List[int]
+    foreach ($n in $nodes) {
+        if ($n.Tag -and $n.Tag.kind -eq 'file' -and $n.Checked) { $ids.Add([int]$n.Tag.index) }
+        if ($n.Nodes.Count) { foreach ($id in @(Get-CheckedIds $n.Nodes)) { $ids.Add($id) } }
+    }
+    return , $ids
+}
+
+function Update-Parents($nodes) {
+    foreach ($n in $nodes) {
+        if ($n.Nodes.Count) {
+            Update-Parents $n.Nodes
+            $all = $true
+            foreach ($c in $n.Nodes) { if (-not $c.Checked) { $all = $false; break } }
+            $n.Checked = $all
+        }
+    }
+}
+
+function Apply-Selection([string]$torrentId, $ids, [int]$total) {
+    $q = @{}
+    if ($ids.Count -eq 0) { $q['files'] = 'none' }
+    elseif ($ids.Count -ge $total) { $q['files'] = 'all' }
+    else { $q['files'] = ($ids -join ',') }
+    Api -Method 'POST' -Path ("torrents/selectFiles/" + $torrentId) -Query $q | Out-Null
+}
+
+function Pick-Files-ForCurrent {
+    if (-not $script:Current) { Set-Status 'Selecione um torrent na lista' 'error'; return }
+    Show-FilePicker ([string]$script:Current.id)
+}
+
+function Show-FilePicker([string]$torrentId) {
+    if ($script:Picking) { return }
+    $script:Picking = $true
+    try {
+        $info = Api -Path ("torrents/info/" + $torrentId)
+        $files = @($info.files)
+        if (-not $files.Count) {
+            Set-Status 'Metadados ainda nao chegaram (depende dos seeders) - tente outra vez em instantes' 'error'
+            return
+        }
+
+        $pf = New-Object System.Windows.Forms.Form
+        $pf.Text = 'Escolher o que baixar'
+        $pf.Size = New-Object System.Drawing.Size(700, 600)
+        $pf.MinimumSize = New-Object System.Drawing.Size(520, 400)
+        $pf.StartPosition = 'CenterParent'
+        $pf.BackColor = [System.Drawing.Color]::FromArgb(244, 247, 251)
+        $pf.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+
+        $hint = New-Object System.Windows.Forms.Label
+        $hint.Text = 'Marque as pastas/arquivos que voce quer baixar. O resto e ignorado (nao gasta dados nem espaco).'
+        $hint.Dock = 'Top'
+        $hint.Height = 28
+        $hint.Padding = New-Object System.Windows.Forms.Padding(8, 7, 8, 0)
+        $hint.ForeColor = [System.Drawing.Color]::FromArgb(60, 70, 85)
+        $pf.Controls.Add($hint)
+
+        $tv = New-Object System.Windows.Forms.TreeView
+        $tv.Dock = 'Fill'
+        $tv.CheckBoxes = $true
+        $tv.FullRowSelect = $true
+        $tv.HideSelection = $false
+        $tv.BorderStyle = 'FixedSingle'
+        $tv.BackColor = [System.Drawing.Color]::White
+        $pf.Controls.Add($tv)
+
+        $pbar = New-Object System.Windows.Forms.FlowLayoutPanel
+        $pbar.Dock = 'Bottom'
+        $pbar.Height = 46
+        $pbar.Padding = New-Object System.Windows.Forms.Padding(8, 9, 8, 0)
+        $pbar.BackColor = [System.Drawing.Color]::White
+        $pf.Controls.Add($pbar)
+
+        function New-PickButton([string]$text, [scriptblock]$onClick) {
+            $b = New-Object System.Windows.Forms.Button
+            $b.Text = $text
+            $b.AutoSize = $true
+            $b.FlatStyle = 'Flat'
+            $b.Margin = New-Object System.Windows.Forms.Padding(0, 0, 8, 0)
+            if ($onClick) { $b.Add_Click($onClick) }
+            return $b
+        }
+
+        $pAll = New-PickButton 'Marcar tudo' { $script:TreeGuard = $true; try { Set-NodeChecked $tv.Nodes $true } finally { $script:TreeGuard = $false }; & $updateCount }
+        $pbar.Controls.Add($pAll)
+
+        $pNone = New-PickButton 'Desmarcar tudo' { $script:TreeGuard = $true; try { Set-NodeChecked $tv.Nodes $false } finally { $script:TreeGuard = $false }; & $updateCount }
+        $pbar.Controls.Add($pNone)
+
+        $pVideos = New-PickButton 'So videos' {
+            $script:TreeGuard = $true
+            try {
+                Set-NodeChecked $tv.Nodes $false
+                $stack = New-Object System.Collections.Stack
+                foreach ($n in $tv.Nodes) { $stack.Push($n) }
+                while ($stack.Count -gt 0) {
+                    $n = $stack.Pop()
+                    if ($n.Tag -and $n.Tag.kind -eq 'file') {
+                        if ($n.Text -match '\.(mp4|mkv|avi|mov|webm|m4v|ts|mpg|mpeg|wmv|flv)$') {
+                            $n.Checked = $true
+                            $up = $n.Parent
+                            while ($up) { $up.Checked = $true; $up = $up.Parent }
+                        }
+                    }
+                    foreach ($c in $n.Nodes) { $stack.Push($c) }
+                }
+            } finally { $script:TreeGuard = $false }
+            & $updateCount
+        }
+        $pbar.Controls.Add($pVideos)
+
+        $pCount = New-Object System.Windows.Forms.Label
+        $pCount.AutoSize = $true
+        $pCount.Margin = New-Object System.Windows.Forms.Padding(6, 7, 10, 0)
+        $pCount.ForeColor = [System.Drawing.Color]::FromArgb(110, 120, 135)
+        $pbar.Controls.Add($pCount)
+
+        $pOk = New-PickButton 'Aplicar' $null
+        $pOk.DialogResult = 'OK'
+        $pOk.BackColor = [System.Drawing.Color]::FromArgb(30, 111, 217)
+        $pOk.ForeColor = [System.Drawing.Color]::White
+        $pbar.Controls.Add($pOk)
+
+        $pCancel = New-PickButton 'Cancelar' $null
+        $pCancel.DialogResult = 'Cancel'
+        $pbar.Controls.Add($pCancel)
+        $pf.AcceptButton = $pOk
+        $pf.CancelButton = $pCancel
+
+        $updateCount = {
+            $n = @(Get-CheckedIds $tv.Nodes).Count
+            $pCount.Text = ("{0} de {1} marcados" -f $n, $files.Count)
+        }
+
+        $script:TreeGuard = $true
+        try {
+            $map = @{}
+            foreach ($f in $files) {
+                $full = ([string]$f.path).Trim()
+                while ($full.StartsWith('/') -or $full.StartsWith('\')) { $full = $full.Substring(1) }
+                $full = $full.Replace('\', '/')
+                $segs = @($full -split '/')
+                $leafName = $segs[$segs.Count - 1]
+                $parentNodes = $tv.Nodes
+                $acc = ''
+                if ($segs.Count -gt 1) {
+                    for ($i = 0; $i -lt ($segs.Count - 1); $i++) {
+                        $d = $segs[$i]
+                        if ($acc) { $acc = "$acc/$d" } else { $acc = $d }
+                        if (-not $map.ContainsKey($acc)) {
+                            $dn = New-Object System.Windows.Forms.TreeNode($d)
+                            $dn.Tag = @{ kind = 'dir' }
+                            $dn.NodeFont = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
+                            [void]$parentNodes.Add($dn)
+                            $map[$acc] = $dn
+                        }
+                        $parentNodes = $map[$acc].Nodes
+                    }
+                }
+                $leaf = New-Object System.Windows.Forms.TreeNode($leafName)
+                $leaf.Tag = @{ kind = 'file'; index = [int]$f.id }
+                $leaf.Checked = ($null -eq $f.selected -or [int]$f.selected -ne 0)
+                [void]$parentNodes.Add($leaf)
+            }
+            Update-Parents $tv.Nodes
+        } finally { $script:TreeGuard = $false }
+
+        & $updateCount
+
+        $tv.Add_AfterCheck({
+                param($sender, $e)
+                if ($script:TreeGuard) { return }
+                $script:TreeGuard = $true
+                try {
+                    if ($e.Node.Tag -and $e.Node.Tag.kind -eq 'dir') { Set-NodeChecked $e.Node.Nodes $e.Node.Checked }
+                    $up = $e.Node.Parent
+                    while ($up) {
+                        $all = $true
+                        foreach ($c in $up.Nodes) { if (-not $c.Checked) { $all = $false; break } }
+                        $up.Checked = $all
+                        $up = $up.Parent
+                    }
+                } finally { $script:TreeGuard = $false }
+                & $updateCount
+            })
+
+        $tv.ExpandAll()
+
+        $answer = $pf.ShowDialog()
+        if ($answer -eq 'OK') {
+            $ids = @(Get-CheckedIds $tv.Nodes)
+            Apply-Selection $torrentId $ids $files.Count
+            Set-Status ("Selecao aplicada: {0} de {1} arquivo(s) serao baixados" -f $ids.Count, $files.Count) 'ok'
+            $script:SelectId = $torrentId
+            Refresh-Torrents
+            if ($script:Current -and [string]$script:Current.id -eq $torrentId) { Load-Files $script:Current }
+        } else {
+            Set-Status 'Selecao mantida como estava'
+        }
+    } catch {
+        Set-Status "Falha ao escolher arquivos: $($_.Exception.Message)" 'error'
+    } finally {
+        $script:Picking = $false
     }
 }
 
@@ -421,7 +656,8 @@ function Add-Magnet([string]$magnet) {
         $r = Api -Method 'POST' -Path 'torrents/addMagnet' -Body $body -ContentType 'application/x-www-form-urlencoded'
         $txtMagnet.Text = ''
         $script:SelectId = [string]$r.id
-        Set-Status "Torrent adicionado ($($r.id)) — buscando metadados" 'ok'
+        $script:PendingSelect = [string]$r.id
+        Set-Status "Torrent adicionado - buscando metadados para voce escolher os arquivos" 'ok'
         Start-Sleep -Milliseconds 700
         Refresh-Torrents
     } catch {
@@ -651,7 +887,8 @@ $btnTorrentFile.Add_Click({
                 Set-Status 'Enviando .torrent...'
                 $r = Api -Method 'POST' -Path 'torrents/addTorrent' -Body $bytes -ContentType 'application/x-bittorrent'
                 $script:SelectId = [string]$r.id
-                Set-Status "Torrent adicionado ($($r.id))" 'ok'
+                $script:PendingSelect = [string]$r.id
+                Set-Status 'Torrent enviado - buscando metadados para voce escolher os arquivos' 'ok'
                 Start-Sleep -Milliseconds 700
                 Refresh-Torrents
             } catch {
@@ -700,6 +937,23 @@ $timerTorrents.Add_Tick({
         if (-not $form.Visible) { return }
         if (-not $script:Cfg.key) { return }
         Refresh-Torrents
+        if ($script:PendingSelect -and -not $script:Picking) {
+            try {
+                $pendingId = [string]$script:PendingSelect
+                $pinfo = Api -Path ("torrents/info/" + $pendingId)
+                $pfiles = @($pinfo.files)
+                if ($pfiles.Count -gt 0) {
+                    $script:PendingSelect = $null
+                    $script:SelectId = $pendingId
+                    Refresh-Torrents
+                    if ($script:AutoPick) {
+                        Show-FilePicker $pendingId
+                    } else {
+                        Set-Status ("{0} arquivo(s) no torrent - use 'Selecionar arquivos...' para escolher" -f $pfiles.Count) 'ok'
+                    }
+                }
+            } catch { }
+        }
         $script:Ticks++
         if ($script:Current -and ($script:Ticks % 2) -eq 0) {
             $sel = -1

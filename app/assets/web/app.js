@@ -1105,7 +1105,7 @@ function ControlPanel(body) {
         el('h3', { text: 'App Updates', style: { marginTop: 0 } }),
         el('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' } },
           el('div', null,
-            el('b', { text: `NexShare v${s.version || '1.7.0'}` }),
+            el('b', { text: `NexShare v${s.version || '1.8.0'}` }),
             el('span', { style: { marginLeft: '8px', fontSize: '11px', textTransform: 'uppercase', background: '#eef3fb', color: '#1e6fd9', padding: '2px 6px', borderRadius: '4px' }, text: (s.flavor || 'normal') + ' edition' })
           ),
           el('button', {
@@ -2808,8 +2808,12 @@ function DebridHub(body, win) {
     try {
       const r = await api('debrid/unrestrict', null, { method: 'POST', body: JSON.stringify({ magnet: value }) });
       st.task = r.task;
-      setStatus('✓ Torrent adicionado — procurando metadados e priorizando o vídeo…', 'ok');
-      renderFiles(r.files || [], r);
+      st.dirty = false;
+      setStatus((r.files && r.files.length)
+        ? '✓ Torrent adicionado — desmarque o que não quer baixar e clique em Aplicar seleção'
+        : '⏳ Torrent adicionado — buscando metadados… a lista de arquivos aparece aqui', 'ok');
+      renderFiles(r.files || [], r, true);
+      filesBox.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
       refreshActive();
     } catch (e) {
       setStatus('Erro: ' + e.message, 'error');
@@ -2823,40 +2827,170 @@ function DebridHub(body, win) {
     return local ? f.streamUrl : (f.remoteStreamUrl || f.streamUrl);
   }
 
-  function renderFiles(files, data) {
+  /**
+   * File picker: shows the torrent's folder structure with checkboxes, so the user chooses
+   * what to download (whole folders, single files, or only the videos) instead of pulling
+   * everything by default.
+   */
+  function renderFiles(files, data, force) {
+    if (st.dirty && !force) return; // keep the user's unsaved checkbox edits on the screen
     st.files = files;
     if (!files.length) {
       filesBox.replaceChildren(el('div', { class: 'dim', style: { fontSize: '13px' }, text: st.task ? 'Aguardando metadados do torrent (depende dos seeders)…' : '' }));
       return;
     }
+    st.dirty = false;
+    st.checked = new Set(files.filter(f => f.selected !== 0).map(f => f.id));
+
     const entryOf = (f) => ({ path: f.fullPath, name: f.name, dir: false, size: f.size });
-    const videoFiles = files.filter(f => /\.(mp4|mkv|avi|mov|webm|flv|m4v|ts|mpg|mpeg|wmv)$/i.test(f.name));
+    const isVideoName = (n) => /\.(mp4|mkv|avi|mov|webm|flv|m4v|ts|mpg|mpeg|wmv)$/i.test(n || '');
+    const videoFiles = files.filter(f => isVideoName(f.name));
+    const byId = new Map(files.map(f => [f.id, f]));
+
+    // Build the folder tree from the relative paths ("Season 1/ep1.mkv" -> dir "Season 1").
+    const root = { name: '', dirs: new Map(), files: [] };
+    for (const f of files) {
+      const parts = String(f.path || f.name || '').split('/').filter(Boolean);
+      parts.pop();
+      let node = root;
+      for (const part of parts) {
+        if (!node.dirs.has(part)) node.dirs.set(part, { name: part, dirs: new Map(), files: [] });
+        node = node.dirs.get(part);
+      }
+      node.files.push(f);
+    }
+    const idsUnder = (node) => {
+      const out = node.files.map(f => f.id);
+      for (const d of node.dirs.values()) out.push(...idsUnder(d));
+      return out;
+    };
+    const sizeUnder = (node) => {
+      let total = node.files.reduce((s, f) => s + (Number(f.size) || 0), 0);
+      for (const d of node.dirs.values()) total += sizeUnder(d);
+      return total;
+    };
+
+    const applyBtn = el('button', { class: 'btn primary', onclick: () => applySelection() }, 'Aplicar seleção');
+    const countLabel = el('span', { class: 'dim', style: { fontSize: '12px' } });
+
+    function refreshCount() {
+      countLabel.textContent = `${st.checked.size} de ${files.length} arquivo(s) marcados`;
+      applyBtn.disabled = st.checked.size === 0 && !st.dirty;
+    }
+
+    function toggleSubtree(node, on) {
+      for (const id of idsUnder(node)) {
+        const f = byId.get(id);
+        if (!f) continue;
+        if (on) st.checked.add(id); else st.checked.delete(id);
+      }
+      st.dirty = true;
+      redrawTree();
+    }
+
+    const treeBox = el('div', { style: { display: 'flex', flexDirection: 'column', gap: '2px' } });
+
+    function fileRow(f, depth) {
+      const on = st.checked.has(f.id);
+      const pct = Math.max(0, Math.min(100, Number(f.progress) || 0));
+      const isVideo = isVideoName(f.name);
+      const isDirect = /^https?:/i.test(f.fullPath || '');
+      const cb = el('input', {
+        type: 'checkbox',
+        style: { flex: 'none', marginRight: '8px' },
+        onchange: e => {
+          if (e.target.checked) st.checked.add(f.id); else st.checked.delete(f.id);
+          st.dirty = true;
+          refreshCount();
+        }
+      });
+      cb.checked = on;
+      return el('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', padding: '7px 8px', paddingLeft: (8 + depth * 18) + 'px', borderRadius: '6px', background: on ? '#eef4ff' : '#f8fafc', border: '1px solid #e2e8f0' } },
+        cb,
+        el('div', { style: { minWidth: 0, flex: 1 } },
+          el('div', { style: { fontSize: '13px', fontWeight: on ? '600' : '400', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: f.path || f.name, text: f.name }),
+          el('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', marginTop: '3px' } },
+            el('div', { class: 'bar', style: { flex: 1, height: '4px', maxWidth: '220px' } }, el('i', { style: { width: pct.toFixed(1) + '%' } })),
+            el('span', { style: { fontSize: '11px', color: 'var(--text-3)' }, text: `${pct.toFixed(0)}% de ${fmtSize(f.size)}` }))),
+        el('div', { style: { display: 'flex', gap: '6px', flex: 'none', flexWrap: 'wrap' } },
+          (isVideo || isDirect) ? el('button', {
+            class: 'btn', style: { padding: '3px 9px', fontSize: '12px' },
+            onclick: () => {
+              if (isDirect) { window.open(f.streamUrl, '_blank'); return; }
+              if (!st.checked.has(f.id)) { st.checked.add(f.id); st.dirty = true; refreshCount(); }
+              api('debrid/prioritize', null, { method: 'POST', body: JSON.stringify({ id: st.task && st.task.id, fileIndex: f.id }) }).catch(() => { });
+              openApp('player', { entry: entryOf(f), list: videoFiles.map(entryOf) });
+            }
+          }, '▶ Assistir') : null,
+          el('button', { class: 'btn', style: { padding: '3px 9px', fontSize: '12px' }, onclick: () => copyText(streamFor(f, true), 'Link local copiado (VLC)') }, 'Link VLC'),
+          f.remoteStreamUrl ? el('button', { class: 'btn', style: { padding: '3px 9px', fontSize: '12px' }, onclick: () => copyText(f.remoteStreamUrl, 'Link público copiado') }, 'Link público') : null));
+    }
+
+    function folderRow(node, depth) {
+      const ids = idsUnder(node);
+      const on = ids.filter(id => st.checked.has(id)).length;
+      const all = on === ids.length && ids.length > 0;
+      const cb = el('input', { type: 'checkbox', style: { flex: 'none', marginRight: '8px' }, onchange: e => toggleSubtree(node, e.target.checked) });
+      cb.checked = all;
+      cb.indeterminate = !all && on > 0;
+      return el('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', padding: '7px 8px', paddingLeft: (8 + depth * 18) + 'px', borderRadius: '6px', background: '#f1f5f9', border: '1px solid #e2e8f0' } },
+        cb,
+        el('div', { style: { minWidth: 0, flex: 1, fontSize: '13px', fontWeight: '600', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, text: '📁 ' + node.name }),
+        el('span', { class: 'dim', style: { fontSize: '11px', flex: 'none' }, text: `${ids.length} arq. · ${fmtSize(sizeUnder(node))}` }));
+    }
+
+    function renderNode(node, depth, out) {
+      for (const d of node.dirs.values()) {
+        out.push(folderRow(d, depth));
+        renderNode(d, depth + 1, out);
+      }
+      for (const f of node.files) out.push(fileRow(f, depth));
+    }
+
+    function redrawTree() {
+      const rows = [];
+      renderNode(root, 0, rows);
+      treeBox.replaceChildren(...rows);
+      refreshCount();
+    }
+
+    async function applySelection() {
+      if (!st.task) return;
+      applyBtn.disabled = true;
+      toast('Aplicando seleção…');
+      try {
+        const r = await api('debrid/select', null, { method: 'POST', body: JSON.stringify({ id: st.task.id, files: [...st.checked] }) });
+        st.dirty = false;
+        if (r.task) st.task = r.task;
+        renderFiles(r.files || [], r, true);
+        toast('Seleção aplicada — só os arquivos marcados serão baixados');
+      } catch (e) {
+        toast('Falha ao aplicar seleção: ' + e.message);
+      } finally {
+        applyBtn.disabled = false;
+      }
+    }
+
+    const markAll = (fn) => {
+      st.checked = new Set(files.filter(fn).map(f => f.id));
+      st.dirty = true;
+      redrawTree();
+    };
+
+    const bar = el('div', { style: { display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center', marginBottom: '10px' } },
+      el('button', { class: 'btn', onclick: () => markAll(() => true) }, 'Marcar tudo'),
+      el('button', { class: 'btn', onclick: () => markAll(() => false) }, 'Desmarcar'),
+      el('button', { class: 'btn', onclick: () => markAll(f => isVideoName(f.name)) }, 'Só vídeos'),
+      applyBtn,
+      countLabel);
 
     filesBox.replaceChildren(
-      el('h4', { style: { margin: '0 0 10px', color: '#1e6fd9' }, text: `🎬 Arquivos (${files.length})` }),
-      ...files.map(f => {
-        const pct = Math.max(0, Math.min(100, Number(f.progress) || 0));
-        const isVideo = /\.(mp4|mkv|avi|mov|webm|flv|m4v|ts|mpg|mpeg|wmv)$/i.test(f.name);
-        const isDirect = /^https?:/i.test(f.fullPath || '');
-        const btns = [
-          (isVideo || isDirect) ? el('button', {
-            class: 'btn primary',
-            onclick: () => isDirect ? window.open(f.streamUrl, '_blank') : openApp('player', { entry: entryOf(f), list: videoFiles.map(entryOf) })
-          }, icon('play'), ' Assistir aqui') : null,
-          isDirect ? null : el('button', { class: 'btn', onclick: () => { api('debrid/prioritize', null, { method: 'POST', body: JSON.stringify({ id: st.task && st.task.id, fileIndex: f.id }) }).catch(() => { }); toast('Priorizando este arquivo'); } }, icon('download'), ' Priorizar'),
-          el('button', { class: 'btn', onclick: () => copyText(streamFor(f, true), 'Link local copiado (VLC)') }, icon('link'), ' Link VLC'),
-          (f.remoteStreamUrl ? el('button', { class: 'btn', onclick: () => copyText(f.remoteStreamUrl, 'Link público copiado') }, icon('open'), ' Link público') : null),
-        ].filter(Boolean);
-        return el('div', { class: 'card', style: { background: '#f8fafc', border: '1px solid #e2e8f0', marginBottom: '8px', padding: '12px' } },
-          el('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', marginBottom: '6px' } },
-            el('b', { style: { fontSize: '14px', wordBreak: 'break-all' }, text: f.name }),
-            el('span', { class: 'dim', style: { fontSize: '12px', flex: 'none' }, text: fmtSize(f.size) })),
-          el('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' } },
-            el('div', { class: 'bar', style: { flex: 1, height: '6px' } }, el('i', { style: { width: pct.toFixed(1) + '%' } })),
-            el('span', { style: { fontSize: '11px', color: 'var(--text-3)', flex: 'none' }, text: pct.toFixed(0) + '% baixado' })),
-          el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } }, ...btns));
-      })
-    );
+      el('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '10px', flexWrap: 'wrap', margin: '0 0 8px' } },
+        el('h4', { style: { margin: 0, color: '#1e6fd9' }, text: `📂 Conteúdo do torrent (${files.length} arquivo(s))` }),
+        el('span', { class: 'dim', style: { fontSize: '12px' }, text: 'desmarque o que não quer baixar' })),
+      bar,
+      treeBox);
+    redrawTree();
   }
 
   async function refreshActive() {
@@ -2878,7 +3012,7 @@ function DebridHub(body, win) {
               el('div', { style: { fontWeight: 'bold', fontSize: '13px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }, text: t.name }),
               el('div', { class: 'dim', style: { fontSize: '11px', marginTop: '2px' }, text: `${fmtSize(t.done)} / ${fmtSize(t.total)} (${pct.toFixed(0)}%) · ▼ ${fmtRate(t.speed)} · ${t.status}` })),
             el('div', { style: { display: 'flex', gap: '6px', flex: 'none' } },
-              el('button', { class: 'btn', onclick: () => { st.task = t; api('debrid/files', { id: t.id }).then(r => renderFiles(r.files || [], r)).catch(() => { }); } }, 'Arquivos'),
+              el('button', { class: 'btn', onclick: () => { st.task = t; st.dirty = false; api('debrid/files', { id: t.id }).then(r => { renderFiles(r.files || [], r, true); filesBox.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }).catch(() => { }); } }, 'Arquivos'),
               el('button', {
                 class: 'btn',
                 title: 'Opções do torrent',
@@ -2929,6 +3063,8 @@ ${t.name}`,
   function dismissTask() {
     st.task = null;
     st.files = [];
+    st.checked = new Set();
+    st.dirty = false;
     filesBox.replaceChildren();
     setStatus('');
   }

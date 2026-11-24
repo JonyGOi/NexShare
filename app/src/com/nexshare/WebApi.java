@@ -186,6 +186,7 @@ public class WebApi implements HttpServer.Handler {
             case "/api/debrid/unrestrict": debridUnrestrict(req, res); break;
             case "/api/debrid/files": debridFiles(req, res); break;
             case "/api/debrid/prioritize": debridPrioritize(req, res); break;
+            case "/api/debrid/select": debridSelect(req, res); break;
             case "/api/debrid/rotatekey": debridRotateKey(res); break;
             case "/api/update/check": checkUpdate(res); break;
             case "/api/update/install": installUpdate(req, res); break;
@@ -1649,6 +1650,7 @@ public class WebApi implements HttpServer.Handler {
                     put(fo, "path", "/" + fi.optString("path"));
                     put(fo, "bytes", fi.optLong("size"));
                     put(fo, "done", fi.optLong("done"));
+                    put(fo, "selected", fi.optInt("selected", 1));
                     put(fo, "progress", fi.optDouble("progress", 0));
                     put(fo, "selected", 1);
                     filesArr.put(fo);
@@ -1681,20 +1683,23 @@ public class WebApi implements HttpServer.Handler {
                 }
                 sel = sel == null ? "" : sel.trim();
                 if (sel.isEmpty() || "all".equalsIgnoreCase(sel)) {
-                    te.clearPriority(t);
+                    te.setSelection(t, null);
+                } else if ("none".equalsIgnoreCase(sel)) {
+                    te.setSelection(t, new int[0]);
                 } else {
-                    String[] parts = sel.split(",");
-                    int first = -1;
-                    for (String part : parts) {
+                    java.util.List<Integer> picked = new java.util.ArrayList<>();
+                    for (String part : sel.split(",")) {
                         try {
                             int idx = Integer.parseInt(part.trim());
                             // Real-Debrid file ids are 1-based; NexShare indexes files from 0.
-                            te.prioritizeFile(t, Math.max(0, idx - 1));
-                            if (first < 0) first = Math.max(0, idx - 1);
+                            if (idx >= 1) picked.add(idx - 1);
                         } catch (NumberFormatException ignored) { }
                     }
-                    if (first > 0) te.prioritizeFile(t, first);
+                    int[] ids = new int[picked.size()];
+                    for (int k = 0; k < ids.length; k++) ids[k] = picked.get(k);
+                    te.setSelection(t, ids);
                 }
+                dm.save();
             }
             res.json(200, "{\"status\":\"ok\"}");
             return;
@@ -1890,12 +1895,17 @@ public class WebApi implements HttpServer.Handler {
 
     private void debridFiles(HttpServer.Request req, HttpServer.Response res) throws IOException {
         String id = req.param("id");
-        DownloadManager dm = DownloadManager.get(ctx);
-        DownloadManager.Task t = dm.getTask(id);
+        DownloadManager.Task t = DownloadManager.get(ctx).getTask(id);
         if (t == null) {
             res.error(404, "task not found");
             return;
         }
+        res.json(200, debridPayload(req, t).toString());
+    }
+
+    /** Task + file list + stream links, shared by the debrid endpoints. */
+    private JSONObject debridPayload(HttpServer.Request req, DownloadManager.Task t) throws IOException {
+        DownloadManager dm = DownloadManager.get(ctx);
         TorrentEngine te = dm.torrentEngine();
         String token = getOrCreateStreamToken();
         String host = req.header("host");
@@ -1903,15 +1913,63 @@ public class WebApi implements HttpServer.Handler {
         String baseUrl = proto + "://" + (host != null ? host : (MdnsResponder.HOST + ":" + ServerService.PORT));
         String tunnel = tunnelPublicUrl();
         String remoteUrl = tunnel.isEmpty() ? null : tunnel;
-
         JSONObject o = new JSONObject();
         put(o, "task", t.toJson());
         put(o, "token", token);
         put(o, "baseUrl", baseUrl);
         put(o, "remoteUrl", remoteUrl);
-
         put(o, "files", debridFileList(t, te, baseUrl, remoteUrl, token));
-        res.json(200, o.toString());
+        return o;
+    }
+
+    /** Chooses which files of a torrent download (mode: all | none | videos, or an explicit list). */
+    private void debridSelect(HttpServer.Request req, HttpServer.Response res) throws IOException {
+        JSONObject body;
+        try {
+            body = new JSONObject(req.bodyString(1 << 16));
+        } catch (Exception e) {
+            res.error(400, "bad request");
+            return;
+        }
+        DownloadManager dm = DownloadManager.get(ctx);
+        DownloadManager.Task t = dm.getTask(body.optString("id"));
+        if (t == null) {
+            res.error(404, "task not found");
+            return;
+        }
+        TorrentEngine te = dm.torrentEngine();
+        if (te == null) {
+            res.error(503, "torrent engine unavailable");
+            return;
+        }
+        String mode = body.optString("mode", "");
+        if ("all".equalsIgnoreCase(mode)) {
+            te.setSelection(t, null);
+        } else if ("none".equalsIgnoreCase(mode)) {
+            te.setSelection(t, new int[0]);
+        } else if ("videos".equalsIgnoreCase(mode)) {
+            List<JSONObject> files = te.listFiles(t);
+            java.util.List<Integer> picked = new java.util.ArrayList<>();
+            for (int i = 0; i < files.size(); i++) {
+                if (TorrentEngine.isVideo(files.get(i).optString("name", ""))) picked.add(i);
+            }
+            int[] ids = new int[picked.size()];
+            for (int k = 0; k < ids.length; k++) ids[k] = picked.get(k);
+            te.setSelection(t, ids);
+        } else {
+            JSONArray arr = body.optJSONArray("files");
+            if (arr == null) {
+                te.setSelection(t, null);
+            } else {
+                java.util.List<Integer> picked = new java.util.ArrayList<>();
+                for (int i = 0; i < arr.length(); i++) picked.add(arr.optInt(i));
+                int[] ids = new int[picked.size()];
+                for (int k = 0; k < ids.length; k++) ids[k] = picked.get(k);
+                te.setSelection(t, ids);
+            }
+        }
+        dm.save();
+        res.json(200, debridPayload(req, t).toString());
     }
 
     /** File entries (with stream links) for a debrid task: torrent files or a direct http(s) url. */
@@ -1925,6 +1983,7 @@ public class WebApi implements HttpServer.Handler {
             put(fi, "size", t.total);
             put(fi, "done", t.done);
             put(fi, "progress", t.total > 0 ? Math.min(100.0, (t.done * 100.0) / t.total) : 0);
+            put(fi, "selected", 1);
             put(fi, "streamUrl", t.url);
             put(fi, "remoteStreamUrl", t.url);
             put(fi, "fullPath", t.url);
