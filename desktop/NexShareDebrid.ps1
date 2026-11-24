@@ -1223,6 +1223,7 @@ function Queue-AutoScan {
     $scanned = 0
     foreach ($t in @($script:Torrents)) {
         if (-not $t.id) { continue }
+        if ($t.fromAddon) { continue }   # veio do addon do Nuvio: nao mover/apagar no meio do filme
         if ($script:ScanDone.ContainsKey([string]$t.id)) { continue }
         if ($scanned -ge 3) { break }   # no maximo 3 torrents por varredura
         $scanned++

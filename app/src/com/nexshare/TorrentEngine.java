@@ -385,6 +385,16 @@ public class TorrentEngine {
         } catch (Throwable ignored) { }
     }
 
+    /** Index of the file to stream for a torrent (biggest video), or NO_STREAM. */
+    public int pickBestFile(DownloadManager.Task t) {
+        TorrentHandle h = handle(t);
+        if (h == null || !h.isValid()) return NO_STREAM;
+        TorrentInfo ti = h.torrentFile();
+        if (ti == null) return NO_STREAM;
+        FileStorage fs = ti.files();
+        return pickStreamFile(fs, wantedMask(t, fs.numFiles()));
+    }
+
     static boolean isVideo(String name) {
         String n = name.toLowerCase(java.util.Locale.ROOT);
         return n.endsWith(".mp4") || n.endsWith(".mkv") || n.endsWith(".avi") || n.endsWith(".mov")

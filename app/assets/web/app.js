@@ -1105,7 +1105,7 @@ function ControlPanel(body) {
         el('h3', { text: 'App Updates', style: { marginTop: 0 } }),
         el('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' } },
           el('div', null,
-            el('b', { text: `NexShare v${s.version || '1.9.1'}` }),
+            el('b', { text: `NexShare v${s.version || '1.10.0'}` }),
             el('span', { style: { marginLeft: '8px', fontSize: '11px', textTransform: 'uppercase', background: '#eef3fb', color: '#1e6fd9', padding: '2px 6px', borderRadius: '4px' }, text: (s.flavor || 'normal') + ' edition' })
           ),
           el('button', {
@@ -2772,7 +2772,40 @@ function DebridHub(body, win) {
         el('li', null, el('b', { text: 'API URL: ' }), el('span', { class: 'mono', text: apiBase() })),
         el('li', null, el('b', { text: 'API Key: ' }), el('span', { class: 'mono', text: apiKey() || '(veja acima)' }))),
       el('p', { class: 'dim', style: { margin: '8px 0 0', fontSize: '12px' }, text: 'Fora de casa use a URL pública: ligue o Acesso Remoto e copie o endpoint HTTPS acima.' })),
-    el('h4', { style: { margin: '16px 0 6px', color: '#1e6fd9' }, text: '3. Windows: unidade de rede (WebDAV)' }),
+    el('h4', { style: { margin: '16px 0 6px', color: '#1e6fd9' }, text: '3. Nuvio / Stremio: addon NexShare (pronto, sem configurar nada)' }),
+    (() => {
+      const manifest = lanBase() + '/addon/' + apiKey() + '/manifest.json';
+      const manifestTunnel = State.tunnelUrl ? State.tunnelUrl + '/addon/' + apiKey() + '/manifest.json' : '';
+      const testOut = el('div', { class: 'dim', style: { fontSize: '12px', marginTop: '6px' } });
+      return el('div', { style: { fontSize: '13px', lineHeight: 1.7 } },
+        el('p', { style: { margin: '0 0 8px' }, text: 'Este addon faz o Nuvio (e o Stremio) usar o celular como debrid: ele consulta o Torrentio, e o torrent só entra no celular — pausado — quando você toca no stream. O arquivo escolhido começa a baixar e toca na hora.' }),
+        code(manifest),
+        manifestTunnel ? el('div', { style: { marginTop: '6px' } }, code(manifestTunnel)) : el('div', null),
+        el('ol', { style: { margin: '8px 0 0', paddingLeft: '20px' } },
+          el('li', null, 'No Nuvio: Settings → Content & Discovery → Addons → cole a URL acima → Install Addon.'),
+          el('li', null, 'No Stremio: Addons → Community → instalar pelo mesmo link (ou Addon Manager → Install from URL).'),
+          el('li', null, 'Escolha um filme/episódio e toque num stream marcado "▶ desbridar no celular".')),
+        el('div', { style: { marginTop: '8px', display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' } },
+          el('button', {
+            class: 'btn',
+            onclick: async (e) => {
+              const b = e.currentTarget;
+              b.disabled = true;
+              testOut.textContent = 'Testando o Torrentio a partir do celular…';
+              try {
+                const r = await api('addon/test', { id: 'tt0111161' });
+                if (r.ok) testOut.textContent = `✓ Torrentio respondeu ${r.streams} resultado(s) em ${r.ms} ms`;
+                else testOut.textContent = `✗ Falha (${r.ms} ms): ${r.error}`;
+              } catch (err) {
+                testOut.textContent = '✗ ' + err.message;
+              } finally { b.disabled = false; }
+            }
+          }, 'Testar addon'),
+          el('span', { class: 'dim', style: { fontSize: '12px' }, text: 'o teste consulta o Torrentio pelo celular' })),
+        testOut,
+        el('p', { class: 'dim', style: { margin: '8px 0 0', fontSize: '12px' }, text: 'Fora de casa, use a URL pública (liga o Acesso Remoto primeiro). Se o celular tiver o app do PC com "Mandar pro PC automaticamente" ligado, os torrents vindos do addon ficam de fora, para o arquivo não sair do celular no meio do filme.' }));
+    })(),
+    el('h4', { style: { margin: '16px 0 6px', color: '#1e6fd9' }, text: '4. Windows: unidade de rede (WebDAV)' }),
     el('div', { style: { fontSize: '13px', lineHeight: 1.7 } },
       el('p', { style: { margin: '0 0 8px' }, text: 'Os arquivos ficam em Download/NexShare no celular. Habilite o WebDAV no Control Panel e use HTTPS (funciona em redes de instituição, sem ajustar o registro do Windows):' }),
       code(`net use Z: ${(State.tunnelUrl || lanBase())}/dav/ /user:nexshare <SEU_PIN>`))

@@ -120,6 +120,24 @@ downloads), `free_space`/`total_space` in `/user`, `error` in `/torrents/info`,
 in the task JSON.
 The API requires the same login as the rest of NexShare (PIN or username+password).
 
+## Nuvio / Stremio addon
+
+NexShare **is** the addon: install it in Nuvio (or Stremio) and the phone resolves the streams.
+
+1. Debrid Hub → *Usar no VLC / Stremio / Windows* → **3. Nuvio / Stremio** → copy the manifest URL
+   (`http://<phone-ip>:8080/addon/<key>/manifest.json`, or the tunnel URL when you are away).
+2. Nuvio: **Settings → Content & Discovery → Addons** → paste → **Install Addon**.
+   Stremio: **Addons → Install from URL**.
+3. Pick a movie/episode and tap a stream marked **▶ desbridar no celular (NexShare)**.
+
+How it works: the addon asks [Torrentio](https://torrentio.strem.fun) for torrents (no debrid key
+needed) and turns every result into a link to `…/addon/<key>/play?h=<hash>&i=<file>`. Nothing is
+downloaded while you browse — the torrent is added **paused** only when you tap a stream, then the
+exact file (`fileIdx` from Torrentio, or the biggest video) is selected and served to the player
+with full `Range` support (seeking works while it downloads). Torrents created by the addon are
+flagged and skipped by the desktop app's auto-offload, so the file never disappears mid-movie.
+The **Testar addon** button (`/api/addon/test`) checks whether the phone can reach Torrentio.
+
 ## Desktop app (Windows): NexShare Debrid
 
 `desktop/NexShareDebrid.ps1` (+ `NexShareDebrid.cmd`) is a small Windows app that uses the

@@ -40,6 +40,8 @@ public class DownloadManager {
         public boolean selectionApplied;
         /** True when the phone paused this torrent because the disk was almost full. */
         public boolean spacePaused;
+        /** True when the torrent was added by the Nuvio/Stremio addon (do not auto-offload it). */
+        public boolean fromAddon;
         volatile boolean stop;
         Thread thread;
 
@@ -60,6 +62,7 @@ public class DownloadManager {
                     .put("peers", peers).put("seeds", seeds).put("created", created)
                     .put("eta", etaSeconds());
                 if (hash != null) o.put("hash", hash);
+                if (fromAddon) o.put("fromAddon", true);
                 if (selected != null) {
                     JSONArray sel = new JSONArray();
                     for (int i : selected) sel.put(i);
@@ -511,6 +514,7 @@ public class DownloadManager {
                 t.done = o.optLong("done");
                 t.created = o.optLong("created");
                 t.hash = o.has("hash") ? o.getString("hash") : null;
+                t.fromAddon = o.optBoolean("fromAddon", false);
                 if (o.has("selected") && !o.isNull("selected")) {
                     JSONArray sel = o.optJSONArray("selected");
                     if (sel != null) {

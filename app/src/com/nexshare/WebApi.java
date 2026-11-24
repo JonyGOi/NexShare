@@ -78,6 +78,9 @@ public class WebApi implements HttpServer.Handler {
     @Override
     public void handle(HttpServer.Request req, HttpServer.Response res) throws IOException {
         String p = req.path;
+        if (p.equals("/addon") || p.startsWith("/addon/")) {
+            if (handleAddon(req, res, p)) return;
+        }
         if (p.equals("/dav") || p.startsWith("/dav/")) {
             webDavHandler.handle(req, res);
             return;
@@ -189,6 +192,7 @@ public class WebApi implements HttpServer.Handler {
             case "/api/debrid/files": debridFiles(req, res); break;
             case "/api/debrid/prioritize": debridPrioritize(req, res); break;
             case "/api/debrid/select": debridSelect(req, res); break;
+            case "/api/addon/test": addonTest(req, res); break;
             case "/api/debrid/rotatekey": debridRotateKey(res); break;
             case "/api/update/check": checkUpdate(res); break;
             case "/api/update/install": installUpdate(req, res); break;
@@ -1262,6 +1266,16 @@ public class WebApi implements HttpServer.Handler {
         for (int i = 0; i < m.length; i += 2) MIME.put(m[i], m[i + 1]);
     }
 
+    /** Percent-encodes a value for a query string. URLEncoder emits '+' for spaces, but our
+     *  query parser treats '+' as a literal plus, so spaces must go as %20. */
+    static String encodeQuery(String value) {
+        try {
+            return java.net.URLEncoder.encode(value, "UTF-8").replace("+", "%20");
+        } catch (Exception e) {
+            return value;
+        }
+    }
+
     static String mime(String name) {
         int dot = name.lastIndexOf('.');
         String t = dot >= 0 ? MIME.get(name.substring(dot + 1).toLowerCase(Locale.ROOT)) : null;
@@ -1865,7 +1879,7 @@ public class WebApi implements HttpServer.Handler {
                 File targetFile = new File(new File(t.dest), filePath);
                 String streamPath = targetFile.getAbsolutePath();
                 // baseUrl = how the caller reached us (LAN or tunnel), so links keep working for them.
-                streamUrl = baseUrl + "/api/file?path=" + URLEncoder.encode(streamPath, "UTF-8") + "&token=" + token;
+                streamUrl = baseUrl + "/api/file?path=" + encodeQuery(streamPath) + "&token=" + token;
             }
 
             if ("GET".equals(req.method)) {
@@ -2051,6 +2065,230 @@ public class WebApi implements HttpServer.Handler {
         res.json(200, debridPayload(req, t).toString());
     }
 
+    // ------------------------------------------------------------ Nuvio / Stremio addon
+
+    /**
+     * Stremio-compatible addon that turns the phone into the debrid resolver:
+     * Nuvio asks for streams, we scrape Torrentio, and each result becomes a link that, when
+     * played, makes the phone download that exact file (paused until then, so nothing is
+     * downloaded just because you browsed).
+     */
+    private static final String ADDON_SCRAPER = "https://torrentio.strem.fun";
+
+    private boolean handleAddon(HttpServer.Request req, HttpServer.Response res, String p) throws IOException {
+        String rest = p.substring("/addon/".length());
+        int slash = rest.indexOf('/');
+        String key = slash < 0 ? rest : rest.substring(0, slash);
+        String tail = slash < 0 ? "" : rest.substring(slash);
+        String apiKey = Settings.apiKey(ctx);
+        if (!key.equals(apiKey)) {
+            res.error(404, "not found");
+            return true;
+        }
+        if (tail.equals("/manifest.json") || tail.equals("/manifest.json/")) {
+            addonManifest(res);
+            return true;
+        }
+        if (tail.startsWith("/stream/") && tail.endsWith(".json")) {
+            addonStreams(req, res, tail, key);
+            return true;
+        }
+        if (tail.equals("/play")) {
+            addonPlay(req, res, key);
+            return true;
+        }
+        return false;
+    }
+
+    private String addonBase(HttpServer.Request req) {
+        String host = req.header("host");
+        String fwd = req.header("x-forwarded-proto");
+        if (fwd != null) {
+            int comma = fwd.indexOf(',');
+            if (comma > 0) fwd = fwd.substring(0, comma);
+            fwd = fwd.trim();
+        }
+        String proto = (fwd != null && (fwd.equals("https") || fwd.equals("http"))) ? fwd : (req.isSecure ? "https" : "http");
+        return proto + "://" + (host != null ? host : (MdnsResponder.HOST + ":" + ServerService.PORT));
+    }
+
+    private void addonManifest(HttpServer.Response res) throws IOException {
+        JSONObject m = new JSONObject();
+        put(m, "id", "com.nexshare.debrid");
+        put(m, "version", "1.0.0");
+        put(m, "name", "NexShare Debrid");
+        put(m, "description", "Seu celular como debrid: escolha o stream e ele baixa e entrega na hora.");
+        put(m, "types", new JSONArray().put("movie").put("series"));
+        put(m, "resources", new JSONArray().put("stream"));
+        put(m, "idPrefixes", new JSONArray().put("tt"));
+        put(m, "catalogs", new JSONArray());
+        res.header("Access-Control-Allow-Origin", "*");
+        res.json(200, m.toString());
+    }
+
+    /** Fetches the scraper (Torrentio) JSON for a movie/series id. */
+    private String fetchScraper(String type, String id) throws IOException {
+        String url = ADDON_SCRAPER + "/stream/" + type + "/"
+            + java.net.URLEncoder.encode(id, "UTF-8") + ".json";
+        java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
+        c.setConnectTimeout(8000);
+        c.setReadTimeout(9000);
+        c.setRequestProperty("User-Agent", "NexShare/1.0 (Android)");
+        c.setRequestProperty("Accept", "application/json");
+        try {
+            int code = c.getResponseCode();
+            InputStream in = code >= 400 ? c.getErrorStream() : c.getInputStream();
+            if (in == null) throw new IOException("HTTP " + code);
+            java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) > 0) {
+                bo.write(buf, 0, n);
+                if (bo.size() > 4 * 1024 * 1024) break;
+            }
+            in.close();
+            if (code >= 400) throw new IOException("scraper HTTP " + code);
+            return new String(bo.toByteArray(), StandardCharsets.UTF_8);
+        } finally {
+            c.disconnect();
+        }
+    }
+
+    private void addonStreams(HttpServer.Request req, HttpServer.Response res, String tail, String key) throws IOException {
+        String inner = tail.substring("/stream/".length(), tail.length() - ".json".length());
+        int slash = inner.indexOf('/');
+        String type = slash < 0 ? "" : inner.substring(0, slash);
+        String id = slash < 0 ? "" : inner.substring(slash + 1);
+        res.header("Access-Control-Allow-Origin", "*");
+        if ((!type.equals("movie") && !type.equals("series")) || !id.startsWith("tt")) {
+            res.json(200, "{\"streams\":[]}");
+            return;
+        }
+        JSONArray out = new JSONArray();
+        String error = null;
+        try {
+            JSONObject body = new JSONObject(fetchScraper(type, id));
+            JSONArray list = body.optJSONArray("streams");
+            String base = addonBase(req);
+            if (list != null) {
+                for (int i = 0; i < list.length() && out.length() < 30; i++) {
+                    JSONObject st = list.optJSONObject(i);
+                    if (st == null) continue;
+                    String hash = st.optString("infoHash", "");
+                    if (hash != null && !hash.isEmpty()) {
+                        JSONObject o = new JSONObject();
+                        put(o, "name", st.optString("name", "NexShare"));
+                        String title = st.optString("title", "");
+                        put(o, "title", (title.isEmpty() ? "" : title + "\n") + "▶ desbridar no celular (NexShare)");
+                        JSONObject hints = st.optJSONObject("behaviorHints");
+                        if (hints != null) put(o, "behaviorHints", hints);
+                        StringBuilder u = new StringBuilder(base).append("/addon/").append(key).append("/play?h=").append(hash);
+                        int fidx = st.optInt("fileIdx", -1);
+                        if (fidx >= 0) u.append("&i=").append(fidx);
+                        o.put("url", u.toString());
+                        out.put(o);
+                    } else {
+                        String direct = st.optString("url", "");
+                        if (direct != null && !direct.isEmpty()) out.put(st);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            error = e.getMessage();
+        }
+        if (out.length() == 0 && error != null) {
+            JSONObject o = new JSONObject();
+            put(o, "name", "NexShare ⚠");
+            put(o, "title", "Não consegui falar com o Torrentio: " + error);
+            put(o, "url", addonBase(req) + "/addon/" + key + "/play?h=0000000000000000000000000000000000000000");
+            out.put(o);
+        }
+        JSONObject result = new JSONObject();
+        put(result, "streams", out);
+        res.json(200, result.toString());
+    }
+
+    /** Adds (paused) the torrent of that hash, picks the file and redirects to the stream. */
+    private void addonPlay(HttpServer.Request req, HttpServer.Response res, String key) throws IOException {
+        String hash = req.param("h");
+        if (hash == null || hash.length() < 20) {
+            res.error(400, "hash invalido");
+            return;
+        }
+        hash = hash.toLowerCase(Locale.ROOT);
+        int want = -1;
+        try {
+            want = Integer.parseInt(req.param("i"));
+        } catch (Exception ignored) { }
+        DownloadManager dm = DownloadManager.get(ctx);
+        DownloadManager.Task t = dm.findByHash(hash);
+        if (t == null) {
+            t = dm.addUrl("magnet:?xt=urn:btih:" + hash, DownloadManager.defaultDir());
+            t.fromAddon = true;
+            dm.pause(t.id); // nothing downloads until the exact file is known
+            dm.save();
+        }
+        TorrentEngine te = dm.torrentEngine();
+        if (te == null) {
+            res.error(503, "torrent engine unavailable");
+            return;
+        }
+        long deadline = System.currentTimeMillis() + 12000;
+        List<JSONObject> files = te.listFiles(t);
+        while (files.isEmpty() && System.currentTimeMillis() < deadline) {
+            try { Thread.sleep(300); } catch (InterruptedException e) { break; }
+            files = te.listFiles(t);
+        }
+        if (files.isEmpty()) {
+            res.error(503, "metadados ainda nao chegaram - toque de novo no stream");
+            return;
+        }
+        int idx = -1;
+        if (want >= 0 && want < files.size()) {
+            if (TorrentEngine.isVideo(files.get(want).optString("path", ""))) idx = want;
+        }
+        if (idx < 0) idx = te.pickBestFile(t);
+        if (idx < 0) {
+            res.error(404, "nenhum video encontrado no torrent");
+            return;
+        }
+        // Only narrow the selection when the addon created the torrent; a torrent the user is
+        // already downloading from the panel keeps its own selection.
+        if (t.fromAddon && t.selected == null) te.setSelection(t, new int[]{idx});
+        te.prioritizeFile(t, idx);
+        dm.resume(t.id);
+        dm.save();
+        String path = files.get(idx).optString("fullPath");
+        String url = addonBase(req) + "/api/file?path=" + encodeQuery(path) + "&token=" + key;
+        res.header("Location", url);
+        res.header("Access-Control-Allow-Origin", "*");
+        res.begin(302, null, 0);
+    }
+
+    /** Diagnostic used by the web setup page: can the phone reach the scraper? */
+    private void addonTest(HttpServer.Request req, HttpServer.Response res) throws IOException {
+        String id = req.param("id");
+        if (id == null || id.isEmpty()) id = "tt0111161";
+        String type = id.contains(":") ? "series" : "movie";
+        JSONObject o = new JSONObject();
+        put(o, "scraper", ADDON_SCRAPER);
+        put(o, "id", id);
+        long t0 = System.currentTimeMillis();
+        try {
+            JSONObject body = new JSONObject(fetchScraper(type, id));
+            JSONArray list = body.optJSONArray("streams");
+            put(o, "ok", true);
+            put(o, "streams", list == null ? 0 : list.length());
+        } catch (Exception e) {
+            put(o, "ok", false);
+            put(o, "error", e.getMessage());
+            put(o, "streams", 0);
+        }
+        put(o, "ms", System.currentTimeMillis() - t0);
+        put(o, "manifestPath", "/addon/" + Settings.apiKey(ctx) + "/manifest.json");
+        res.json(200, o.toString());
+    }
+
     /** File entries (with stream links) for a debrid task: torrent files or a direct http(s) url. */
     private JSONArray debridFileList(DownloadManager.Task t, TorrentEngine te, String baseUrl, String remoteUrl, String token) {
         JSONArray arr = new JSONArray();
@@ -2076,12 +2314,7 @@ public class WebApi implements HttpServer.Handler {
             JSONObject fi = fList.get(i);
             File f = new File(baseDir, fi.optString("path"));
             String fPath = f.getAbsolutePath();
-            String encoded;
-            try {
-                encoded = URLEncoder.encode(fPath, "UTF-8");
-            } catch (java.io.UnsupportedEncodingException e) {
-                encoded = fPath;
-            }
+            String encoded = encodeQuery(fPath);
             put(fi, "streamUrl", baseUrl + "/api/file?path=" + encoded + "&token=" + token);
             put(fi, "remoteStreamUrl", remoteUrl != null ? remoteUrl + "/api/file?path=" + encoded + "&token=" + token : null);
             put(fi, "fullPath", fPath);
