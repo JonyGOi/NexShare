@@ -518,8 +518,8 @@ function Show-FilePicker([string]$torrentId) {
 
         $pf = New-Object System.Windows.Forms.Form
         $pf.Text = 'Escolher o que baixar'
-        $pf.Size = New-Object System.Drawing.Size(700, 600)
-        $pf.MinimumSize = New-Object System.Drawing.Size(520, 400)
+        $pf.Size = New-Object System.Drawing.Size(800, 620)
+        $pf.MinimumSize = New-Object System.Drawing.Size(560, 400)
         $pf.StartPosition = 'CenterParent'
         $pf.BackColor = [System.Drawing.Color]::FromArgb(244, 247, 251)
         $pf.Font = New-Object System.Drawing.Font('Segoe UI', 9)
@@ -564,7 +564,8 @@ function Show-FilePicker([string]$torrentId) {
         $pNone = New-PickButton 'Desmarcar tudo' { $script:TreeGuard = $true; try { Set-NodeChecked $tv.Nodes $false } finally { $script:TreeGuard = $false }; & $updateCount }
         $pbar.Controls.Add($pNone)
 
-        $pVideos = New-PickButton 'So videos' {
+        $pickByExt = {
+            param($regex)
             $script:TreeGuard = $true
             try {
                 Set-NodeChecked $tv.Nodes $false
@@ -573,7 +574,7 @@ function Show-FilePicker([string]$torrentId) {
                 while ($stack.Count -gt 0) {
                     $n = $stack.Pop()
                     if ($n.Tag -and $n.Tag.kind -eq 'file') {
-                        if ($n.Text -match '\.(mp4|mkv|avi|mov|webm|m4v|ts|mpg|mpeg|wmv|flv)$') {
+                        if ($n.Tag.name -match $regex) {
                             $n.Checked = $true
                             $up = $n.Parent
                             while ($up) { $up.Checked = $true; $up = $up.Parent }
@@ -584,7 +585,11 @@ function Show-FilePicker([string]$torrentId) {
             } finally { $script:TreeGuard = $false }
             & $updateCount
         }
+        $pVideos = New-PickButton 'So videos' { & $pickByExt '\.(mp4|mkv|avi|mov|webm|m4v|ts|mpg|mpeg|wmv|flv)$' }
         $pbar.Controls.Add($pVideos)
+
+        $pPacks = New-PickButton 'Videos + zips' { & $pickByExt '\.(mp4|mkv|avi|mov|webm|m4v|ts|mpg|mpeg|wmv|flv|zip|rar|7z|tar|gz|bz2|xz|iso|cbz|001)$' }
+        $pbar.Controls.Add($pPacks)
 
         $pCount = New-Object System.Windows.Forms.Label
         $pCount.AutoSize = $true
@@ -605,8 +610,27 @@ function Show-FilePicker([string]$torrentId) {
         $pf.CancelButton = $pCancel
 
         $updateCount = {
-            $n = @(Get-CheckedIds $tv.Nodes).Count
-            $pCount.Text = ("{0} de {1} marcados" -f $n, $files.Count)
+            $ids = @(Get-CheckedIds $tv.Nodes)
+            $sum = [int64]0
+            foreach ($i in $ids) { if ($sizeByIdx.ContainsKey($i)) { $sum += $sizeByIdx[$i] } }
+            $pCount.Text = ("{0} de {1} marcados - {2}" -f $ids.Count, $files.Count, (Format-Size $sum))
+        }
+
+        $sizeByIdx = @{}
+
+        # folders show their total size, like qBittorrent's add dialog
+        function Add-FolderSizes($nodes) {
+            $total = [int64]0
+            foreach ($n in $nodes) {
+                if (-not $n.Tag) { continue }
+                if ($n.Tag.kind -eq 'file') { $total += [int64]$n.Tag.size }
+                else {
+                    $sub = Add-FolderSizes $n.Nodes
+                    if ($sub -gt 0) { $n.Text = "$($n.Text)   ($(Format-Size $sub))" }
+                    $total += $sub
+                }
+            }
+            return $total
         }
 
         $script:TreeGuard = $true
@@ -634,12 +658,16 @@ function Show-FilePicker([string]$torrentId) {
                         $parentNodes = $map[$acc].Nodes
                     }
                 }
-                $leaf = New-Object System.Windows.Forms.TreeNode($leafName)
-                $leaf.Tag = @{ kind = 'file'; index = [int]$f.id }
+                $fsize = [int64]$f.bytes
+                $leaf = New-Object System.Windows.Forms.TreeNode("$leafName   ($(Format-Size $fsize))")
+                $leaf.Tag = @{ kind = 'file'; index = [int]$f.id; name = $leafName; size = $fsize }
                 $leaf.Checked = ($null -eq $f.selected -or [int]$f.selected -ne 0)
                 [void]$parentNodes.Add($leaf)
+                $sizeByIdx[[int]$f.id] = $fsize
             }
             Update-Parents $tv.Nodes
+            $allTotal = Add-FolderSizes $tv.Nodes
+            if ($allTotal -gt 0) { $hint.Text = $hint.Text + ("  Total: " + (Format-Size $allTotal) + ".") }
         } finally { $script:TreeGuard = $false }
 
         & $updateCount
