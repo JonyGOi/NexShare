@@ -48,6 +48,11 @@ root prompt.
 - **Download Station** — download from http/https links or BitTorrent
   (magnet links and `.torrent` files, via libtorrent4j) straight to the phone,
   with pause/resume, progress, speed and peers.
+- **Torrent Player (live conversion)** — a staged player: paste a magnet or pick a
+  `.torrent`, press **Assistir**, choose one file and it starts. On arm64, a bundled
+  FFmpeg reads only the pieces already on disk and writes fragmented MP4 on the fly,
+  so MKV/AVI/TS and AC3/DTS audio start playing before the whole file downloads.
+  No VLC round-trip is needed. Other ABIs fall back to the full-file MP4 remux.
 - **Debrid Hub** — turn the phone into a tiny Real-Debrid. Paste a magnet and the
   video starts streaming in seconds: the biggest video file is prioritised, pieces are
   fetched sequentially, and playback throttles itself until the bytes being read are on
@@ -243,6 +248,8 @@ The app now preflights and self-heals, but these are the usual mix-ups:
 | Stuck on "Connecting…" then timeout | Network blocks **QUIC/UDP 7844** (typical on campus/corporate Wi-Fi) | Nothing to do — NexShare retries automatically over **HTTP/2 (443) + IPv4**; the panel shows *tentativa 2/3* |
 | `failed to resolve any edge addresses` / `lookup … :53` | Android has no `/etc/resolv.conf`, so the static cloudflared binary needs the phone's DNS | Already handled: the phone's DNS servers are passed via `TUNNEL_DNS_RESOLVER_ADDRS`; 3rd attempt uses 1.1.1.1/8.8.8.8. Disable Private DNS/VPN if it still fails |
 | `failed to request quick Tunnel` / `429` | Cloudflare rate-limited throwaway tunnels | Wait a minute, or use a named tunnel |
+| Cloudflare **Error 1033** / **503** | The tunnel has no active connection with the edge: cloudflared stopped, the phone slept, or the network changed | 1.10.11 checks the public URL and restarts cloudflared after three gateway failures. If it persists, open **Tunnel diagnostics** and confirm the process is connected |
+| **504 Gateway Timeout** (especially when opening a torrent video) | The edge waited too long for the first bytes. Before 1.10.11 the server buffered the response headers until the first piece arrived; that is fixed. A Quick Tunnel can still time out on very slow swarms | Update to 1.10.11, keep the app in the foreground notification, and prefer a named tunnel for large videos |
 | Logs say `flag provided but not defined` | Older binary/CLI mismatch | Update the APK |
 
 Use **Remote Access → Testar conexão / diagnóstico** (web) or **Tunnel diagnostics** (Android)
@@ -368,6 +375,11 @@ the network drive.
 - **Small files performance**: Because WebDAV issues HTTP round-trips for metadata (`PROPFIND`) on each file/folder, browsing directories with thousands of small files will be slower than a local disk.
 - **Tunnel limits**: Cloudflare Quick Tunnels are free but get a new random URL on every restart and cap request bodies (uploads over WebDAV) at 100 MB. Large downloads/streams are fine; for big uploads use the LAN or a named tunnel on your own domain.
 - **Debrid is local, not a cloud cache**: NexShare streams what the phone itself downloads from the swarm — it does not mirror files to a datacenter or unlock premium hosters. Speed and start-up time depend on seeders, and files stay on the phone until you delete them.
+- **Live conversion is arm64-only and forward-only**: the bundled FFmpeg real-time path
+  is included for `arm64-v8a` phones. On 32-bit devices the player falls back to downloading
+  the selected file and remuxing it. Seeking inside the live stream restarts the conversion
+  from the beginning; the full-file path keeps normal seeking. HEVC/H.265 is copied, so a
+  browser without HEVC support can still refuse it (VLC remains the last resort).
 
 ## Build from source (Windows)
 

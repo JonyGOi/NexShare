@@ -42,16 +42,18 @@ function qs(params) {
 
 async function api(path, params, opt = {}) {
   const headers = {};
+  const usedKey = State.apiKey;
   if (opt.body) headers['Content-Type'] = 'application/json';
   // The API key survives server restarts (the session cookie token may not), so keep
   // authenticated calls working even if the background service was rebuilt.
-  if (State.apiKey) headers['X-Api-Key'] = State.apiKey;
+  if (usedKey) headers['X-Api-Key'] = usedKey;
   const run = () => fetch('/api/' + path + qs(params), {
     method: opt.method || 'GET',
     body: opt.body,
     headers: Object.keys(headers).length ? headers : undefined,
     credentials: 'same-origin',
     cache: 'no-store',
+    signal: opt.signal,
   });
   let r;
   try {
@@ -67,8 +69,9 @@ async function api(path, params, opt = {}) {
   try { j = await r.json(); } catch { /* empty body */ }
   if (r.status === 401 && path !== 'login') {
     // Do not keep replaying a rejected API key on every poll; the login screen will
-    // refresh it after a successful sign-in.
-    State.apiKey = '';
+    // refresh it after a successful sign-in. Do not clear a newer key installed by a
+    // simultaneous request/login: only the key this request actually used is stale.
+    if (State.apiKey === usedKey) setApiKey('');
     Auth.show();
     throw Object.assign(new Error('unauthorized'), { status: 401 });
   }
@@ -309,7 +312,18 @@ function fileIcon(kind) {
 
 // ---------------------------------------------------------------- state
 
-const State = { roots: [], sys: null, notes: [], clipboard: null, isRoot: false, flavor: 'normal', authMode: 'pin', webdavEnabled: false, apiKey: '', tunnelUrl: '' };
+function readStoredApiKey() {
+  try { return localStorage.getItem('nexshare.apiKey') || ''; } catch { return ''; }
+}
+function setApiKey(key) {
+  State.apiKey = key || '';
+  try {
+    if (State.apiKey) localStorage.setItem('nexshare.apiKey', State.apiKey);
+    else localStorage.removeItem('nexshare.apiKey');
+  } catch { /* private mode / storage disabled */ }
+}
+
+const State = { roots: [], sys: null, notes: [], clipboard: null, isRoot: false, flavor: 'normal', authMode: 'pin', webdavEnabled: false, apiKey: readStoredApiKey(), tunnelUrl: '' };
 
 function rootOf(p) {
   let best = null;
@@ -4252,6 +4266,7 @@ const Auth = {
   },
   async logout() {
     try { await api('logout', null, { method: 'POST' }); } catch { /* ignore */ }
+    setApiKey('');
     location.reload();
   },
 };
@@ -4264,7 +4279,8 @@ $('#loginForm').addEventListener('submit', async e => {
     ? { username: $('#loginUser').value, password: $('#loginPass').value }
     : { pin: $('#pin').value };
   try {
-    await api('login', null, { method: 'POST', body: JSON.stringify(body) });
+    const signed = await api('login', null, { method: 'POST', body: JSON.stringify(body) });
+    if (signed && signed.apiKey) setApiKey(signed.apiKey);
     $('#login').classList.add('hidden');
     $('#pin').value = $('#loginPass').value = '';
     start();
@@ -4315,7 +4331,7 @@ async function start() {
   try {
     const s = await api('session');
     if (s && s.auth) {
-      State.apiKey = s.apiKey || State.apiKey;
+      if (s.apiKey) setApiKey(s.apiKey);
       State.tunnelUrl = s.tunnelUrl || State.tunnelUrl;
       State.webdavEnabled = !!s.webdavEnabled;
       State.authMode = s.authMode || State.authMode;
@@ -4374,7 +4390,7 @@ document.addEventListener('visibilitychange', () => {
     State.flavor = s.flavor || 'normal';
     State.isRoot = !!s.root;
     State.webdavEnabled = !!s.webdavEnabled;
-    State.apiKey = s.apiKey || '';
+    if (s.apiKey) setApiKey(s.apiKey);
     State.tunnelUrl = s.tunnelUrl || '';
     if (!s.auth) { Auth.show(); return; }
     start();

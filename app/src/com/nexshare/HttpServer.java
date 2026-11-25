@@ -134,6 +134,11 @@ public class HttpServer {
                 sb.append(line).append("\r\n");
             sb.append("\r\n");
             out.write(sb.toString().getBytes(StandardCharsets.UTF_8));
+            // Send the status line and headers now. A torrent/video response can spend a few
+            // seconds waiting for the first piece; if the headers stay in the socket buffer,
+            // Cloudflare (and some players) see a silent origin and return 504/524 before the
+            // stream ever starts.
+            out.flush();
             return out;
         }
 

@@ -13,8 +13,10 @@ import org.json.JSONObject;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
 import java.net.Inet4Address;
 import java.net.InetAddress;
+import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
@@ -428,6 +430,7 @@ public class TunnelManager {
             proc = p;
         }
         startWatchdog(p);
+        startTunnelHealthMonitor(p);
 
         final boolean[] tokenRejected = {false};
         Thread reader = new Thread(new Runnable() {
@@ -582,6 +585,121 @@ public class TunnelManager {
         }, "cloudflared-watchdog");
         t.setDaemon(true);
         t.start();
+    }
+
+    /**
+     * Watches the public URL after cloudflared reports CONNECTED. Cloudflared can keep the
+     * process alive while all edge connections are dead; the user then sees Cloudflare
+     * 502/503/504 even though the app still says "connected". A quick request through the
+     * tunnel detects that state, and three bad answers in a row restarts only the tunnel
+     * process - the HTTP server and torrents stay untouched.
+     */
+    private void startTunnelHealthMonitor(final Process p) {
+        Thread t = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                int failures = 0;
+                int lastCode = 0;
+                try {
+                    // Give cloudflared time to register the first connection.
+                    Thread.sleep(30000);
+                } catch (InterruptedException e) {
+                    return;
+                }
+                while (p.isAlive() && !"off".equals(desiredMode)) {
+                    try {
+                        if (state() != State.CONNECTED) {
+                            failures = 0;
+                        } else {
+                            String link = url();
+                            if (link != null && link.startsWith("https://") && localServerReady()) {
+                                int code = probeTunnel(link);
+                                if (isGatewayFailure(code)) {
+                                    failures++;
+                                    lastCode = code;
+                                } else {
+                                    failures = 0;
+                                    lastCode = 0;
+                                }
+                            } else {
+                                // The origin itself is down; restarting cloudflared would not
+                                // fix a 502/503 and would only churn the tunnel.
+                                failures = 0;
+                            }
+                        }
+                        if (failures >= 3) {
+                            synchronized (TunnelManager.this) {
+                                if (proc == p && state == State.CONNECTED) {
+                                    String code = lastCode > 0 ? String.valueOf(lastCode) : "502/503/504";
+                                    error = "Cloudflare respondeu HTTP " + code + " (gateway). Reiniciando o túnel...";
+                                    explain = "O túnel continuava aberto, mas o Cloudflare não conseguia falar com o "
+                                            + "servidor do celular. O app vai reconectar automaticamente; se o link "
+                                            + "for um Quick Tunnel, o endereço pode mudar.";
+                                    log.add("health: gateway " + code + "; restarting cloudflared");
+                                    if (log.size() > 300) log.remove(0);
+                                    state = State.STARTING;
+                                    p.destroy();
+                                }
+                            }
+                            return;
+                        }
+                    } catch (Throwable ignored) { }
+                    try {
+                        Thread.sleep(15000);
+                    } catch (InterruptedException e) {
+                        return;
+                    }
+                }
+            }
+        }, "cloudflared-health");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    /** True when the local HTTP server answers, so a gateway error is really the tunnel. */
+    private boolean localServerReady() {
+        HttpURLConnection c = null;
+        try {
+            URL u = new URL("http://127.0.0.1:" + ServerService.PORT + "/api/session");
+            c = (HttpURLConnection) u.openConnection();
+            c.setRequestMethod("GET");
+            c.setConnectTimeout(4000);
+            c.setReadTimeout(4000);
+            c.setInstanceFollowRedirects(false);
+            c.setRequestProperty("Cache-Control", "no-store");
+            return c.getResponseCode() > 0;
+        } catch (Throwable e) {
+            return false;
+        } finally {
+            if (c != null) c.disconnect();
+        }
+    }
+
+    /** One small request through the public tunnel; 0 means the probe itself failed. */
+    private int probeTunnel(String base) {
+        HttpURLConnection c = null;
+        try {
+            URL u = new URL((base.endsWith("/") ? base.substring(0, base.length() - 1) : base) + "/api/session");
+            c = (HttpURLConnection) u.openConnection();
+            c.setRequestMethod("GET");
+            c.setConnectTimeout(8000);
+            c.setReadTimeout(8000);
+            c.setInstanceFollowRedirects(false);
+            c.setRequestProperty("Cache-Control", "no-store");
+            c.setRequestProperty("User-Agent", "NexShare-tunnel-health");
+            return c.getResponseCode();
+        } catch (Throwable e) {
+            return 0;
+        } finally {
+            if (c != null) c.disconnect();
+        }
+    }
+
+    private static boolean isGatewayFailure(int code) {
+        // 502/503: Cloudflare has no healthy tunnel/origin. 504/522/524: the edge timed out
+        // waiting for the origin. 520/521/523 are other origin/gateway failures too.
+        return code == 502 || code == 503 || code == 504
+                || code == 520 || code == 521 || code == 522 || code == 523 || code == 524;
     }
 
     /** Lines that look like errors but are harmless. */

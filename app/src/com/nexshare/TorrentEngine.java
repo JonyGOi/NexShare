@@ -493,11 +493,43 @@ public class TorrentEngine {
     /** Bytes already downloaded for one file of a torrent (0 when unknown). */
     public long fileDownloaded(DownloadManager.Task t, int fileIndex) {
         TorrentHandle h = handle(t);
-        if (h == null) return 0;
+        if (h == null || !h.isValid()) return 0;
         TorrentInfo ti = h.torrentFile();
         if (ti == null) return 0;
         long[] progress = fileProgressOf(h, ti.files().numFiles());
         return progress != null && fileIndex >= 0 && fileIndex < progress.length ? progress[fileIndex] : 0;
+    }
+
+    /**
+     * Contiguous bytes available from the first byte of one file. Unlike fileDownloaded(),
+     * this never includes later pieces fetched out of order, so a producer can safely read
+     * the file from offset 0 without handing sparse holes to ffmpeg.
+     */
+    public long fileContiguous(DownloadManager.Task t, int fileIndex) {
+        TorrentHandle h = handle(t);
+        if (h == null || !h.isValid()) return 0;
+        TorrentInfo ti = h.torrentFile();
+        if (ti == null) return 0;
+        FileStorage fs = ti.files();
+        if (fileIndex < 0 || fileIndex >= fs.numFiles()) return 0;
+        long fileOffset = fs.fileOffset(fileIndex);
+        long fileSize = fs.fileSize(fileIndex);
+        if (fileSize <= 0) return 0;
+        int firstPiece = fs.pieceIndexAtFile(fileIndex);
+        int lastPiece = fs.lastPieceIndexAtFile(fileIndex);
+        int pieceLength = ti.pieceLength();
+        if (firstPiece < 0 || lastPiece < firstPiece || pieceLength <= 0) return 0;
+        long totalSize = ti.totalSize();
+        long contiguous = 0;
+        for (int p = firstPiece; p <= lastPiece; p++) {
+            if (!h.havePiece(p)) break;
+            long pieceStart = (long) p * pieceLength;
+            long pieceEnd = Math.min(pieceStart + pieceLength, totalSize);
+            long from = Math.max(pieceStart, fileOffset);
+            long to = Math.min(pieceEnd, fileOffset + fileSize);
+            if (to > from) contiguous += to - from;
+        }
+        return Math.min(contiguous, fileSize);
     }
 
     private long[] fileProgressOf(TorrentHandle h, int files) {

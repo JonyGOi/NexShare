@@ -608,6 +608,12 @@ table.dl .pct { font-size: 11px; color: var(--text-3); }
 /* ---------- Torrent Player ---------- */
 .tp-pane { display: flex; flex-direction: column; gap: 12px; overflow: hidden; background: #f7f9fc; }
 .tp-add { margin: 0; background: linear-gradient(135deg, #ffffff, #f1f7ff); }
+.tp-add-start { width: 100%; max-width: 720px; margin: 0 auto; }
+.tp-file-picked { flex: 1; min-width: 180px; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tp-body.tp-single { grid-template-columns: minmax(0, 1fr); }
+.tp-head-acts { display: flex; gap: 6px; flex: none; flex-wrap: wrap; justify-content: flex-end; }
+.tp-pick-note { display: flex; align-items: flex-start; gap: 8px; margin: 12px 0 4px; padding: 10px 11px; border-radius: 9px; background: #eef6ff; color: #24527a; font-size: 12px; line-height: 1.45; }
+.tp-pick-note svg { width: 16px; height: 16px; flex: none; margin-top: 1px; }
 .tp-add-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
 .tp-live { font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: #1e6fd9; background: #e6f0fc; border-radius: 20px; padding: 4px 9px; font-weight: 700; }
 .tp-input { width: 100%; resize: vertical; min-height: 52px; padding: 10px 12px; border: 1px solid #cbd5e1; border-radius: 9px; font: 13px/1.5 "Cascadia Code", Consolas, monospace; outline: none; }
@@ -639,6 +645,8 @@ table.dl .pct { font-size: 11px; color: var(--text-3); }
 .tp-state { flex: none; font-size: 11px; padding: 4px 9px; border-radius: 20px; background: #e8f7ef; color: #1d8a53; font-weight: 600; }
 .tp-state.err { background: #fde8e8; color: #c62f34; }
 .tp-sub { display: flex; justify-content: space-between; gap: 8px; font-size: 11.5px; color: var(--text-3); }
+.tp-live-note { display: flex; align-items: center; gap: 8px; margin: 10px 0 0; padding: 8px 10px; border-radius: 8px; background: #eaf7ef; color: #1d5b36; font-size: 12px; line-height: 1.4; }
+.tp-live-note svg { flex: 0 0 auto; }
 .tp-player { margin: 14px 0 4px; border-radius: 11px; overflow: hidden; background: #0d1117; box-shadow: 0 8px 28px rgba(13,17,23,.22); }
 .tp-video-wrap { display: flex; flex-direction: column; }
 .tp-video { width: 100%; max-height: 64vh; max-height: min(64vh, 620px); background: #000; display: block; }
@@ -647,6 +655,11 @@ table.dl .pct { font-size: 11px; color: var(--text-3); }
 .tp-player-acts { display: flex; gap: 4px; flex-wrap: wrap; }
 .tp-player-acts .btn { padding: 4px 8px; font-size: 11px; background: #1b2330; border-color: #2a3440; color: #e6edf3; }
 .tp-warn { padding: 16px; background: #fff8e6; color: #7a5411; border-bottom: 1px solid #f2dfad; line-height: 1.5; }
+.tp-prep { background: #fff; border: 1px solid var(--border); }
+.tp-prep-box { padding: 18px; }
+.tp-prep-box h4 { margin: 0 0 5px; }
+.tp-prep-box .tp-bar { margin: 14px 0; }
+.tp-prep-acts { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 12px; }
 .tp-warn-actions { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0 6px; }
 .tp-warn .btn { color: var(--text); }
 .tp-files-head { margin-top: 10px; border-bottom: 0; padding-left: 0; padding-right: 0; color: var(--text-2); font-size: 12px; }
@@ -654,6 +667,12 @@ table.dl .pct { font-size: 11px; color: var(--text-3); }
 .tp-file { display: flex; align-items: center; gap: 10px; padding: 8px 6px; border-bottom: 1px solid #f0f3f7; }
 .tp-file:hover { background: #f8fafc; }
 .tp-file.playing { background: #f0f7ff; }
+.tp-file-pick { width: 100%; border: 1px solid transparent; border-radius: 9px; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.tp-file-pick:hover, .tp-file-pick:focus-visible { background: #f4f8ff; border-color: #cfe3fb; outline: none; }
+.tp-file-pick .tp-file-main { display: block; }
+.tp-file-pick .tp-file-name { display: block; }
+.tp-file-pick .tp-file-acts { align-self: center; }
+.tp-file-pick .btn { pointer-events: none; }
 .tp-file-main { flex: 1; min-width: 0; }
 .tp-file-name { font-size: 12.5px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tp-file-acts { display: flex; gap: 4px; flex: none; }
@@ -664,6 +683,8 @@ table.dl .pct { font-size: 11px; color: var(--text-3); }
   .tp-side { max-height: 190px; }
   .tp-main { overflow: visible; }
   .tp-file { align-items: flex-start; }
+  .tp-head { flex-direction: column; }
+  .tp-head-acts { justify-content: flex-start; }
   .tp-file-acts { flex-direction: column; }
   .tp-file-name { white-space: normal; }
 }

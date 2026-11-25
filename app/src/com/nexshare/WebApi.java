@@ -92,7 +92,9 @@ public class WebApi implements HttpServer.Handler {
 
     private void saveSessions() {
         try {
-            sessionPrefs.edit().putStringSet("tokens", new HashSet<String>(tokens)).apply();
+            // commit() (not apply()) so a token survives Android killing the process
+            // immediately after a login while the screen is off.
+            sessionPrefs.edit().putStringSet("tokens", new HashSet<String>(tokens)).commit();
         } catch (Throwable ignored) { }
     }
 
@@ -206,6 +208,7 @@ public class WebApi implements HttpServer.Handler {
             case "/api/search": search(req, res); break;
             case "/api/media": media(req, res); break;
             case "/api/file": file(req, res); break;
+            case "/api/live": live(req, res); break;
             case "/api/player/open": playerOpen(req, res); break;
             case "/api/hash": hash(req, res); break;
             case "/api/thumb": thumb(req, res); break;
@@ -239,6 +242,7 @@ public class WebApi implements HttpServer.Handler {
             case "/api/remux": remuxStart(req, res); break;
             case "/api/remux/status": remuxStatus(req, res); break;
             case "/api/remux/file": remuxFile(req, res); break;
+            case "/api/remux/remove": MediaRemux.remove(req.param("id")); res.json(200, "{\"ok\":true}"); break;
             case "/api/debrid/unrestrict": debridUnrestrict(req, res); break;
             case "/api/debrid/files": debridFiles(req, res); break;
             case "/api/debrid/prioritize": debridPrioritize(req, res); break;
@@ -350,7 +354,14 @@ public class WebApi implements HttpServer.Handler {
         tokens.add(token);
         saveSessions();
         res.header("Set-Cookie", "ns_token=" + token + "; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000");
-        res.json(200, "{\"ok\":true,\"token\":\"" + token + "\"}");
+        JSONObject o = new JSONObject();
+        put(o, "ok", true);
+        put(o, "token", token);
+        // Return the API key in the login response too. The browser stores it and sends
+        // it as X-Api-Key on every call, so a lost/expired cookie cannot silently turn
+        // the player into an endless login loop.
+        put(o, "apiKey", Settings.apiKey(ctx));
+        res.json(200, o.toString());
     }
 
     /** Stable token for stream/API links. Rotating it invalidates every saved Stremio/VLC link. */
@@ -377,15 +388,23 @@ public class WebApi implements HttpServer.Handler {
                 return;
             }
         }
-        res.header("Cache-Control", "no-cache");
-        if (mime(p).startsWith("text/html")) {
+        // Never let a browser or reverse proxy keep an old Torrent Player after an app
+        // update. The HTML also stamps every script/style URL with the running version,
+        // so an old cached app.js/torrentplayer.js cannot survive a build bump.
+        res.header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+        res.header("Pragma", "no-cache");
+        String type = mime(p);
+        if (type.startsWith("text/html")) {
+            String html = new String(data, StandardCharsets.UTF_8)
+                .replace("__NEXSHARE_VERSION__", Flavor.VERSION);
+            data = html.getBytes(StandardCharsets.UTF_8);
             res.header("Content-Security-Policy",
                 "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
                 "img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; " +
                 "connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; " +
                 "frame-ancestors 'self'");
         }
-        res.bytes(200, mime(p), data);
+        res.bytes(200, type, data);
     }
 
     // ---------- files ----------
@@ -543,6 +562,39 @@ public class WebApi implements HttpServer.Handler {
                     || (type.equals("all") && (img || vid))) out.add(f);
             }
         }
+    }
+
+    /**
+     * Live fragmented-MP4 output. ffmpeg reads only downloaded, contiguous bytes from the
+     * selected torrent file and writes MP4 fragments as it goes; this is the Torrent Player's
+     * real-time path for MKV/AVI/TS and for files whose audio codec the browser cannot decode.
+     */
+    private void live(HttpServer.Request req, HttpServer.Response res) throws IOException {
+        File f = resolve(req.param("path"));
+        DownloadManager.StreamRef stream = DownloadManager.get(ctx).locateTorrentFile(f);
+        if (!f.isFile() && stream != null) {
+            long until = System.currentTimeMillis() + 5000;
+            while (!f.isFile() && System.currentTimeMillis() < until) {
+                try { Thread.sleep(100); } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }
+        if (!f.isFile()) {
+            res.error(stream == null ? 404 : 503, stream == null ? "not found" : "arquivo ainda sendo criado");
+            return;
+        }
+        if (!LiveRemux.available(ctx)) {
+            res.error(501, "conversao ao vivo indisponivel neste aparelho");
+            return;
+        }
+        res.header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+        res.header("Accept-Ranges", "none");
+        res.header("Content-Disposition", "inline");
+        OutputStream out = res.begin(200, "video/mp4", -1);
+        if ("HEAD".equals(req.method)) return;
+        LiveRemux.stream(ctx, f, stream, out);
     }
 
     private void file(HttpServer.Request req, HttpServer.Response res) throws IOException {

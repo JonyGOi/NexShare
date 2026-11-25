@@ -247,8 +247,30 @@ public class DownloadManager {
             this.size = size;
         }
 
+        private long contiguousCache;
+        private long contiguousAt;
+
         public long downloaded() {
             return engine.fileDownloaded(task, index);
+        }
+
+        /**
+         * Bytes available from the beginning of the file (no holes), for live processing.
+         * The result is cached for 300 ms: scanning every piece on every 64 KB write
+         * would be wasteful on multi-gigabyte torrents.
+         */
+        public long contiguous() { return contiguous(false); }
+
+        /** @param force ignore the short cache, used once the torrent reports complete. */
+        public synchronized long contiguous(boolean force) {
+            long now = System.currentTimeMillis();
+            if (force) contiguousAt = 0;
+            if (contiguousCache < size && (contiguousAt == 0 || now - contiguousAt >= 300)) {
+                long v = engine.fileContiguous(task, index);
+                if (v > contiguousCache) contiguousCache = v;
+                contiguousAt = now;
+            }
+            return contiguousCache;
         }
 
         public long size() {

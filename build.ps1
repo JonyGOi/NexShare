@@ -25,6 +25,8 @@ $NativeJars = @{ 'arm64-v8a' = 'libs\libtorrent4j-android-arm64-2.1.0-39.jar'; '
 $Cloudflared = @{ 'arm64-v8a' = 'libs\cloudflared-linux-arm64'; 'armeabi-v7a' = 'libs\cloudflared-linux-arm' }
 # busybox (one static binary, ~300 unix tools) for the root edition's terminal.
 $Busybox = @{ 'arm64-v8a' = 'libs\busybox-arm64'; 'armeabi-v7a' = 'libs\busybox-arm' }
+# ffmpeg: real-time remux/transcode for the Torrent Player (arm64 build).
+$Ffmpeg = @{ 'arm64-v8a' = 'libs\ffmpeg-aarch64' }
 
 function Run($exe, [string[]]$argv) {
     $ErrorActionPreference = 'Continue' # tools write notes to stderr; rely on exit codes
@@ -99,6 +101,13 @@ foreach ($abi in $Cloudflared.Keys) {
     $bin = Join-Path $Root $Cloudflared[$abi]
     if (Test-Path $bin) {
         $dst = $zip.CreateEntry("lib/$abi/libcloudflared.so")
+        $rs = [IO.File]::OpenRead($bin); $ws = $dst.Open(); $rs.CopyTo($ws); $ws.Dispose(); $rs.Dispose()
+    }
+}
+foreach ($abi in $Ffmpeg.Keys) {
+    $bin = Join-Path $Root $Ffmpeg[$abi]
+    if (Test-Path $bin) {
+        $dst = $zip.CreateEntry("lib/$abi/libffmpeg.so")
         $rs = [IO.File]::OpenRead($bin); $ws = $dst.Open(); $rs.CopyTo($ws); $ws.Dispose(); $rs.Dispose()
     }
 }

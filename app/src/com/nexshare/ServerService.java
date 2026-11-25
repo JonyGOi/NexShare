@@ -161,6 +161,14 @@ public class ServerService extends Service {
             mdns.start();
             registerNsd();
             DownloadManager.get(this).startup();
+
+            // Mark the service as running BEFORE restoring the tunnel: the tunnel supervisor
+            // loops only while ServerService.running is true. When this flag was set at the
+            // end, a service restart restored the saved tunnel setting but the supervisor
+            // exited immediately, leaving the public link at Cloudflare 503 until the user
+            // toggled the switch.
+            running = true;
+
             applyStayOn();
             TunnelManager.get(this).restoreIfEnabled();
             AutoUpdater.get(this).start();
@@ -174,7 +182,6 @@ public class ServerService extends Service {
             registerNetworkMonitoring();
             startPowerScheduler();
 
-            running = true;
             lastError = null;
             updateNotification();
         } catch (Exception e) {
