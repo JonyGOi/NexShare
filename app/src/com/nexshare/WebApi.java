@@ -188,6 +188,7 @@ public class WebApi implements HttpServer.Handler {
             case "/api/search": search(req, res); break;
             case "/api/media": media(req, res); break;
             case "/api/file": file(req, res); break;
+            case "/api/player/open": playerOpen(req, res); break;
             case "/api/hash": hash(req, res); break;
             case "/api/thumb": thumb(req, res); break;
             case "/api/image": image(req, res); break;
@@ -526,11 +527,22 @@ public class WebApi implements HttpServer.Handler {
 
     private void file(HttpServer.Request req, HttpServer.Response res) throws IOException {
         File f = resolve(req.param("path"));
+        // A torrent file may not have been created on disk yet when the player asks for it.
+        // Find its torrent metadata first so the expected size is known even before the first
+        // piece arrives, otherwise the browser receives a zero-length video and gives up.
+        DownloadManager.StreamRef stream = "1".equals(req.param("dl")) ? null : DownloadManager.get(ctx).locateTorrentFile(f);
+        if (!f.isFile() && stream != null) {
+            long until = System.currentTimeMillis() + 5000;
+            while (!f.isFile() && System.currentTimeMillis() < until) {
+                try { Thread.sleep(100); } catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
+            }
+        }
         if (!f.isFile()) {
-            res.error(404, "not found");
+            res.error(stream == null ? 404 : 503, stream == null ? "not found" : "arquivo ainda sendo criado");
             return;
         }
         long len = f.length();
+        if (stream != null && stream.size() > len) len = stream.size();
         long start = 0, end = len - 1;
         boolean partial = false;
         String range = req.header("range");
@@ -564,7 +576,6 @@ public class WebApi implements HttpServer.Handler {
         OutputStream out = res.begin(partial ? 206 : 200, fmime, Math.max(count, 0));
         if ("HEAD".equals(req.method) || len == 0) return;
         TransferTracker.onTransferStart();
-        DownloadManager.StreamRef stream = "1".equals(req.param("dl")) ? null : DownloadManager.get(ctx).locateTorrentFile(f);
         try {
             try (RandomAccessFile raf = new RandomAccessFile(f, "r")) {
                 raf.seek(start);
@@ -1698,7 +1709,9 @@ public class WebApi implements HttpServer.Handler {
             "jpg", "image/jpeg", "jpeg", "image/jpeg", "png", "image/png", "gif", "image/gif", "webp", "image/webp",
             "bmp", "image/bmp", "heic", "image/heic", "heif", "image/heif",
             "mp4", "video/mp4", "m4v", "video/mp4", "webm", "video/webm", "mkv", "video/x-matroska", "3gp", "video/3gpp",
-            "mov", "video/quicktime", "avi", "video/x-msvideo",
+            "mov", "video/quicktime", "avi", "video/x-msvideo", "ts", "video/mp2t", "m2ts", "video/mp2t",
+            "mpg", "video/mpeg", "mpeg", "video/mpeg", "wmv", "video/x-ms-wmv", "flv", "video/x-flv",
+            "vob", "video/dvd", "ogv", "video/ogg", "iso", "application/x-iso9660-image",
             "mp3", "audio/mpeg", "m4a", "audio/mp4", "aac", "audio/aac", "ogg", "audio/ogg", "opus", "audio/ogg",
             "wav", "audio/wav", "flac", "audio/flac", "amr", "audio/amr",
             "pdf", "application/pdf", "zip", "application/zip", "apk", "application/vnd.android.package-archive",
@@ -3157,7 +3170,82 @@ public class WebApi implements HttpServer.Handler {
         if (t != null) {
             TorrentEngine te = dm.torrentEngine();
             if (te != null) te.prioritizeFile(t, fileIndex);
+            dm.resume(t.id);
+            dm.save();
         }
         res.json(200, "{\"ok\":true}");
+    }
+
+    /**
+     * Opens the selected torrent video in an external player installed on the phone (VLC is
+     * preferred, with the normal Android chooser as fallback). This is what makes formats the
+     * browser cannot decode — MKV/HEVC/AVI/TS — playable while the torrent is still downloading:
+     * VLC reads the same local HTTP range stream, and libtorrent fills the pieces on demand.
+     */
+    private void playerOpen(HttpServer.Request req, HttpServer.Response res) throws IOException {
+        String id = req.param("id");
+        DownloadManager dm = DownloadManager.get(ctx);
+        DownloadManager.Task t = dm.getTask(id);
+        if (t == null || !"torrent".equals(t.type)) {
+            res.error(404, "torrent não encontrado");
+            return;
+        }
+        TorrentEngine te = dm.torrentEngine();
+        if (te == null) {
+            res.error(503, "motor de torrent indisponível");
+            return;
+        }
+        List<JSONObject> files = te.listFiles(t);
+        int idx = -1;
+        try { idx = Integer.parseInt(req.param("index")); } catch (Exception ignored) { }
+        if (idx < 0 || idx >= files.size()) idx = te.pickBestFile(t);
+        if (idx < 0 || idx >= files.size()) {
+            res.error(404, "nenhum vídeo disponível");
+            return;
+        }
+        JSONObject fi = files.get(idx);
+        String path = fi.optString("fullPath", "");
+        if (path.isEmpty()) {
+            res.error(404, "arquivo não encontrado");
+            return;
+        }
+        // Clicking play is the confirmation. It releases the metadata-only hold, selects this
+        // file (so the rest of a giant collection is not downloaded) and prioritises its pieces.
+        te.prioritizeFile(t, idx);
+        dm.resume(t.id);
+        dm.save();
+        File f = new File(path);
+        long until = System.currentTimeMillis() + 4000;
+        while (!f.isFile() && System.currentTimeMillis() < until) {
+            try { Thread.sleep(100); } catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
+        }
+        String url = "http://127.0.0.1:" + ServerService.PORT
+            + "/api/file?path=" + encodeQuery(path) + "&token=" + getOrCreateStreamToken();
+        String type = mime(f.getName());
+        if (!type.startsWith("video/")) type = "video/*";
+        Intent view = new Intent(Intent.ACTION_VIEW);
+        view.setDataAndType(Uri.parse(url), type);
+        view.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        Intent vlc = new Intent(view);
+        vlc.setPackage("org.videolan.vlc");
+        String opened = "vlc";
+        try {
+            ctx.startActivity(vlc);
+        } catch (Exception noVlc) {
+            opened = "chooser";
+            try {
+                Intent chooser = Intent.createChooser(view, "Abrir vídeo");
+                chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                ctx.startActivity(chooser);
+            } catch (Exception e) {
+                res.error(500, "Nenhum player de vídeo instalado no celular");
+                return;
+            }
+        }
+        JSONObject o = new JSONObject();
+        put(o, "ok", true);
+        put(o, "fileIndex", idx);
+        put(o, "player", opened);
+        res.json(200, o.toString());
     }
 }

@@ -430,6 +430,8 @@ function openApp(id, arg) {
 
 const DESKTOP = [
   { app: 'filestation' },
+  { app: 'torrents' },
+  { app: 'torrentplayer' },
   { app: 'download' },
   { app: 'debrid' },
   { group: 'Multimedia', ico: 'group', apps: ['player', 'photos', 'videos', 'music', 'wallpaper'] },
@@ -2238,6 +2240,7 @@ function DownloadStation(body, win, opts) {
       { label: 'Copy Source Link', ico: 'link', run: () => dialog({ title: 'Source Link', input: t.url, cancel: false }) },
       '-',
       { label: t.status === 'metadata' ? 'Aguardar metadados e escolher…' : 'Selecionar arquivos…', ico: 'list', disabled: !['choose', 'metadata', 'paused'].includes(t.status) || t.type !== 'torrent', run: () => pickFiles(t) },
+      t.type === 'torrent' ? { label: 'Abrir no Torrent Player', ico: 'play', run: () => openApp('torrentplayer', { task: t.id }) } : null,
       t.type === 'torrent' ? { label: 'Abrir conteúdo do ZIP…', ico: 'archive', disabled: t.status !== 'done' && t.status !== 'seeding', run: () => openArchiveForTask(t) } : null,
       t.type === 'torrent' && (t.status === 'done' || t.status === 'seeding') ? { label: 'Copiar link para VLC', ico: 'link', run: () => copyTaskStream(t) } : null,
       { label: onlyTorrents ? 'Retomar' : 'Resume', ico: 'play', disabled: !['paused', 'error'].includes(t.status), run: () => act('resume') },
@@ -4150,6 +4153,7 @@ const APPS = {
   help: { id: 'help', name: 'NexShare Help', ico: 'help', w: 640, h: 560, mount: Help },
   download: { id: 'download', name: 'Download Station', ico: 'download', w: 960, h: 560, mount: DownloadStation },
   torrents: { id: 'torrents', name: 'Torrent Downloader', ico: 'download', w: 980, h: 600, mount: TorrentDownloader },
+  torrentplayer: { id: 'torrentplayer', name: 'Torrent Player', ico: 'player', w: 1040, h: 660, mount: TorrentPlayer },
   debrid: { id: 'debrid', name: 'Debrid Hub', ico: 'debrid', w: 900, h: 620, mount: DebridHub },
   player: { id: 'player', name: 'Media Player', ico: 'player', w: 1000, h: 600, mount: MediaPlayer },
   packagecenter: { id: 'packagecenter', name: 'Package Center', ico: 'packagecenter', w: 760, h: 580, mount: PackageCenter },

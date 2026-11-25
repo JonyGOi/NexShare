@@ -296,6 +296,14 @@ public class TorrentEngine {
     public void prioritizeFile(DownloadManager.Task t, int fileIndex) {
         if (t == null) return;
         t.priorityFile = Math.max(0, fileIndex);
+        // Starting playback is the user's confirmation: release the metadata-only hold and
+        // download at least this file. Without this a held magnet would stay at 0 B forever
+        // when opened directly in the Torrent Player.
+        if (t.awaitingSelection) {
+            if (t.selected == null) t.selected = new int[]{t.priorityFile};
+            t.awaitingSelection = false;
+            t.selectionApplied = false;
+        }
         if (t.selected != null && !contains(t.selected, t.priorityFile)) {
             // Playing a file the user did not select: make sure it downloads too.
             int[] grown = java.util.Arrays.copyOf(t.selected, t.selected.length + 1);
