@@ -2335,6 +2335,7 @@ public class WebApi implements HttpServer.Handler {
 
     /** Fetches the scraper (Torrentio) JSON for a movie/series id with caching. */
     private JSONObject fetchScraperCached(String type, String id) throws IOException {
+        id = normalizeAddonId(id);
         int cacheMinutes = Settings.addonCacheMinutes(ctx);
         String cacheKey = type + ":" + id;
         java.util.Map<String, CachedScraperResult> typeCache = scraperCache.computeIfAbsent(type, k -> new java.util.concurrent.ConcurrentHashMap<>());
@@ -2342,7 +2343,46 @@ public class WebApi implements HttpServer.Handler {
         if (cached != null && !cached.isExpired(cacheMinutes)) {
             return cached.data;
         }
-        String url = addonScraperUrl() + "/stream/" + type + "/"
+        String base = addonScraperUrl();
+        JSONObject result;
+        try {
+            result = fetchScraperJson(base, type, id);
+        } catch (IOException first) {
+            // A stale/misconfigured custom scraper must not break playback. Fall back to the
+            // official Torrentio once, and keep both messages when that also fails.
+            if (DEFAULT_ADDON_SCRAPER.equals(base)) throw first;
+            try {
+                result = fetchScraperJson(DEFAULT_ADDON_SCRAPER, type, id);
+            } catch (IOException second) {
+                throw new IOException(first.getMessage() + "; padrao: " + second.getMessage());
+            }
+        }
+        typeCache.put(cacheKey, new CachedScraperResult(result));
+        // Clean old cache entries periodically
+        if (typeCache.size() > 200) {
+            long now = System.currentTimeMillis();
+            for (java.util.Iterator<java.util.Map.Entry<String, CachedScraperResult>> it = typeCache.entrySet().iterator(); it.hasNext(); ) {
+                if (it.next().getValue().isExpired(cacheMinutes)) it.remove();
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Nuvio and some Stremio forks send series ids as tt123/1/1, while Torrentio expects
+     * tt123:1:1. A slash reaches Torrentio as a path separator and it answers 404, which used
+     * to surface as "Nao consegui falar com o scraper: scraper HTTP 404".
+     */
+    private static String normalizeAddonId(String id) {
+        if (id == null) return "";
+        id = id.trim();
+        if (id.indexOf('/') >= 0) id = id.replace('/', ':');
+        return id;
+    }
+
+    /** Performs one scraper request; caller handles caching and fallback. */
+    private JSONObject fetchScraperJson(String base, String type, String id) throws IOException {
+        String url = base + "/stream/" + type + "/"
             + java.net.URLEncoder.encode(id, "UTF-8") + ".json";
         java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
         c.setConnectTimeout(10000);
@@ -2352,7 +2392,7 @@ public class WebApi implements HttpServer.Handler {
         try {
             int code = c.getResponseCode();
             InputStream in = code >= 400 ? c.getErrorStream() : c.getInputStream();
-            if (in == null) throw new IOException("HTTP " + code);
+            if (in == null) throw new IOException("HTTP " + code + " em " + url);
             java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
             byte[] buf = new byte[8192];
             int n;
@@ -2361,22 +2401,12 @@ public class WebApi implements HttpServer.Handler {
                 if (bo.size() > 8 * 1024 * 1024) break;
             }
             in.close();
-            if (code >= 400) throw new IOException("scraper HTTP " + code);
-            JSONObject result;
+            if (code >= 400) throw new IOException("scraper HTTP " + code + " em " + url);
             try {
-                result = new JSONObject(new String(bo.toByteArray(), StandardCharsets.UTF_8));
+                return new JSONObject(new String(bo.toByteArray(), StandardCharsets.UTF_8));
             } catch (org.json.JSONException e) {
                 throw new IOException("invalid JSON from scraper", e);
             }
-            typeCache.put(cacheKey, new CachedScraperResult(result));
-            // Clean old cache entries periodically
-            if (typeCache.size() > 200) {
-                long now = System.currentTimeMillis();
-                for (java.util.Iterator<java.util.Map.Entry<String, CachedScraperResult>> it = typeCache.entrySet().iterator(); it.hasNext(); ) {
-                    if (it.next().getValue().isExpired(cacheMinutes)) it.remove();
-                }
-            }
-            return result;
         } finally {
             c.disconnect();
         }
@@ -2569,7 +2599,7 @@ public class WebApi implements HttpServer.Handler {
         res.json(200, "{\"url\":\"" + url + "\",\"fileIndex\":" + idx + "}");
     }
 
-    /** Health check endpoint for the addon. */
+    /** Health check endpoint for the addon; ?test=1 also queries the scraper for real. */
     private void addonHealth(HttpServer.Request req, HttpServer.Response res) throws IOException {
         JSONObject o = new JSONObject();
         put(o, "status", "ok");
@@ -2578,7 +2608,23 @@ public class WebApi implements HttpServer.Handler {
         put(o, "maxStreams", Settings.addonMaxStreams(ctx));
         put(o, "metadataTimeoutMs", Settings.addonMetadataTimeoutMs(ctx));
         put(o, "manifestPath", "/addon/" + Settings.apiKey(ctx) + "/manifest.json");
-        put(o, "ok", true);
+        boolean test = isOn(req, null, "test");
+        boolean ok = true;
+        if (test) {
+            long t0 = System.currentTimeMillis();
+            try {
+                JSONObject body = fetchScraperCached("movie", "tt0111161");
+                JSONArray list = body.optJSONArray("streams");
+                put(o, "scraperOk", true);
+                put(o, "scraperStreams", list == null ? 0 : list.length());
+            } catch (Exception e) {
+                ok = false;
+                put(o, "scraperOk", false);
+                put(o, "scraperError", e.getMessage());
+            }
+            put(o, "scraperMs", System.currentTimeMillis() - t0);
+        }
+        put(o, "ok", ok);
         res.header("Access-Control-Allow-Origin", "*");
         res.json(200, o.toString());
     }
@@ -2693,6 +2739,7 @@ public class WebApi implements HttpServer.Handler {
     private void addonTest(HttpServer.Request req, HttpServer.Response res) throws IOException {
         String id = req.param("id");
         if (id == null || id.isEmpty()) id = "tt0111161";
+        id = normalizeAddonId(id);
         String type = id.contains(":") ? "series" : "movie";
         JSONObject o = new JSONObject();
         put(o, "scraper", addonScraperUrl());

@@ -3370,7 +3370,7 @@ function DebridHub(body, win) {
         min: 5000,
         max: 120000,
         step: 1000,
-        value: 20000,
+        value: 7000,
         style: { width: '120px', padding: '8px 10px', borderRadius: '6px', border: '1px solid #cbd5e1' }
       }),
       el('button', { class: 'btn primary', onclick: () => saveAddonSetting('metadataTimeout') }, icon('download'), ' Salvar'),
@@ -3438,10 +3438,12 @@ function DebridHub(body, win) {
     const out = $('#addonHealthOut');
     out.textContent = 'Verificando…';
     try {
-      const r = await api('addon/health');
+      const r = await api('addon/health', { test: 1 });
       out.style.color = r.ok ? '#16a34a' : '#b91c1c';
       out.textContent = `Status: ${r.ok ? '✓ Online' : '✗ Offline'}\n` +
         `Scraper: ${r.scraper || '?'}\n` +
+        (r.scraperOk === false ? `Erro: ${r.scraperError || 'falha desconhecida'}\n` : '') +
+        `Streams de teste: ${r.scraperStreams != null ? r.scraperStreams : '?'}\n` +
         `Cache: ${r.cacheMinutes || 0} min\n` +
         `Max streams: ${r.maxStreams || 30}\n` +
         `Timeout: ${r.metadataTimeoutMs || 7000} ms\n` +

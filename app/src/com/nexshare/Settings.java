@@ -242,18 +242,33 @@ public final class Settings {
     /** Custom scraper URL for the Nuvio addon (default: torrentio.strem.fun). */
     public static String addonScraperUrl(Context c) {
         String url = prefs(c).getString("addonScraperUrl", null);
-        return url != null && !url.isEmpty() ? url : "https://torrentio.strem.fun";
+        if (url == null || url.trim().isEmpty()) return "https://torrentio.strem.fun";
+        return normalizeScraperUrl(url);
     }
 
     public static void setAddonScraperUrl(Context c, String url) {
         if (url == null) url = "";
-        url = url.trim();
+        url = normalizeScraperUrl(url);
         if (url.isEmpty()) {
             prefs(c).edit().remove("addonScraperUrl").apply();
         } else {
             if (!url.startsWith("http://") && !url.startsWith("https://")) url = "https://" + url;
             prefs(c).edit().putString("addonScraperUrl", url).apply();
         }
+    }
+
+    /**
+     * Accepts the scraper base URL with or without a trailing slash, /manifest.json or /stream;
+     * otherwise the addon would append /stream twice and the scraper answers 404.
+     */
+    private static String normalizeScraperUrl(String url) {
+        if (url == null) return "";
+        url = url.trim();
+        while (url.endsWith("/")) url = url.substring(0, url.length() - 1);
+        if (url.endsWith("/manifest.json")) url = url.substring(0, url.length() - "/manifest.json".length());
+        if (url.endsWith("/stream")) url = url.substring(0, url.length() - "/stream".length());
+        while (url.endsWith("/")) url = url.substring(0, url.length() - 1);
+        return url;
     }
 
     /** Cache duration for scraper results in minutes (default: 10). 0 = no cache. */
