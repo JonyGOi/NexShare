@@ -5,6 +5,8 @@ import android.os.Environment;
 import android.os.StatFs;
 import android.util.Base64;
 
+import org.json.JSONObject;
+
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -36,6 +38,30 @@ public class WebDavHandler implements HttpServer.Handler {
     public WebDavHandler(Context ctx) {
         this.ctx = ctx.getApplicationContext();
         this.storageRoot = Environment.getExternalStorageDirectory();
+    }
+
+    /** Returns a health status JSON for diagnostics. */
+    public JSONObject getHealthStatus() {
+        JSONObject o = new JSONObject();
+        try {
+            o.put("enabled", Settings.webdavEnabled(ctx));
+            o.put("authMode", Settings.authMode(ctx));
+            o.put("storageRoot", storageRoot.getAbsolutePath());
+            o.put("storageExists", storageRoot.exists());
+            o.put("storageReadable", storageRoot.canRead());
+            o.put("storageWritable", storageRoot.canWrite());
+            StatFs st = new StatFs(storageRoot.getPath());
+            o.put("totalSpace", st.getTotalBytes());
+            o.put("freeSpace", st.getAvailableBytes());
+            o.put("webdavRoot", "/dav/");
+            o.put("httpsPort", ServerService.HTTPS_PORT);
+            o.put("httpPort", ServerService.PORT);
+        } catch (Exception e) {
+            try {
+                o.put("error", e.getMessage());
+            } catch (org.json.JSONException ignored) { }
+        }
+        return o;
     }
 
     @Override
@@ -100,6 +126,8 @@ public class WebDavHandler implements HttpServer.Handler {
         String configuredUser = Settings.username(ctx);
         String configuredPass = Settings.plainPassword(ctx);
         String currentPin = Settings.pin(ctx);
+        // The API key doubles as the WebDAV password: the desktop client already knows it.
+        String apiKey = Settings.apiKey(ctx);
 
         String auth = req.header("authorization");
         if (auth != null) {
@@ -118,16 +146,17 @@ public class WebDavHandler implements HttpServer.Handler {
                         int slash = user.lastIndexOf('\\');
                         if (slash >= 0) user = user.substring(slash + 1);
 
+                        boolean keyMatches = apiKey != null && !apiKey.isEmpty() && apiKey.equals(pass);
                         if (Settings.MODE_PASSWORD.equals(mode)) {
                             boolean passMatches = Settings.checkPassword(ctx, pass);
                             boolean pinMatches = currentPin != null && currentPin.equals(pass);
 
-                            if (passMatches || pinMatches) {
+                            if (passMatches || pinMatches || keyMatches) {
                                 return true;
                             }
                         } else { // MODE_PIN
                             boolean pinMatches = currentPin != null && currentPin.equals(pass);
-                            if (pinMatches) {
+                            if (pinMatches || keyMatches) {
                                 return true;
                             }
                         }
@@ -150,6 +179,10 @@ public class WebDavHandler implements HttpServer.Handler {
                         int slash = cleanUser.lastIndexOf('\\');
                         if (slash >= 0) cleanUser = cleanUser.substring(slash + 1);
 
+                        if (apiKey != null && !apiKey.isEmpty()
+                                && checkDigest(req.method, uri, realm, nonce, nc, cnonce, qop, response, username, apiKey)) {
+                            return true;
+                        }
                         if (Settings.MODE_PASSWORD.equals(mode)) {
                             if (configuredPass != null) {
                                 if (checkDigest(req.method, uri, realm, nonce, nc, cnonce, qop, response, username, configuredPass)
@@ -184,8 +217,9 @@ public class WebDavHandler implements HttpServer.Handler {
         }
 
         String nonce = Long.toHexString(System.currentTimeMillis()) + Integer.toHexString(new java.util.Random().nextInt());
-        boolean canDigest = (Settings.MODE_PASSWORD.equals(mode) && configuredPass != null) 
-                         || (!Settings.MODE_PASSWORD.equals(mode) && currentPin != null);
+        boolean canDigest = (Settings.MODE_PASSWORD.equals(mode) && configuredPass != null)
+                         || (!Settings.MODE_PASSWORD.equals(mode) && currentPin != null)
+                         || (apiKey != null && !apiKey.isEmpty());
         if (canDigest) {
             res.addHeader("WWW-Authenticate", "Digest realm=\"NexShare\", nonce=\"" + nonce + "\", qop=\"auth\", algorithm=MD5");
         }
@@ -193,9 +227,9 @@ public class WebDavHandler implements HttpServer.Handler {
 
         String hint;
         if (Settings.MODE_PASSWORD.equals(mode)) {
-            hint = "Authentication required (user: " + configuredUser + ", password: your password)\n";
+            hint = "Authentication required (user: " + configuredUser + ", password: your password or API key)\n";
         } else {
-            hint = "Authentication required (user: nexshare, password: PIN)\n";
+            hint = "Authentication required (user: nexshare, password: PIN or API key)\n";
         }
         res.text(401, "text/plain", hint);
         return false;
@@ -275,6 +309,18 @@ public class WebDavHandler implements HttpServer.Handler {
         res.header("Allow", "OPTIONS, GET, HEAD, PROPFIND, PUT, DELETE, MKCOL, MOVE, COPY, LOCK, UNLOCK, PROPPATCH");
         res.header("Public", "OPTIONS, GET, HEAD, PROPFIND, PUT, DELETE, MKCOL, MOVE, COPY, LOCK, UNLOCK, PROPPATCH");
         res.header("Accept-Ranges", "bytes");
+        // Important for Windows MiniRedir: announce auth methods
+        String mode = Settings.authMode(ctx);
+        if (!Settings.MODE_NONE.equals(mode)) {
+            res.header("WWW-Authenticate", "Basic realm=\"NexShare\", charset=\"UTF-8\"");
+            if (Settings.MODE_PASSWORD.equals(mode) && Settings.plainPassword(ctx) != null) {
+                String nonce = Long.toHexString(System.currentTimeMillis()) + Integer.toHexString(new java.util.Random().nextInt());
+                res.addHeader("WWW-Authenticate", "Digest realm=\"NexShare\", nonce=\"" + nonce + "\", qop=\"auth\", algorithm=MD5");
+            } else {
+                String nonce = Long.toHexString(System.currentTimeMillis()) + Integer.toHexString(new java.util.Random().nextInt());
+                res.addHeader("WWW-Authenticate", "Digest realm=\"NexShare\", nonce=\"" + nonce + "\", qop=\"auth\", algorithm=MD5");
+            }
+        }
         res.begin(200, null, 0);
     }
 

@@ -482,6 +482,9 @@ table.dl .pct { font-size: 11px; color: var(--text-3); }
 .st-pill.done { background: #e2f6ea; color: #1f8f4e; }
 .st-pill.seeding { background: #dff5f3; color: #138a83; }
 .st-pill.error { background: #fde8e8; color: #c62f34; }
+.st-pill.choose { background: #fff4d6; color: #9a6700; }
+.st-pill.paused { background: #f0e9fb; color: #6b46c1; }
+.st-pill.metadata { background: #eef2f6; color: #475467; }
 .dialog.wide { width: min(560px, calc(100% - 32px)); }
 .dialog textarea {
   width: 100%; min-height: 120px; border: 1px solid #cfd8e2; border-radius: 8px; padding: 10px 12px; outline: none; resize: vertical;

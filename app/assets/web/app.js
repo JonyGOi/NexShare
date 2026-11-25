@@ -1258,22 +1258,25 @@ function ControlPanel(body) {
         ),
         State.webdavEnabled ? el('div', null,
           el('dl', { class: 'kv' },
-            el('dt', { text: 'HTTPS WebDAV (Recomendado)' }), el('dd', { class: 'mono', style: { cursor: 'pointer', color: '#16a34a', fontWeight: 'bold' }, title: 'Click to copy', onclick: e => { navigator.clipboard?.writeText(e.target.textContent); toast('HTTPS WebDAV URL copied'); }, text: (s.ip ? `https://${s.ip}:${s.httpsPort || 8443}/dav/` : `https://${s.host || 'nexshare.local'}:${s.httpsPort || 8443}/dav/`) }),
+            el('dt', { text: 'HTTPS WebDAV (certificado próprio)' }), el('dd', { class: 'mono', style: { cursor: 'pointer', color: '#16a34a', fontWeight: 'bold' }, title: 'Click to copy', onclick: e => { navigator.clipboard?.writeText(e.target.textContent); toast('HTTPS WebDAV URL copied'); }, text: (s.ip ? `https://${s.ip}:${s.httpsPort || 8443}/dav/` : `https://${s.host || 'nexshare.local'}:${s.httpsPort || 8443}/dav/`) }),
             el('dt', { text: 'HTTP WebDAV' }), el('dd', { class: 'mono', style: { cursor: 'pointer', color: '#1e6fd9' }, title: 'Click to copy', onclick: e => { navigator.clipboard?.writeText(e.target.textContent); toast('HTTP WebDAV URL copied'); }, text: (s.ip ? `http://${s.ip}:${s.port || 8080}/dav/` : `http://${s.host || 'nexshare.local'}:${s.port || 8080}/dav/`) }),
             State.tunnelUrl ? el('dt', { text: 'Público (Internet) ⭐' }) : null,
             State.tunnelUrl ? el('dd', { class: 'mono', style: { cursor: 'pointer', color: '#7c3aed', fontWeight: 'bold' }, title: 'Click to copy', onclick: e => { navigator.clipboard?.writeText(e.target.textContent); toast('URL pública WebDAV copiada'); }, text: State.tunnelUrl + '/dav/' }) : null,
             el('dt', { text: 'Username' }), el('dd', { class: 'mono', text: (s.authMode === 'password' && s.username ? s.username : (s.authMode === 'none' ? 'Nenhum' : 'nexshare (ou qualquer nome)')) }),
             el('dt', { text: 'Password' }), el('dd', { text: (s.authMode === 'password' ? 'Sua senha configurada no app' : (s.authMode === 'none' ? 'Nenhuma (acesso livre)' : 'PIN de 6 dígitos exibido no app')) }),
-            el('dt', { text: 'Windows CMD (HTTPS)' }), el('dd', { class: 'mono', style: { fontSize: '11px', wordBreak: 'break-all' }, text: (s.authMode === 'none' ? `net use * https://${s.ip || 'IP'}:${s.httpsPort || 8443}/dav/` : `net use * https://${s.ip || 'IP'}:${s.httpsPort || 8443}/dav/ /user:${(s.authMode === 'password' && s.username ? s.username : 'nexshare')} *`) }),
+            el('dt', { text: 'Windows: caminho fácil (sem admin)' }), el('dd', { class: 'mono', style: { fontSize: '11px', wordBreak: 'break-all' }, text: `map-drive.ps1 -PhoneIP ${s.ip || 'IP'} -Key ${State.apiKey || '<API key>'}` }),
+            el('dt', { text: 'Windows CMD (manual, HTTPS)' }), el('dd', { class: 'mono', style: { fontSize: '11px', wordBreak: 'break-all' }, text: (s.authMode === 'none' ? `net use * https://${s.ip || 'IP'}:${s.httpsPort || 8443}/dav/` : `net use * https://${s.ip || 'IP'}:${s.httpsPort || 8443}/dav/ /user:${(s.authMode === 'password' && s.username ? s.username : 'nexshare')} *`) }),
             el('dt', { text: 'Windows CMD (HTTP)' }), el('dd', { class: 'mono', style: { fontSize: '11px', wordBreak: 'break-all' }, text: (s.authMode === 'none' ? `net use * http://${s.ip || 'IP'}:${s.port || 8080}/dav/` : `net use * http://${s.ip || 'IP'}:${s.port || 8080}/dav/ /user:${(s.authMode === 'password' && s.username ? s.username : 'nexshare')} *`) }),
             State.tunnelUrl ? el('dt', { text: 'Windows CMD (Internet, funciona em faculdade/empresa)' }) : null,
             State.tunnelUrl ? el('dd', { class: 'mono', style: { fontSize: '11px', wordBreak: 'break-all' }, text: (s.authMode === 'none' ? `net use * ${State.tunnelUrl}/dav/` : `net use * ${State.tunnelUrl}/dav/ /user:${(s.authMode === 'password' && s.username ? s.username : 'nexshare')} *`) }) : null
           ),
           el('div', { style: { display: 'flex', gap: '8px', marginTop: '10px', flexWrap: 'wrap' } },
             el('a', { class: 'btn', href: '/api/cert', download: 'nexshare-ca.crt' }, icon('download'), 'Baixar Certificado SSL (nexshare-ca.crt)'),
-            el('a', { class: 'btn', href: '/api/webdav/reg', download: 'windows-webdav.reg' }, icon('download'), 'Baixar windows-webdav.reg')
+            el('a', { class: 'btn', href: '/api/webdav/reg', download: 'windows-webdav.reg' }, icon('download'), 'Baixar windows-webdav.reg'),
+            el('button', { class: 'btn', onclick: () => checkWebdavHealth() }, icon('info'), ' Verificar Saúde WebDAV')
           ),
-          el('div', { class: 'hint', style: { marginTop: '8px', fontSize: '12px', lineHeight: '1.5' }, html: '<b>Erro 67 / “rede não encontrada”?</b> Redes de instituição e empresas bloqueiam portas e o Windows recusa autenticação WebDAV sem SSL. Ligue o <b>Acesso Remoto</b> (Cloudflare) e use a URL <b>pública HTTPS</b> acima — ela passa pela porta 443 e dispensa qualquer ajuste no registro.' })
+          el('div', { id: 'webdavHealthOut', style: { display: 'none', marginTop: '10px', padding: '10px', background: '#f1f5f9', border: '1px solid #e2e8f0', borderRadius: '6px', fontSize: '12px', fontFamily: 'monospace', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: '200px', overflow: 'auto' } }),
+          el('div', { class: 'hint', style: { marginTop: '8px', fontSize: '12px', lineHeight: '1.5' }, html: '<b>Erro 67 / “rede não encontrada”?</b> O Windows costuma recusar WebDAV com certificado próprio ou atrás de proxy. No PC, rode <b>map-drive.ps1</b>: ele abre uma ponte local (sem admin, sem certificado, sem registro) e monta a unidade sozinho. Se preferir o caminho direto, ligue o <b>Acesso Remoto</b> e use a URL <b>pública HTTPS</b> acima.' })
         ) : el('div', { class: 'hint', text: 'Ative para mapear os arquivos do celular como unidade de rede Z: no Windows.' })
       ),
       el('div', { class: 'card' },
@@ -1423,6 +1426,38 @@ function ControlPanel(body) {
       Auth.pinRequired ? el('button', { class: 'btn', onclick: () => Auth.logout() }, icon('logout'), 'Sign Out') : null);
   };
   render();
+
+  async function checkWebdavHealth() {
+    const out = $('#webdavHealthOut');
+    out.style.display = 'block';
+    out.textContent = 'Verificando…';
+    try {
+      const r = await api('webdav/health');
+      const lines = [
+        `WebDAV: ${r.enabled ? 'Habilitado ✓' : 'Desabilitado ✗'}`,
+        `Modo Auth: ${r.authMode || '?'}`,
+        `Storage: ${r.storageRoot || '?'}`,
+        `  Existe: ${r.storageExists ? 'Sim' : 'Não'}`,
+        `  Legível: ${r.storageReadable ? 'Sim' : 'Não'}`,
+        `  Gravável: ${r.storageWritable ? 'Sim' : 'Não'}`,
+        `Espaço Total: ${r.totalSpace ? fmtSize(r.totalSpace) : '?'}`,
+        `Espaço Livre: ${r.freeSpace ? fmtSize(r.freeSpace) : '?'}`,
+        `IP Local: ${r.lanIp || '?'}`,
+        `URL LAN: ${r.lanUrl || '?'}`,
+        `URL LAN HTTPS: ${r.lanHttpsUrl || '?'}`,
+        `MDNS Host: ${r.mdnsHost || '?'}`,
+        r.tunnelUrl ? `Tunnel URL: ${r.tunnelUrl}` : 'Tunnel: Desabilitado',
+        `Usuário: ${r.username || '?'}`,
+        `Senha/PIN: ${r.pin || '?'}`,
+        `Windows Registry: ${r.windowsRegistryUrl || '?'}`,
+        r.error ? `ERRO: ${r.error}` : ''
+      ].filter(x => x !== '');
+      out.textContent = lines.join('\n');
+    } catch (e) {
+      out.textContent = 'Erro: ' + e.message;
+    }
+  }
+
   const t = setInterval(render, 5000);
   return { destroy() { clearInterval(t); } };
 }
@@ -1783,7 +1818,7 @@ function initWidgets() {
 
 // ---------------------------------------------------------------- Download Station
 
-const DL_STATUS = { queued: 'Queued', downloading: 'Downloading', paused: 'Paused', done: 'Completed', seeding: 'Seeding', error: 'Error', checking: 'Checking', metadata: 'Fetching metadata' };
+const DL_STATUS = { queued: 'Queued', downloading: 'Downloading', paused: 'Paused', done: 'Completed', seeding: 'Seeding', error: 'Error', checking: 'Checking', metadata: 'Fetching metadata', choose: 'Waiting for file selection' };
 
 function fmtEta(secs) {
   if (!isFinite(secs) || secs <= 0) return '';
@@ -1794,7 +1829,7 @@ function fmtEta(secs) {
 
 function addDownloadDialog(info, preset) {
   return new Promise(resolve => {
-    const urls = el('textarea', { placeholder: 'https://example.com/file.zip\nmagnet:?xt=urn:btih:...', spellcheck: 'false' });
+    const urls = el('textarea', { placeholder: 'https://example.com/file.zip\nmagnet:?xt=urn:btih:...', spellcheck: 'false', rows: 4 });
     if (preset) urls.value = preset;
     const dest = el('input', { value: info.defaultDir || '', spellcheck: 'false' });
     let torrentFile = null;
@@ -1806,35 +1841,287 @@ function addDownloadDialog(info, preset) {
     const close = v => { wrap.remove(); resolve(v); };
     const wrap = el('div', { id: 'modal', onmousedown: e => { if (e.target === wrap) close(null); } },
       el('div', { class: 'dialog wide' },
-        el('div', { class: 'd-head', text: 'Create Download Task' }),
+        el('div', { class: 'd-head', text: 'Criar Tarefa de Download' }),
         el('div', { class: 'd-body' },
-          el('label', { class: 'f', text: 'Links (one per line) — http, https, or magnet' }), urls,
+          el('label', { class: 'f', text: 'Links (um por linha) — http, https, ou magnet' }), urls,
           info.torrent ? el('div', { style: { marginTop: '10px' } },
-            el('button', { class: 'btn', onclick: () => tPick.click() }, icon('upload'), 'Choose .torrent file'), tName, tPick)
-            : el('div', { class: 'hint', text: 'BitTorrent is not supported on this device' }),
-          el('label', { class: 'f', text: 'Save to phone folder' }), dest,
-          el('div', { class: 'hint', text: 'The phone will download in background even if you close this page' })),
+            el('button', { class: 'btn', onclick: () => tPick.click() }, icon('upload'), 'Escolher arquivo .torrent'), tName, tPick)
+            : el('div', { class: 'hint', text: 'BitTorrent não suportado neste dispositivo' }),
+          el('label', { class: 'f', text: 'Salvar na pasta do celular' }), dest,
+          el('div', { class: 'hint', text: 'O celular baixa em segundo plano mesmo se você fechar esta página' })),
         el('div', { class: 'd-foot' },
-          el('button', { class: 'btn', text: 'Cancel', onclick: () => close(null) }),
-          el('button', { class: 'btn primary', text: 'Start Download', onclick: () => close({ urls: urls.value, dest: dest.value.trim(), torrentFile }) }))));
+          el('button', { class: 'btn', text: 'Cancelar', onclick: () => close(null) }),
+          el('button', { class: 'btn primary', text: 'Próximo: Selecionar Arquivos', onclick: () => close({ urls: urls.value, dest: dest.value.trim(), torrentFile, showFilePicker: true }) }))));
     document.body.append(wrap);
     urls.focus();
   });
 }
 
+/**
+ * Shows a qBittorrent-style file picker for a torrent task.
+ * The task should already be added and paused (metadata fetched).
+ */
+function showTorrentFilePicker(taskId, dest, onConfirm) {
+  // Fetch file list
+  api('debrid/files', { id: taskId }).then(data => {
+    if (!data.files || !data.files.length) {
+      toast('Nenhum arquivo encontrado no torrent');
+      if (onConfirm) onConfirm(null);
+      return;
+    }
+    showFilePickerDialog(data.task, data.files, dest, onConfirm);
+  }).catch(e => {
+    toast('Erro ao buscar arquivos: ' + e.message);
+    if (onConfirm) onConfirm(null);
+  });
+}
+
+function showFilePickerDialog(task, files, defaultDest, onConfirm) {
+  const st = {
+    files: files,
+    checked: new Set(files.filter(f => f.selected !== 0).map(f => f.id)),
+    dirty: false,
+    dest: defaultDest
+  };
+
+  // Build folder tree
+  const root = { name: '', dirs: new Map(), files: [] };
+  const byId = new Map(files.map(f => [f.id, f]));
+  for (const f of files) {
+    const parts = String(f.path || f.name || '').split('/').filter(Boolean);
+    parts.pop();
+    let node = root;
+    for (const part of parts) {
+      if (!node.dirs.has(part)) node.dirs.set(part, { name: part, dirs: new Map(), files: [] });
+      node = node.dirs.get(part);
+    }
+    node.files.push(f);
+  }
+  const idsUnder = (node) => {
+    const out = node.files.map(f => f.id);
+    for (const d of node.dirs.values()) out.push(...idsUnder(d));
+    return out;
+  };
+  const sizeUnder = (node) => {
+    let total = node.files.reduce((s, f) => s + (Number(f.size) || 0), 0);
+    for (const d of node.dirs.values()) total += sizeUnder(d);
+    return total;
+  };
+
+  const isVideoName = (n) => /\.(mp4|mkv|avi|mov|webm|flv|m4v|ts|mpg|mpeg|wmv)$/i.test(n || '');
+
+  const destInput = el('input', { value: st.dest || '', spellcheck: 'false', readOnly: true, style: { flex: 1, marginRight: '8px', color: '#667085', background: '#f6f8fb' } });
+  const pickDestBtn = el('span', { class: 'dim', style: { fontSize: '12px', whiteSpace: 'nowrap' }, text: 'definida ao adicionar' });
+  const applyBtn = el('button', { class: 'btn primary', onclick: () => apply() }, 'Confirmar e Baixar');
+  const countLabel = el('span', { class: 'dim', style: { fontSize: '12px' } });
+
+  function refreshCount() {
+    const totalSize = [...st.checked].reduce((s, id) => s + (byId.get(id)?.size || 0), 0);
+    countLabel.textContent = `${st.checked.size} de ${files.length} arquivo(s) · ${fmtSize(totalSize)}`;
+    applyBtn.disabled = st.checked.size === 0 && !st.dirty;
+  }
+
+  function toggleSubtree(node, on) {
+    for (const id of idsUnder(node)) {
+      if (on) st.checked.add(id); else st.checked.delete(id);
+    }
+    st.dirty = true;
+    redrawTree();
+  }
+
+  const treeBox = el('div', { style: { display: 'flex', flexDirection: 'column', gap: '2px', maxHeight: '400px', overflow: 'auto' } });
+
+  function fileRow(f, depth) {
+    const on = st.checked.has(f.id);
+    const pct = Math.max(0, Math.min(100, Number(f.progress) || 0));
+    const isVideo = isVideoName(f.name);
+    const cb = el('input', {
+      type: 'checkbox',
+      style: { flex: 'none', marginRight: '8px' },
+      onchange: e => {
+        if (e.target.checked) st.checked.add(f.id); else st.checked.delete(f.id);
+        st.dirty = true;
+        refreshCount();
+      }
+    });
+    cb.checked = on;
+    return el('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', padding: '7px 8px', paddingLeft: (8 + depth * 18) + 'px', borderRadius: '6px', background: on ? '#eef4ff' : '#f8fafc', border: '1px solid #e2e8f0' } },
+      cb,
+      el('div', { style: { minWidth: 0, flex: 1 } },
+        el('div', { style: { fontSize: '13px', fontWeight: on ? '600' : '400', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: f.path || f.name, text: f.name }),
+        el('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', marginTop: '3px' } },
+          el('div', { class: 'bar', style: { flex: 1, height: '4px', maxWidth: '220px' } }, el('i', { style: { width: pct.toFixed(1) + '%' } })),
+          el('span', { style: { fontSize: '11px', color: 'var(--text-3)' }, text: `${pct.toFixed(0)}% de ${fmtSize(f.size)}` }))),
+      el('div', { style: { display: 'flex', gap: '6px', flex: 'none', flexWrap: 'wrap' } },
+        isVideo ? el('button', {
+          class: 'btn', style: { padding: '3px 9px', fontSize: '12px' },
+          onclick: () => { if (!st.checked.has(f.id)) { st.checked.add(f.id); st.dirty = true; refreshCount(); } previewFile(f); }
+        }, '▶ Preview') : null));
+  }
+
+  function folderRow(node, depth) {
+    const ids = idsUnder(node);
+    const on = ids.filter(id => st.checked.has(id)).length;
+    const all = on === ids.length && ids.length > 0;
+    const cb = el('input', { type: 'checkbox', style: { flex: 'none', marginRight: '8px' }, onchange: e => toggleSubtree(node, e.target.checked) });
+    cb.checked = all;
+    cb.indeterminate = !all && on > 0;
+    return el('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', padding: '7px 8px', paddingLeft: (8 + depth * 18) + 'px', borderRadius: '6px', background: '#f1f5f9', border: '1px solid #e2e8f0' } },
+      cb,
+      el('div', { style: { minWidth: 0, flex: 1, fontSize: '13px', fontWeight: '600', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, text: '📁 ' + node.name }),
+      el('span', { class: 'dim', style: { fontSize: '11px', flex: 'none' }, text: `${ids.length} arq. · ${fmtSize(sizeUnder(node))}` }));
+  }
+
+  function renderNode(node, depth, out) {
+    for (const d of node.dirs.values()) {
+      out.push(folderRow(d, depth));
+      renderNode(d, depth + 1, out);
+    }
+    for (const f of node.files) out.push(fileRow(f, depth));
+  }
+
+  function redrawTree() {
+    const rows = [];
+    renderNode(root, 0, rows);
+    treeBox.replaceChildren(...rows);
+    refreshCount();
+  }
+
+  const markAll = (fn) => {
+    st.checked = new Set(files.filter(fn).map(f => f.id));
+    st.dirty = true;
+    redrawTree();
+  };
+
+  const bar = el('div', { style: { display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center', marginBottom: '10px' } },
+    el('button', { class: 'btn', onclick: () => markAll(() => true) }, 'Marcar tudo'),
+    el('button', { class: 'btn', onclick: () => markAll(() => false) }, 'Desmarcar'),
+    el('button', { class: 'btn', onclick: () => markAll(f => isVideoName(f.name)) }, 'Só vídeos'),
+    applyBtn,
+    countLabel);
+
+  function pickFolder(input) {
+    // Use the File Station's folder picker via API
+    // For now, just let user type the path
+    input.focus();
+  }
+
+  async function previewFile(f) {
+    // Open in Media Player
+    openApp('player', { entry: { path: f.fullPath, name: f.name, size: f.size }, list: [{ path: f.fullPath, name: f.name, size: f.size }] });
+  }
+
+  async function apply() {
+    applyBtn.disabled = true;
+    applyBtn.textContent = 'Aplicando…';
+    try {
+      // The destination is fixed when the torrent is added; the picker only chooses files.
+      const r = await api('debrid/select', null, { method: 'POST', body: JSON.stringify({ id: task.id, files: [...st.checked], start: true }) });
+      st.dirty = false;
+      toast(st.checked.size === files.length
+        ? 'Download iniciado (todos os arquivos)'
+        : `Download iniciado — ${st.checked.size} de ${files.length} arquivos selecionados`);
+      if (onConfirm) onConfirm({ taskId: task.id, selectedFiles: [...st.checked], dest: st.dest });
+      wrap.remove();
+    } catch (e) {
+      toast('Falha ao aplicar seleção: ' + e.message);
+      applyBtn.disabled = false;
+      applyBtn.textContent = 'Confirmar e Baixar';
+    }
+  }
+
+  const close = v => { wrap.remove(); if (onConfirm) onConfirm(null); };
+  const wrap = el('div', { id: 'modal', onmousedown: e => { if (e.target === wrap) close(null); } },
+    el('div', { class: 'dialog wide', style: { maxWidth: '900px' } },
+      el('div', { class: 'd-head', text: `Selecionar arquivos — ${task.name}` }),
+      el('div', { class: 'd-body', style: { maxHeight: '60vh', overflow: 'auto' } },
+        el('label', { class: 'f', text: 'Pasta de destino no celular' }),
+        el('div', { style: { display: 'flex', gap: '8px', marginBottom: '12px', alignItems: 'center' } }, destInput, pickDestBtn),
+        el('div', { class: 'hint', style: { marginBottom: '10px' }, text: 'Desmarque arquivos/pastas que não quer baixar. O download só começa após clicar em "Confirmar e Baixar". Para outra pasta, cancele e adicione o torrent de novo.' }),
+        bar,
+        treeBox),
+      el('div', { class: 'd-foot' },
+        el('button', { class: 'btn', text: 'Cancelar', onclick: () => close(null) }),
+        applyBtn)));
+  document.body.append(wrap);
+  redrawTree();
+  destInput.focus();
+}
+
+function waitForTorrentFiles(taskId) {
+  return new Promise(resolve => {
+    let stopped = false;
+    const msg = el('div', { class: 'hint', text: 'Buscando metadados no enxame… isso pode levar alguns segundos.' });
+    const stop = v => { if (stopped) return; stopped = true; wrap.remove(); resolve(v); };
+    const wrap = el('div', { id: 'modal' },
+      el('div', { class: 'dialog' },
+        el('div', { class: 'd-head', text: 'Preparando a lista de arquivos' }),
+        el('div', { class: 'd-body' }, msg),
+        el('div', { class: 'd-foot' }, el('button', { class: 'btn', text: 'Cancelar', onclick: () => stop(null) }))));
+    document.body.append(wrap);
+    let tries = 0;
+    const tick = async () => {
+      if (stopped) return;
+      try {
+        const d = await api('debrid/files', { id: taskId });
+        if (d.files && d.files.length) { stopped = true; wrap.remove(); resolve(d); return; }
+      } catch { /* metadata not ready yet */ }
+      if (++tries >= 40) { stopped = true; wrap.remove(); resolve({ timeout: true }); return; }
+      setTimeout(tick, 700);
+    };
+    tick();
+  });
+}
+
+async function pickFilesForTask(taskId, dest) {
+  const data = await waitForTorrentFiles(taskId);
+  if (!data) return null;
+  if (data.timeout) return 'timeout';
+  return await new Promise(resolve => {
+    showFilePickerDialog(data.task, data.files, dest, res => resolve(res));
+  });
+}
+
 async function submitDownloads(v) {
   if (!v) return false;
+  const dest = v.dest;
+  const lines = String(v.urls || '').split('\n').map(s => s.trim()).filter(Boolean);
+  const magnets = lines.filter(l => l.startsWith('magnet:'));
+  const others = lines.filter(l => !l.startsWith('magnet:'));
   let ok = false;
   try {
-    if (v.urls.trim()) { const r = await api('dl/add', null, { method: 'POST', body: JSON.stringify({ urls: v.urls, dest: v.dest }) }); toast(`Added ${r.added} tasks`); ok = true; }
-    if (v.torrentFile) {
-      const r = await fetch('/api/dl/torrent' + qs({ dest: v.dest || null }), { method: 'POST', body: v.torrentFile });
-      const j = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(j.error || r.status);
-      toast('Torrent file added');
+    if (others.length) {
+      const r = await api('dl/add', null, { method: 'POST', body: JSON.stringify({ urls: others.join('\n'), dest }) });
+      toast(`Adicionadas ${r.added} tarefa(s)`);
       ok = true;
     }
-  } catch (e) { toast('Failed to add task: ' + e.message, 4000); }
+    const pending = [];
+    if (v.torrentFile) {
+      const r = await fetch('/api/dl/torrent' + qs({ dest: dest || null, paused: 1 }), { method: 'POST', body: v.torrentFile });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || r.status);
+      toast('Arquivo .torrent adicionado');
+      if (j.ids && j.ids[0]) pending.push(j.ids[0]);
+      ok = true;
+    }
+    for (const m of magnets) {
+      // Added in metadata-only mode: nothing is downloaded before the confirmation.
+      const r = await api('dl/add', null, { method: 'POST', body: JSON.stringify({ urls: m, dest, paused: true }) });
+      if (r.ids && r.ids[0]) pending.push(r.ids[0]);
+      ok = true;
+    }
+    for (const id of pending) {
+      const res = await pickFilesForTask(id, dest);
+      if (res === 'timeout') {
+        toast('Os metadados ainda não chegaram — o torrent ficou pausado. Use "Selecionar arquivos" quando a lista aparecer; nada foi baixado.', 7000);
+        continue;
+      }
+      if (!res) {
+        await api('dl/remove', { id }, { method: 'POST' }).catch(() => {});
+        toast('Torrent cancelado — nada foi baixado');
+      }
+    }
+  } catch (e) { toast('Falha ao adicionar tarefa: ' + e.message, 4000); }
   return ok;
 }
 
@@ -1859,7 +2146,7 @@ function DownloadStation(body, win) {
   body.append(el('div', { class: 'ds' }, side, el('div', { class: 'ds-main' }, tools, el('div', { class: 'ds-list' }, table, empty))));
 
   const FILTERS = [['all', 'All'], ['active', 'Downloading'], ['done', 'Completed'], ['paused', 'Paused'], ['error', 'Error']];
-  const match = (t, f) => f === 'all' || (f === 'active' ? ['downloading', 'queued', 'checking', 'metadata', 'seeding'].includes(t.status) : t.status === f);
+  const match = (t, f) => f === 'all' || (f === 'active' ? ['downloading', 'queued', 'checking', 'metadata', 'seeding'].includes(t.status) : f === 'paused' ? ['paused', 'choose'].includes(t.status) : t.status === f);
 
   function render() {
     side.replaceChildren(...FILTERS.map(([k, label]) => el('div', { class: 'tn' + (st.filter === k ? ' cur' : ''), onclick: () => { st.filter = k; render(); } },
@@ -1895,11 +2182,20 @@ function DownloadStation(body, win) {
       { label: 'Open Destination Folder', ico: 'folderUp', run: () => openApp('filestation', { path: t.dest }) },
       { label: 'Copy Source Link', ico: 'link', run: () => dialog({ title: 'Source Link', input: t.url, cancel: false }) },
       '-',
+      { label: 'Select Files…', ico: 'list', disabled: t.status !== 'choose', run: () => pickFiles(t) },
       { label: 'Resume', ico: 'play', disabled: !['paused', 'error'].includes(t.status), run: () => act('resume') },
       { label: 'Pause', ico: 'min', disabled: !['downloading', 'queued', 'seeding', 'metadata'].includes(t.status), run: () => act('pause') },
       { label: 'Delete Task', ico: 'trash', danger: true, run: removeSel },
     ];
   }
+  async function pickFiles(t) {
+    try {
+      const d = await api('debrid/files', { id: t.id });
+      if (!d.files || !d.files.length) return toast('Metadados ainda não chegaram — tente de novo em instantes');
+      showFilePickerDialog(d.task, d.files, t.dest, res => { if (res) refresh(); });
+    } catch (e) { toast('Falha ao abrir os arquivos: ' + e.message); }
+  }
+
   async function openTask(t) {
     if (t.status !== 'done' && t.status !== 'seeding') return;
     const path = t.dest + '/' + t.name;
@@ -2688,6 +2984,30 @@ function RemoteAccess(body, win) {
     }
   }, icon('link'), ' Conectar com Token');
 
+  const testTokenBtn = el('button', {
+    class: 'btn',
+    style: { background: '#0ea5e9', color: '#fff' },
+    onclick: async () => {
+      const val = tokenInput.value.trim();
+      if (!val) { toast('Cole o token primeiro'); return; }
+      testTokenBtn.disabled = true;
+      testTokenBtn.textContent = 'Testando…';
+      try {
+        const r = await api('tunnel/test-token', null, { method: 'POST', body: JSON.stringify({ token: val }) });
+        if (r.ok) {
+          toast('✓ ' + (r.message || 'Token válido!'), 5000);
+        } else {
+          toast('✗ ' + (r.message || 'Token inválido'), 6000);
+        }
+      } catch (e) {
+        toast('Erro no teste: ' + e.message);
+      } finally {
+        testTokenBtn.disabled = false;
+        testTokenBtn.textContent = 'Testar Token';
+      }
+    }
+  }, icon('info'), ' Testar Token');
+
   const clearTokenBtn = el('button', {
     class: 'btn',
     style: { display: 'none' },
@@ -2700,7 +3020,7 @@ function RemoteAccess(body, win) {
     el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '16px' } }, quickBtn, stopBtn, reconnectBtn),
     el('h3', { text: 'Ou usar Domínio Próprio (Named Tunnel)' }),
     el('div', { class: 'hint', style: { marginBottom: '8px', lineHeight: 1.6 }, html: 'Zero Trust → Networks → Tunnels → seu túnel → <b>Configure</b> → <b>Install connector</b>: copie só o texto depois de <span class="mono">--token</span> (começa com <span class="mono">eyJh</span>). Em <b>Public hostnames</b> aponte seu domínio para <span class="mono">http://localhost:' + (Stats.last ? Stats.last.port : 8080) + '</span> e informe o mesmo domínio abaixo.' }),
-    el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' } }, tokenInput, tokenBtn, clearTokenBtn),
+    el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' } }, tokenInput, tokenBtn, testTokenBtn, clearTokenBtn),
     el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center', marginTop: '8px' } }, hostInput),
     el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '12px' } },
       el('button', { class: 'btn', onclick: () => diagnose() }, icon('info'), ' Testar conexão / diagnóstico'))
@@ -2735,10 +3055,23 @@ function RemoteAccess(body, win) {
     logPre
   );
 
+  const safetyCard = el('div', { class: 'card' },
+    el('h3', { style: { marginTop: 0 } }, 'Aviso de “site perigoso”'),
+    el('p', { style: { margin: '0 0 8px', color: 'var(--text-2)', lineHeight: 1.6 } },
+      'O Quick Tunnel usa um subdomínio trycloudflare.com compartilhado por milhares de pessoas. ',
+      'Navegadores e antivírus às vezes marcam esse domínio inteiro como suspeito — não é o seu celular.'),
+    el('p', { style: { margin: '0 0 8px', color: 'var(--text-2)', lineHeight: 1.6 } },
+      'A solução definitiva é o túnel nomeado com um domínio seu (campo acima): o endereço deixa de ser compartilhado. ',
+      'Se o aviso continuar, peça a revisão:'),
+    el('a', { href: 'https://safebrowsing.google.com/safebrowsing/report_error/?hl=pt-BR', target: '_blank', rel: 'noopener', style: { fontWeight: 600 } },
+      'Reportar falso positivo ao Google Safe Browsing')
+  );
+
   pane.append(
     el('h2', null, 'Acesso Remoto (Cloudflare Tunnel)'),
     statusCard,
     actionsCard,
+    safetyCard,
     logsCard
   );
 
@@ -2782,7 +3115,7 @@ function RemoteAccess(body, win) {
         davHint.style.display = 'block';
         davHint.replaceChildren(
           el('div', null, el('b', { text: 'WebDAV público (Windows): ' }), el('span', { class: 'mono', text: dav })),
-          el('div', { style: { marginTop: '4px', opacity: .85 }, text: 'Use HTTPS: funciona em redes que bloqueiam portas e não exige ajuste no registro do Windows.' }),
+          el('div', { style: { marginTop: '4px', opacity: .85 }, text: 'No Windows, rode map-drive.ps1: ele monta a unidade por uma ponte local, sem certificado e sem ajuste no registro. Use HTTPS em redes que bloqueiam portas.' }),
           el('button', { class: 'btn', style: { marginTop: '6px' }, onclick: () => copy(dav) }, icon('link'), ' Copiar URL WebDAV')
         );
       } else {
@@ -2871,7 +3204,8 @@ function DebridHub(body, win) {
 
   const tabStream = el('button', { class: 'btn primary', text: '⚡ Desbridar & Assistir', onclick: () => switchTab('stream') });
   const tabGuide = el('button', { class: 'btn', text: '🔌 Usar no VLC / Stremio / Windows', onclick: () => switchTab('guide') });
-  const tabBar = el('div', { style: { display: 'flex', gap: '8px', marginBottom: '14px', flexWrap: 'wrap' } }, tabStream, tabGuide);
+  const tabAddon = el('button', { class: 'btn', text: '⚙️ Configurar Addon Nuvio', onclick: () => switchTab('addon') });
+  const tabBar = el('div', { style: { display: 'flex', gap: '8px', marginBottom: '14px', flexWrap: 'wrap' } }, tabStream, tabGuide, tabAddon);
 
   // ---------- stream tab ----------
   const input = el('textarea', {
@@ -2986,14 +3320,144 @@ function DebridHub(body, win) {
       code(`net use Z: ${(State.tunnelUrl || lanBase())}/dav/ /user:nexshare <SEU_PIN>`))
   );
 
-  pane.append(tabBar, streamCard, guideCard);
+  // ---------- addon settings tab ----------
+  const addonCard = el('div', { class: 'card', style: { display: 'none' } },
+    el('h3', { style: { marginTop: 0 }, text: '⚙️ Configurar Addon Nuvio / Stremio' }),
+    el('div', { class: 'notice', style: { margin: '0 0 14px' }, text: 'Configure como o addon busca streams no Torrentio. As mudanças valem para novos filmes/séries — o cache expira automaticamente.' }),
+    el('h4', { style: { margin: '10px 0 6px' }, text: 'URL do Scraper' }),
+    el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center', marginBottom: '8px' } },
+      el('input', {
+        id: 'addonScraperUrl',
+        type: 'text',
+        placeholder: 'https://torrentio.strem.fun',
+        value: '',
+        style: { flex: 1, minWidth: '220px', padding: '8px 10px', borderRadius: '6px', border: '1px solid #cbd5e1', fontFamily: 'monospace' }
+      }),
+      el('button', { class: 'btn primary', onclick: () => saveAddonSetting('scraperUrl') }, icon('download'), ' Salvar'),
+      el('button', { class: 'btn', onclick: () => resetAddonSetting('scraperUrl') }, 'Padrão')
+    ),
+    el('p', { class: 'dim', style: { fontSize: '12px', marginTop: '4px' }, text: 'O addon consulta esta URL para buscar streams. O padrão é o Torrentio oficial. Você pode apontar para um fork ou proxy próprio.' }),
+    el('h4', { style: { margin: '14px 0 6px' }, text: 'Cache de Resultados (minutos)' }),
+    el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center', marginBottom: '8px' } },
+      el('input', {
+        id: 'addonCacheMinutes',
+        type: 'number',
+        min: 0,
+        max: 1440,
+        value: 10,
+        style: { width: '100px', padding: '8px 10px', borderRadius: '6px', border: '1px solid #cbd5e1' }
+      }),
+      el('button', { class: 'btn primary', onclick: () => saveAddonSetting('cacheMinutes') }, icon('download'), ' Salvar'),
+      el('span', { class: 'dim', style: { fontSize: '12px' }, text: '0 = sem cache. O cache evita chamadas repetidas ao Torrentio para o mesmo filme/série.' })
+    ),
+    el('h4', { style: { margin: '14px 0 6px' }, text: 'Máximo de Streams por Resultado' }),
+    el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center', marginBottom: '8px' } },
+      el('input', {
+        id: 'addonMaxStreams',
+        type: 'number',
+        min: 1,
+        max: 100,
+        value: 30,
+        style: { width: '100px', padding: '8px 10px', borderRadius: '6px', border: '1px solid #cbd5e1' }
+      }),
+      el('button', { class: 'btn primary', onclick: () => saveAddonSetting('maxStreams') }, icon('download'), ' Salvar')
+    ),
+    el('h4', { style: { margin: '14px 0 6px' }, text: 'Timeout de Metadados (ms)' }),
+    el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center', marginBottom: '8px' } },
+      el('input', {
+        id: 'addonMetadataTimeout',
+        type: 'number',
+        min: 5000,
+        max: 120000,
+        step: 1000,
+        value: 20000,
+        style: { width: '120px', padding: '8px 10px', borderRadius: '6px', border: '1px solid #cbd5e1' }
+      }),
+      el('button', { class: 'btn primary', onclick: () => saveAddonSetting('metadataTimeout') }, icon('download'), ' Salvar'),
+      el('span', { class: 'dim', style: { fontSize: '12px' }, text: 'Tempo máximo para buscar metadados do torrent antes de permitir escolher o arquivo.' })
+    ),
+    el('hr', { style: { margin: '16px 0' } }),
+    el('h4', { style: { margin: '0 0 6px' }, text: 'Saúde do Addon' }),
+    el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '8px' } },
+      el('button', { class: 'btn', onclick: checkAddonHealth }, icon('info'), ' Verificar saúde'),
+      el('button', { class: 'btn', onclick: clearAddonCache }, icon('trash'), ' Limpar cache')
+    ),
+    el('div', { id: 'addonHealthOut', class: 'mono', style: { fontSize: '12px', background: '#f1f5f9', border: '1px solid #e2e8f0', borderRadius: '6px', padding: '10px', minHeight: '60px', whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: 'var(--text-2)' } }, 'Clique em "Verificar saúde" para testar a conexão com o scraper.')
+  );
+
+  // Load current addon settings
+  loadAddonSettings();
+
+  pane.append(tabBar, streamCard, guideCard, addonCard);
 
   function switchTab(t) {
     st.tab = t;
     tabStream.className = 'btn' + (t === 'stream' ? ' primary' : '');
     tabGuide.className = 'btn' + (t === 'guide' ? ' primary' : '');
+    tabAddon.className = 'btn' + (t === 'addon' ? ' primary' : '');
     streamCard.style.display = t === 'stream' ? 'block' : 'none';
     guideCard.style.display = t === 'guide' ? 'block' : 'none';
+    addonCard.style.display = t === 'addon' ? 'block' : 'none';
+  }
+
+  async function loadAddonSettings() {
+    try {
+      const r = await api('addon/health');
+      if (r.scraper) $('#addonScraperUrl').value = r.scraper;
+      if (r.cacheMinutes != null) $('#addonCacheMinutes').value = r.cacheMinutes;
+      if (r.maxStreams != null) $('#addonMaxStreams').value = r.maxStreams;
+      if (r.metadataTimeoutMs != null) $('#addonMetadataTimeout').value = r.metadataTimeoutMs;
+    } catch { /* ignore */ }
+  }
+
+  async function saveAddonSetting(which) {
+    try {
+      const body = {};
+      if (which === 'scraperUrl') body.scraperUrl = $('#addonScraperUrl').value.trim();
+      else if (which === 'cacheMinutes') body.cacheMinutes = parseInt($('#addonCacheMinutes').value) || 0;
+      else if (which === 'maxStreams') body.maxStreams = parseInt($('#addonMaxStreams').value) || 30;
+      else if (which === 'metadataTimeout') body.metadataTimeoutMs = parseInt($('#addonMetadataTimeout').value) || 7000;
+      await api('addon/settings', null, { method: 'POST', body: JSON.stringify(body) });
+      toast('Configuração salva');
+      loadAddonSettings();
+    } catch (e) { toast('Falha ao salvar: ' + e.message); }
+  }
+
+  async function resetAddonSetting(which) {
+    try {
+      if (which === 'scraperUrl') {
+        await api('addon/settings', null, { method: 'POST', body: JSON.stringify({ scraperUrl: '' }) });
+        $('#addonScraperUrl').value = '';
+        toast('Restaurado para padrão');
+      }
+      loadAddonSettings();
+    } catch (e) { toast('Falha: ' + e.message); }
+  }
+
+  async function checkAddonHealth() {
+    const out = $('#addonHealthOut');
+    out.textContent = 'Verificando…';
+    try {
+      const r = await api('addon/health');
+      out.style.color = r.ok ? '#16a34a' : '#b91c1c';
+      out.textContent = `Status: ${r.ok ? '✓ Online' : '✗ Offline'}\n` +
+        `Scraper: ${r.scraper || '?'}\n` +
+        `Cache: ${r.cacheMinutes || 0} min\n` +
+        `Max streams: ${r.maxStreams || 30}\n` +
+        `Timeout: ${r.metadataTimeoutMs || 7000} ms\n` +
+        `Manifest: ${r.manifestPath || '?'}`;
+    } catch (e) {
+      out.style.color = '#b91c1c';
+      out.textContent = 'Erro: ' + e.message;
+    }
+  }
+
+  async function clearAddonCache() {
+    try {
+      await api('addon/clear-cache', null, { method: 'POST' });
+      toast('Cache limpo');
+      checkAddonHealth();
+    } catch (e) { toast('Falha: ' + e.message); }
   }
 
   function copyText(text, msg) {

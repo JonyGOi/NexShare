@@ -667,6 +667,101 @@ public class TunnelManager {
         return o;
     }
 
+    /**
+     * Tests a tunnel token by attempting a quick connection to Cloudflare.
+     * Returns a JSON with ok=true/false and details.
+     */
+    public JSONObject testToken(String token) {
+        JSONObject result = new JSONObject();
+        try {
+            String invalid = validateToken(token);
+            if (invalid != null) {
+                result.put("ok", false);
+                result.put("error", "invalid_token");
+                result.put("message", invalid);
+                return result;
+            }
+
+            // Try a quick connection test with the token
+            File cf = binary();
+            if (!cf.canExecute()) cf.setExecutable(true, false);
+
+            File home = new File(ctx.getFilesDir(), "cloudflared-test");
+            home.mkdirs();
+
+            List<String> cmd = new ArrayList<>();
+            cmd.add(cf.getAbsolutePath());
+            cmd.add("--no-autoupdate");
+            cmd.add("tunnel");
+            cmd.add("run");
+            cmd.add("--token");
+            cmd.add(sanitizeToken(token));
+
+            ProcessBuilder pb = new ProcessBuilder(cmd);
+            pb.redirectErrorStream(true);
+            pb.directory(home);
+            pb.environment().put("HOME", home.getAbsolutePath());
+            pb.environment().put("TMPDIR", ctx.getCacheDir().getAbsolutePath());
+            pb.environment().put("QUIC_GO_DISABLE_ECN", "true");
+            pb.environment().put("TUNNEL_LOGLEVEL", "debug");
+            pb.environment().put("TUNNEL_TRANSPORT_PROTOCOL", "http2");
+            pb.environment().put("TUNNEL_EDGE_IP_VERSION", "4");
+            List<String> dns = new ArrayList<>();
+            for (String d : PUBLIC_DNS) dns.add(d);
+            pb.environment().put("TUNNEL_DNS_RESOLVER_ADDRS", TextUtils.join(",", dns));
+
+            Process p = pb.start();
+            StringBuilder output = new StringBuilder();
+            boolean connected = false;
+            String foundUrl = "";
+            long start = System.currentTimeMillis();
+            long timeout = 30000; // 30 second test
+
+            try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = r.readLine()) != null) {
+                    output.append(line).append('\n');
+                    if (line.contains("Registered tunnel connection") || line.contains("Connection registered")) {
+                        connected = true;
+                    }
+                    Matcher m = QUICK_URL.matcher(line);
+                    if (m.find()) foundUrl = m.group();
+                    if (TOKEN_INVALID.matcher(line).find()) {
+                        result.put("ok", false);
+                        result.put("error", "invalid_token");
+                        result.put("message", "O Cloudflare recusou o token. Gere um novo em Zero Trust → Networks → Tunnels → seu túnel → Configure → Install connector.");
+                        p.destroy();
+                        return result;
+                    }
+                    if (System.currentTimeMillis() - start > timeout) {
+                        p.destroy();
+                        break;
+                    }
+                }
+            }
+
+            try { p.waitFor(); } catch (InterruptedException ignored) { }
+
+            if (connected) {
+                result.put("ok", true);
+                result.put("message", "Token válido! Conexão estabelecida com sucesso.");
+                if (!foundUrl.isEmpty()) result.put("testUrl", foundUrl);
+            } else {
+                result.put("ok", false);
+                result.put("error", "connection_failed");
+                result.put("message", "Não foi possível conectar com este token. Verifique se o túnel existe no Cloudflare e se o celular tem internet.");
+                result.put("log", output.toString());
+            }
+        } catch (Exception e) {
+            try {
+                result.put("ok", false);
+                result.put("error", "test_error");
+                result.put("message", "Erro no teste: " + e.getMessage());
+            } catch (org.json.JSONException ignored) { }
+        }
+        return result;
+    }
+
     private boolean hasInternet() {
         try {
             ConnectivityManager cm = (ConnectivityManager) ctx.getSystemService(Context.CONNECTIVITY_SERVICE);

@@ -105,6 +105,17 @@ public class WebApi implements HttpServer.Handler {
                 return;
             }
         }
+        if (p.equals("/robots.txt")) {
+            res.header("Cache-Control", "public, max-age=86400");
+            res.text(200, "text/plain; charset=utf-8", "User-agent: *\nDisallow: /\n");
+            return;
+        }
+        if (p.equals("/.well-known/security.txt")) {
+            res.header("Cache-Control", "public, max-age=86400");
+            res.text(200, "text/plain; charset=utf-8",
+                "Contact: https://github.com/JonyGOi/NexShare/security\nExpires: 2030-01-01T00:00:00.000Z\nPreferred-Languages: pt, en\n");
+            return;
+        }
         if (p.equals("/api/cert")) {
             serveCert(res);
             return;
@@ -151,6 +162,14 @@ public class WebApi implements HttpServer.Handler {
             webdavStatus(res);
             return;
         }
+        if (p.equals("/api/webdav/health")) {
+            webdavHealth(res);
+            return;
+        }
+        if (p.equals("/api/addon/health")) {
+            addonHealth(req, res);
+            return;
+        }
         if (p.equals("/api/webdav/toggle")) {
             webdavToggle(req, res);
             return;
@@ -193,6 +212,10 @@ public class WebApi implements HttpServer.Handler {
             case "/api/debrid/prioritize": debridPrioritize(req, res); break;
             case "/api/debrid/select": debridSelect(req, res); break;
             case "/api/addon/test": addonTest(req, res); break;
+            case "/api/addon/settings": addonSettings(req, res); break;
+            case "/api/addon/clear-cache": addonClearCache(req, res); break;
+            case "/api/webdav/health": webdavHealth(res); break;
+            case "/api/tunnel/test-token": tunnelTestToken(req, res); break;
             case "/api/debrid/rotatekey": debridRotateKey(res); break;
             case "/api/update/check": checkUpdate(res); break;
             case "/api/update/install": installUpdate(req, res); break;
@@ -322,6 +345,13 @@ public class WebApi implements HttpServer.Handler {
             }
         }
         res.header("Cache-Control", "no-cache");
+        if (mime(p).startsWith("text/html")) {
+            res.header("Content-Security-Policy",
+                "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
+                "img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; " +
+                "connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; " +
+                "frame-ancestors 'self'");
+        }
         res.bytes(200, mime(p), data);
     }
 
@@ -511,11 +541,15 @@ public class WebApi implements HttpServer.Handler {
         }
         res.header("Accept-Ranges", "bytes");
         res.header("Last-Modified", HttpServer.httpDate(f.lastModified()));
-        String disp = "1".equals(req.param("dl")) ? "attachment" : "inline";
+        String fmime = mime(f.getName());
+        // Never render HTML/SVG/JS from the storage inline on the app's own origin: that is how
+        // a shared folder becomes a phishing page or steals the session cookie.
+        boolean risky = fmime.startsWith("text/html") || fmime.contains("svg") || fmime.contains("javascript");
+        String disp = ("1".equals(req.param("dl")) || risky) ? "attachment" : "inline";
         res.header("Content-Disposition", disp + "; filename*=UTF-8''" + URLEncoder.encode(f.getName(), "UTF-8").replace("+", "%20"));
         if (partial) res.header("Content-Range", "bytes " + start + "-" + end + "/" + len);
         long count = end - start + 1;
-        OutputStream out = res.begin(partial ? 206 : 200, mime(f.getName()), Math.max(count, 0));
+        OutputStream out = res.begin(partial ? 206 : 200, fmime, Math.max(count, 0));
         if ("HEAD".equals(req.method) || len == 0) return;
         TransferTracker.onTransferStart();
         DownloadManager.StreamRef stream = "1".equals(req.param("dl")) ? null : DownloadManager.get(ctx).locateTorrentFile(f);
@@ -946,6 +980,29 @@ public class WebApi implements HttpServer.Handler {
         tunnelStatus(res);
     }
 
+    /** Tests a Cloudflare tunnel token without starting the tunnel permanently. */
+    private void tunnelTestToken(HttpServer.Request req, HttpServer.Response res) throws IOException {
+        if (!"POST".equals(req.method)) {
+            res.error(405, "method not allowed");
+            return;
+        }
+        JSONObject body;
+        try {
+            body = new JSONObject(req.bodyString(4096));
+        } catch (Exception e) {
+            res.error(400, "bad request");
+            return;
+        }
+        String token = body.optString("token", "").trim();
+        if (token.isEmpty()) {
+            res.error(400, "token vazio");
+            return;
+        }
+        JSONObject result = TunnelManager.get(ctx).testToken(token);
+        res.header("Access-Control-Allow-Origin", "*");
+        res.json(200, result.toString());
+    }
+
     // ---------- webdav ----------
 
     private void serveCert(HttpServer.Response res) throws IOException {
@@ -1010,6 +1067,26 @@ public class WebApi implements HttpServer.Handler {
         res.json(200, o.toString());
     }
 
+    private void webdavHealth(HttpServer.Response res) throws IOException {
+        JSONObject o = webDavHandler.getHealthStatus();
+        // Add network info
+        Inet4Address ip = MdnsResponder.lanAddress();
+        if (ip != null) {
+            put(o, "lanIp", ip.getHostAddress());
+            put(o, "lanUrl", "http://" + ip.getHostAddress() + ":" + ServerService.PORT + "/dav/");
+            put(o, "lanHttpsUrl", "https://" + ip.getHostAddress() + ":" + ServerService.HTTPS_PORT + "/dav/");
+        }
+        put(o, "mdnsHost", MdnsResponder.HOST + ".local");
+        String pub = tunnelPublicUrl();
+        if (!pub.isEmpty()) put(o, "tunnelUrl", pub + "/dav/");
+        put(o, "authMode", Settings.authMode(ctx));
+        put(o, "username", Settings.authMode(ctx).equals("password") ? Settings.username(ctx) : "nexshare");
+        put(o, "pin", Settings.authMode(ctx).equals("password") ? "(sua senha)" : Settings.pin(ctx));
+        // Windows registry hint
+        put(o, "windowsRegistryUrl", "https://" + (ip != null ? ip.getHostAddress() : MdnsResponder.HOST) + ":" + ServerService.HTTPS_PORT + "/api/webdav/reg");
+        res.json(200, o.toString());
+    }
+
     private void webdavToggle(HttpServer.Request req, HttpServer.Response res) throws IOException {
         JSONObject body;
         try {
@@ -1049,13 +1126,23 @@ public class WebApi implements HttpServer.Handler {
         }
         File dir = dlDir(body.optString("dest", null));
         String urls = body.optString("urls", "");
+        boolean hold = body.optBoolean("paused", false);
         int added = 0;
         StringBuilder errors = new StringBuilder();
+        JSONArray ids = new JSONArray();
         for (String line : urls.split("\\s*\\n\\s*")) {
             line = line.trim();
             if (line.isEmpty()) continue;
             try {
-                DownloadManager.get(ctx).addUrl(line, dir);
+                DownloadManager.Task t = DownloadManager.get(ctx).addUrl(line, dir);
+                if (hold && "torrent".equals(t.type)) {
+                    // Keep the torrent in metadata-only mode so the workspace can show the
+                    // file list before anything is actually downloaded.
+                    t.awaitingSelection = true;
+                    t.status = "metadata";
+                    DownloadManager.get(ctx).save();
+                }
+                ids.put(t.id);
                 added++;
             } catch (IOException e) {
                 errors.append(e.getMessage()).append('\n');
@@ -1065,7 +1152,7 @@ public class WebApi implements HttpServer.Handler {
             res.error(400, errors.length() > 0 ? errors.toString().trim() : "no links");
             return;
         }
-        res.json(200, "{\"added\":" + added + "}");
+        res.json(200, "{\"added\":" + added + ",\"ids\":" + ids + "}");
     }
 
     private void dlTorrent(HttpServer.Request req, HttpServer.Response res) throws IOException {
@@ -1076,13 +1163,18 @@ public class WebApi implements HttpServer.Handler {
         byte[] data = new byte[(int) req.contentLength];
         int off = 0, n;
         while (off < data.length && (n = req.body.read(data, off, data.length - off)) > 0) off += n;
+        DownloadManager.Task t;
         try {
-            DownloadManager.get(ctx).addTorrent(null, data, dlDir(req.param("dest")));
+            t = DownloadManager.get(ctx).addTorrent(null, data, dlDir(req.param("dest")));
         } catch (IOException e) {
             res.error(400, e.getMessage());
             return;
         }
-        res.json(200, "{\"added\":1}");
+        if (isOn(req, null, "paused")) {
+            t.awaitingSelection = true;
+            DownloadManager.get(ctx).pause(t.id);
+        }
+        res.json(200, "{\"added\":1,\"ids\":[" + JSONObject.quote(t.id) + "]}");
     }
 
     // ---------- system ----------
@@ -1555,6 +1647,15 @@ public class WebApi implements HttpServer.Handler {
 
     // ---------- debrid hub & real-debrid API ----------
 
+    /** Real-Debrid compatible status for the torrent list/info endpoints. */
+    private static String rdStatus(String s) {
+        if ("choose".equals(s)) return "waiting_files_selection";
+        if ("done".equals(s) || "seeding".equals(s)) return "downloaded";
+        if ("paused".equals(s)) return "paused";
+        if ("error".equals(s)) return "error";
+        return "downloading";
+    }
+
     private void handleDebridRest(HttpServer.Request req, HttpServer.Response res) throws IOException {
         res.header("Access-Control-Allow-Origin", "*");
         res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
@@ -1645,10 +1746,11 @@ public class WebApi implements HttpServer.Handler {
                 put(o, "hash", t.hash != null ? t.hash.toLowerCase(Locale.ROOT) : "");
                 put(o, "bytes", t.total > 0 ? t.total : 0L);
                 put(o, "original_bytes", t.total > 0 ? t.total : 0L);
+                put(o, "dest", t.dest);
                 put(o, "host", "nexshare");
                 put(o, "split", 2000);
                 put(o, "progress", t.total > 0 ? Math.min(100.0, (t.done * 100.0) / t.total) : 0);
-                put(o, "status", ("done".equals(t.status) || "seeding".equals(t.status)) ? "downloaded" : "downloading");
+                put(o, "status", rdStatus(t.status));
                 put(o, "added", HttpServer.httpDate(t.created));
                 put(o, "speed", t.speed);
                 put(o, "seeders", t.seeds);
@@ -1697,9 +1799,17 @@ public class WebApi implements HttpServer.Handler {
                 res.json(200, o.toString());
                 return;
             }
-            DownloadManager.Task t = dm.addUrl(magnet, DownloadManager.defaultDir());
-            if (te != null) te.autoPrioritize(t);
-            if (isOn(req, null, "paused")) dm.pause(t.id); // pick the files first, like qBittorrent
+            // The client may choose the folder at add time (qBittorrent-style dialog).
+            DownloadManager.Task t = dm.addUrl(magnet, dlDir(req.param("dest")));
+            if (isOn(req, null, "paused")) {
+                // qBittorrent style: keep the torrent running only long enough to fetch the
+                // metadata, then hold every file ignored until the user confirms the list.
+                t.awaitingSelection = true;
+                t.status = "metadata";
+                dm.save();
+            } else if (te != null) {
+                te.autoPrioritize(t);
+            }
             JSONObject o = new JSONObject();
             put(o, "id", t.id);
             put(o, "uri", "/rest/1.0/torrents/info/" + t.id);
@@ -1713,9 +1823,13 @@ public class WebApi implements HttpServer.Handler {
                 res.error(400, "empty torrent body");
                 return;
             }
-            DownloadManager.Task t = dm.addTorrent(null, torrentBytes, DownloadManager.defaultDir());
-            if (te != null) te.autoPrioritize(t);
-            if (isOn(req, null, "paused")) dm.pause(t.id);
+            DownloadManager.Task t = dm.addTorrent(null, torrentBytes, dlDir(req.param("dest")));
+            if (isOn(req, null, "paused")) {
+                t.awaitingSelection = true;
+                dm.pause(t.id); // .torrent already has metadata, so it can stay paused
+            } else if (te != null) {
+                te.autoPrioritize(t);
+            }
             JSONObject o = new JSONObject();
             put(o, "id", t.id);
             put(o, "uri", "/rest/1.0/torrents/info/" + t.id);
@@ -1740,7 +1854,7 @@ public class WebApi implements HttpServer.Handler {
             put(o, "host", "nexshare");
             put(o, "split", 2000);
             put(o, "progress", t.total > 0 ? Math.min(100.0, (t.done * 100.0) / t.total) : 0);
-            put(o, "status", ("done".equals(t.status) || "seeding".equals(t.status)) ? "downloaded" : "downloading");
+            put(o, "status", rdStatus(t.status));
             put(o, "added", HttpServer.httpDate(t.created));
             put(o, "speed", t.speed);
             put(o, "seeders", t.seeds);
@@ -1759,7 +1873,6 @@ public class WebApi implements HttpServer.Handler {
                     put(fo, "done", fi.optLong("done"));
                     put(fo, "selected", fi.optInt("selected", 1));
                     put(fo, "progress", fi.optDouble("progress", 0));
-                    put(fo, "selected", 1);
                     filesArr.put(fo);
                     linksArr.put(remoteUrl + "/rest/1.0/unrestrict/link?id=" + t.id + "&file=" + i);
                 }
@@ -1795,6 +1908,10 @@ public class WebApi implements HttpServer.Handler {
             String id = p.substring("/rest/1.0/torrents/selectFiles/".length()).trim();
             DownloadManager.Task t = dm.getTask(id);
             if (t != null && te != null) {
+                // Selecting files is the confirmation step for a held torrent (qBittorrent-style
+                // add): start it as soon as the choice is applied. A torrent the user paused
+                // deliberately (not awaiting selection) stays paused.
+                boolean held = t.awaitingSelection;
                 String sel = req.param("files");
                 if (sel == null) {
                     String body = req.bodyString(65536);
@@ -1828,6 +1945,7 @@ public class WebApi implements HttpServer.Handler {
                     te.setSelection(t, ids);
                 }
                 dm.save();
+                if (held) dm.resume(t.id);
             }
             res.json(200, "{\"status\":\"ok\"}");
             return;
@@ -2111,9 +2229,31 @@ public class WebApi implements HttpServer.Handler {
      * played, makes the phone download that exact file (paused until then, so nothing is
      * downloaded just because you browsed).
      */
-    private static final String ADDON_SCRAPER = "https://torrentio.strem.fun";
+    private static final String DEFAULT_ADDON_SCRAPER = "https://torrentio.strem.fun";
+    private final java.util.Map<String, java.util.Map<String, CachedScraperResult>> scraperCache = new java.util.concurrent.ConcurrentHashMap<>();
+
+    private static class CachedScraperResult {
+        final JSONObject data;
+        final long timestamp;
+        CachedScraperResult(JSONObject data) {
+            this.data = data;
+            this.timestamp = System.currentTimeMillis();
+        }
+        boolean isExpired(int cacheMinutes) {
+            if (cacheMinutes <= 0) return false;
+            return System.currentTimeMillis() - timestamp > cacheMinutes * 60_000L;
+        }
+    }
 
     private boolean handleAddon(HttpServer.Request req, HttpServer.Response res, String p) throws IOException {
+        res.header("Access-Control-Allow-Origin", "*");
+        res.header("Access-Control-Allow-Headers", "Content-Type");
+        if ("OPTIONS".equals(req.method)) {
+            res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+            res.header("Access-Control-Max-Age", "86400");
+            res.json(200, "{}");
+            return true;
+        }
         String rest = p.substring("/addon/".length());
         int slash = rest.indexOf('/');
         String key = slash < 0 ? rest : rest.substring(0, slash);
@@ -2135,6 +2275,26 @@ public class WebApi implements HttpServer.Handler {
             addonPlay(req, res, key);
             return true;
         }
+        if (tail.equals("/files") || tail.startsWith("/files/")) {
+            addonFiles(req, res, tail, key);
+            return true;
+        }
+        if (tail.equals("/select") || tail.startsWith("/select/")) {
+            addonSelect(req, res, tail, key);
+            return true;
+        }
+        if (tail.equals("/health")) {
+            addonHealth(req, res);
+            return true;
+        }
+        if (tail.equals("/error")) {
+            // Nuvio/Stremio sometimes probe this after a failed playback; answer JSON instead of 404.
+            JSONObject e = new JSONObject();
+            put(e, "error", "stream indisponivel");
+            put(e, "hint", "Confira o NexShare aberto, o Acesso Remoto ligado e escolha outro stream.");
+            res.json(200, e.toString());
+            return true;
+        }
         return false;
     }
 
@@ -2150,12 +2310,16 @@ public class WebApi implements HttpServer.Handler {
         return proto + "://" + (host != null ? host : (MdnsResponder.HOST + ":" + ServerService.PORT));
     }
 
+    private String addonScraperUrl() {
+        return Settings.addonScraperUrl(ctx);
+    }
+
     private void addonManifest(HttpServer.Response res) throws IOException {
         JSONObject m = new JSONObject();
         put(m, "id", "com.nexshare.debrid");
-        put(m, "version", "1.0.0");
+        put(m, "version", "1.2.0");
         put(m, "name", "NexShare Debrid");
-        put(m, "description", "Seu celular como debrid: escolha o stream e ele baixa e entrega na hora.");
+        put(m, "description", "Seu celular como debrid: escolha o stream e ele baixa e entrega na hora. Cache configurável, múltiplos scrapers.");
         put(m, "types", new JSONArray().put("movie").put("series"));
         JSONArray idPrefixes = new JSONArray().put("tt");
         JSONObject streamRes = new JSONObject();
@@ -2169,14 +2333,21 @@ public class WebApi implements HttpServer.Handler {
         res.json(200, m.toString());
     }
 
-    /** Fetches the scraper (Torrentio) JSON for a movie/series id. */
-    private String fetchScraper(String type, String id) throws IOException {
-        String url = ADDON_SCRAPER + "/stream/" + type + "/"
+    /** Fetches the scraper (Torrentio) JSON for a movie/series id with caching. */
+    private JSONObject fetchScraperCached(String type, String id) throws IOException {
+        int cacheMinutes = Settings.addonCacheMinutes(ctx);
+        String cacheKey = type + ":" + id;
+        java.util.Map<String, CachedScraperResult> typeCache = scraperCache.computeIfAbsent(type, k -> new java.util.concurrent.ConcurrentHashMap<>());
+        CachedScraperResult cached = typeCache.get(cacheKey);
+        if (cached != null && !cached.isExpired(cacheMinutes)) {
+            return cached.data;
+        }
+        String url = addonScraperUrl() + "/stream/" + type + "/"
             + java.net.URLEncoder.encode(id, "UTF-8") + ".json";
         java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
-        c.setConnectTimeout(8000);
-        c.setReadTimeout(9000);
-        c.setRequestProperty("User-Agent", "NexShare/1.0 (Android)");
+        c.setConnectTimeout(10000);
+        c.setReadTimeout(15000);
+        c.setRequestProperty("User-Agent", "NexShare/1.1 (Android)");
         c.setRequestProperty("Accept", "application/json");
         try {
             int code = c.getResponseCode();
@@ -2187,14 +2358,47 @@ public class WebApi implements HttpServer.Handler {
             int n;
             while ((n = in.read(buf)) > 0) {
                 bo.write(buf, 0, n);
-                if (bo.size() > 4 * 1024 * 1024) break;
+                if (bo.size() > 8 * 1024 * 1024) break;
             }
             in.close();
             if (code >= 400) throw new IOException("scraper HTTP " + code);
-            return new String(bo.toByteArray(), StandardCharsets.UTF_8);
+            JSONObject result;
+            try {
+                result = new JSONObject(new String(bo.toByteArray(), StandardCharsets.UTF_8));
+            } catch (org.json.JSONException e) {
+                throw new IOException("invalid JSON from scraper", e);
+            }
+            typeCache.put(cacheKey, new CachedScraperResult(result));
+            // Clean old cache entries periodically
+            if (typeCache.size() > 200) {
+                long now = System.currentTimeMillis();
+                for (java.util.Iterator<java.util.Map.Entry<String, CachedScraperResult>> it = typeCache.entrySet().iterator(); it.hasNext(); ) {
+                    if (it.next().getValue().isExpired(cacheMinutes)) it.remove();
+                }
+            }
+            return result;
         } finally {
             c.disconnect();
         }
+    }
+
+    /** Builds the magnet for an addon request, keeping the tracker list Torrentio gave us. */
+    private static String addonMagnet(HttpServer.Request req, String hash) {
+        StringBuilder m = new StringBuilder("magnet:?xt=urn:btih:").append(hash);
+        java.util.LinkedHashSet<String> trackers = new java.util.LinkedHashSet<>();
+        for (String raw : req.params("tr")) {
+            if (raw == null) continue;
+            for (String s : raw.split("\\|")) {
+                s = s.trim();
+                if (!s.isEmpty() && !s.startsWith("dht:")) trackers.add(s);
+            }
+        }
+        int n = 0;
+        for (String tr : trackers) {
+            if (n++ >= 25) break;
+            m.append("&tr=").append(encodeQuery(tr));
+        }
+        return m.toString();
     }
 
     private void addonStreams(HttpServer.Request req, HttpServer.Response res, String tail, String key) throws IOException {
@@ -2210,11 +2414,12 @@ public class WebApi implements HttpServer.Handler {
         JSONArray out = new JSONArray();
         String error = null;
         try {
-            JSONObject body = new JSONObject(fetchScraper(type, id));
+            JSONObject body = fetchScraperCached(type, id);
             JSONArray list = body.optJSONArray("streams");
             String base = addonBase(req);
+            int maxStreams = Settings.addonMaxStreams(ctx);
             if (list != null) {
-                for (int i = 0; i < list.length() && out.length() < 30; i++) {
+                for (int i = 0; i < list.length() && out.length() < maxStreams; i++) {
                     JSONObject st = list.optJSONObject(i);
                     if (st == null) continue;
                     String hash = st.optString("infoHash", "");
@@ -2223,11 +2428,29 @@ public class WebApi implements HttpServer.Handler {
                         put(o, "name", st.optString("name", "NexShare"));
                         String title = st.optString("title", "");
                         put(o, "title", (title.isEmpty() ? "" : title + "\n") + "▶ desbridar no celular (NexShare)");
+                        // Keep Torrentio's display hints (filename/bingeGroup/videoSize) instead of
+                        // throwing them away: Stremio uses them to group and label the streams.
                         JSONObject hints = st.optJSONObject("behaviorHints");
-                        if (hints != null) put(o, "behaviorHints", hints);
+                        JSONObject merged = hints != null ? new JSONObject(hints.toString()) : new JSONObject();
+                        merged.put("notWebReady", true);
+                        o.put("behaviorHints", merged);
                         StringBuilder u = new StringBuilder(base).append("/addon/").append(key).append("/play?h=").append(hash);
                         int fidx = st.optInt("fileIdx", -1);
                         if (fidx >= 0) u.append("&i=").append(fidx);
+                        // Torrentio resolves peers through these trackers; without them the phone
+                        // relies on DHT only and magnets can sit at "fetching metadata" forever.
+                        JSONArray sources = st.optJSONArray("sources");
+                        StringBuilder trackers = new StringBuilder();
+                        if (sources != null) {
+                            for (int j = 0; j < sources.length(); j++) {
+                                String s = sources.optString(j, "");
+                                if (s.startsWith("tracker:")) {
+                                    if (trackers.length() > 0) trackers.append('|');
+                                    trackers.append(s.substring(8));
+                                }
+                            }
+                        }
+                        if (trackers.length() > 0) u.append("&tr=").append(encodeQuery(trackers.toString()));
                         o.put("url", u.toString());
                         out.put(o);
                     } else {
@@ -2242,13 +2465,162 @@ public class WebApi implements HttpServer.Handler {
         if (out.length() == 0 && error != null) {
             JSONObject o = new JSONObject();
             put(o, "name", "NexShare ⚠");
-            put(o, "title", "Não consegui falar com o Torrentio: " + error);
+            put(o, "title", "Não consegui falar com o scraper: " + error);
             put(o, "url", addonBase(req) + "/addon/" + key + "/play?h=0000000000000000000000000000000000000000");
             out.put(o);
         }
         JSONObject result = new JSONObject();
         put(result, "streams", out);
         res.json(200, result.toString());
+    }
+
+    /** Returns file list for a torrent so the user can pick which file to play. */
+    private void addonFiles(HttpServer.Request req, HttpServer.Response res, String tail, String key) throws IOException {
+        String hash = tail.equals("/files") ? req.param("h") : tail.substring("/files/".length());
+        if (hash == null || hash.length() < 20) {
+            res.error(400, "hash invalido");
+            return;
+        }
+        hash = hash.toLowerCase(Locale.ROOT);
+        DownloadManager dm = DownloadManager.get(ctx);
+        DownloadManager.Task t = dm.findByHash(hash);
+        if (t == null) {
+            // Metadata only: the addon asked for the file list, not for a download yet.
+            t = dm.addUrl(addonMagnet(req, hash), DownloadManager.defaultDir());
+            t.fromAddon = true;
+            t.awaitingSelection = true;
+            dm.save();
+        } else if (t.status.equals("paused") && dm.torrentEngine() != null
+                && dm.torrentEngine().listFiles(t).isEmpty()) {
+            dm.resume(t.id); // a paused magnet cannot fetch metadata
+        }
+        TorrentEngine te = dm.torrentEngine();
+        if (te == null) {
+            res.error(503, "torrent engine unavailable");
+            return;
+        }
+        int timeoutMs = Settings.addonMetadataTimeoutMs(ctx);
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        List<JSONObject> files = te.listFiles(t);
+        while (files.isEmpty() && System.currentTimeMillis() < deadline) {
+            try { Thread.sleep(300); } catch (InterruptedException e) { break; }
+            files = te.listFiles(t);
+        }
+        if (files.isEmpty()) {
+            res.json(200, "{\"files\":[],\"status\":\"metadata_pending\"}");
+            return;
+        }
+        JSONArray arr = new JSONArray();
+        for (int i = 0; i < files.size(); i++) {
+            JSONObject fi = files.get(i);
+            JSONObject o = new JSONObject();
+            put(o, "index", i);
+            put(o, "name", fi.optString("name"));
+            put(o, "path", fi.optString("path"));
+            put(o, "size", fi.optLong("size", 0));
+            put(o, "progress", fi.optDouble("progress", 0));
+            put(o, "selected", fi.optInt("selected", 1));
+            put(o, "isVideo", TorrentEngine.isVideo(fi.optString("name", "")));
+            arr.put(o);
+        }
+        JSONObject result = new JSONObject();
+        put(result, "files", arr);
+        put(result, "hash", hash);
+        put(result, "taskId", t.id);
+        res.header("Access-Control-Allow-Origin", "*");
+        res.json(200, result.toString());
+    }
+
+    /** Selects a file and starts streaming it. */
+    private void addonSelect(HttpServer.Request req, HttpServer.Response res, String tail, String key) throws IOException {
+        String hash = req.param("h");
+        String idxStr = req.param("i");
+        if (hash == null || hash.length() < 20 || idxStr == null) {
+            res.error(400, "parametros invalidos");
+            return;
+        }
+        int idx;
+        try { idx = Integer.parseInt(idxStr); } catch (Exception e) { res.error(400, "indice invalido"); return; }
+        hash = hash.toLowerCase(Locale.ROOT);
+        DownloadManager dm = DownloadManager.get(ctx);
+        DownloadManager.Task t = dm.findByHash(hash);
+        if (t == null) {
+            res.error(404, "torrent nao encontrado");
+            return;
+        }
+        TorrentEngine te = dm.torrentEngine();
+        if (te == null) {
+            res.error(503, "torrent engine unavailable");
+            return;
+        }
+        List<JSONObject> files = te.listFiles(t);
+        if (idx < 0 || idx >= files.size()) {
+            res.error(404, "arquivo nao encontrado");
+            return;
+        }
+        // Only narrow selection for addon-created torrents
+        if (t.fromAddon && t.selected == null) te.setSelection(t, new int[]{idx});
+        te.prioritizeFile(t, idx);
+        dm.resume(t.id);
+        dm.save();
+        String path = files.get(idx).optString("fullPath");
+        String url = addonBase(req) + "/api/file?path=" + encodeQuery(path) + "&token=" + key;
+        res.header("Access-Control-Allow-Origin", "*");
+        res.json(200, "{\"url\":\"" + url + "\",\"fileIndex\":" + idx + "}");
+    }
+
+    /** Health check endpoint for the addon. */
+    private void addonHealth(HttpServer.Request req, HttpServer.Response res) throws IOException {
+        JSONObject o = new JSONObject();
+        put(o, "status", "ok");
+        put(o, "scraper", addonScraperUrl());
+        put(o, "cacheMinutes", Settings.addonCacheMinutes(ctx));
+        put(o, "maxStreams", Settings.addonMaxStreams(ctx));
+        put(o, "metadataTimeoutMs", Settings.addonMetadataTimeoutMs(ctx));
+        put(o, "manifestPath", "/addon/" + Settings.apiKey(ctx) + "/manifest.json");
+        put(o, "ok", true);
+        res.header("Access-Control-Allow-Origin", "*");
+        res.json(200, o.toString());
+    }
+
+    /** Updates addon settings from the web UI. */
+    private void addonSettings(HttpServer.Request req, HttpServer.Response res) throws IOException {
+        if (!"POST".equals(req.method)) {
+            res.error(405, "method not allowed");
+            return;
+        }
+        JSONObject body;
+        try {
+            body = new JSONObject(req.bodyString(4096));
+        } catch (Exception e) {
+            res.error(400, "bad request");
+            return;
+        }
+        if (body.has("scraperUrl")) {
+            String url = body.optString("scraperUrl", "").trim();
+            Settings.setAddonScraperUrl(ctx, url);
+        }
+        if (body.has("cacheMinutes")) {
+            int minutes = body.optInt("cacheMinutes", 10);
+            Settings.setAddonCacheMinutes(ctx, minutes);
+        }
+        if (body.has("maxStreams")) {
+            int max = body.optInt("maxStreams", 30);
+            Settings.setAddonMaxStreams(ctx, max);
+        }
+        if (body.has("metadataTimeoutMs")) {
+            int ms = body.optInt("metadataTimeoutMs", 20000);
+            Settings.setAddonMetadataTimeoutMs(ctx, ms);
+        }
+        // Clear cache on settings change
+        scraperCache.clear();
+        res.json(200, "{\"ok\":true}");
+    }
+
+    /** Clears the scraper cache. */
+    private void addonClearCache(HttpServer.Request req, HttpServer.Response res) throws IOException {
+        scraperCache.clear();
+        res.json(200, "{\"ok\":true}");
     }
 
     /** Adds (paused) the torrent of that hash, picks the file and redirects to the stream. */
@@ -2266,17 +2638,23 @@ public class WebApi implements HttpServer.Handler {
         DownloadManager dm = DownloadManager.get(ctx);
         DownloadManager.Task t = dm.findByHash(hash);
         if (t == null) {
-            t = dm.addUrl("magnet:?xt=urn:btih:" + hash, DownloadManager.defaultDir());
+            t = dm.addUrl(addonMagnet(req, hash), DownloadManager.defaultDir());
             t.fromAddon = true;
-            dm.pause(t.id); // nothing downloads until the exact file is known
+            // Nothing downloads until the exact file is known, but the torrent must keep
+            // running long enough to fetch the metadata from the swarm.
+            t.awaitingSelection = true;
             dm.save();
+        } else if (t.status.equals("paused") && dm.torrentEngine() != null
+                && dm.torrentEngine().listFiles(t).isEmpty()) {
+            dm.resume(t.id); // a paused magnet cannot fetch metadata
         }
         TorrentEngine te = dm.torrentEngine();
         if (te == null) {
             res.error(503, "torrent engine unavailable");
             return;
         }
-        long deadline = System.currentTimeMillis() + 12000;
+        int timeoutMs = Settings.addonMetadataTimeoutMs(ctx);
+        long deadline = System.currentTimeMillis() + timeoutMs;
         List<JSONObject> files = te.listFiles(t);
         while (files.isEmpty() && System.currentTimeMillis() < deadline) {
             try { Thread.sleep(300); } catch (InterruptedException e) { break; }
@@ -2297,7 +2675,10 @@ public class WebApi implements HttpServer.Handler {
         }
         // Only narrow the selection when the addon created the torrent; a torrent the user is
         // already downloading from the panel keeps its own selection.
-        if (t.fromAddon && t.selected == null) te.setSelection(t, new int[]{idx});
+        if (t.fromAddon) {
+            if (t.selected == null) te.setSelection(t, new int[]{idx});
+            t.awaitingSelection = false;
+        }
         te.prioritizeFile(t, idx);
         dm.resume(t.id);
         dm.save();
@@ -2314,18 +2695,20 @@ public class WebApi implements HttpServer.Handler {
         if (id == null || id.isEmpty()) id = "tt0111161";
         String type = id.contains(":") ? "series" : "movie";
         JSONObject o = new JSONObject();
-        put(o, "scraper", ADDON_SCRAPER);
+        put(o, "scraper", addonScraperUrl());
         put(o, "id", id);
         long t0 = System.currentTimeMillis();
         try {
-            JSONObject body = new JSONObject(fetchScraper(type, id));
+            JSONObject body = fetchScraperCached(type, id);
             JSONArray list = body.optJSONArray("streams");
             put(o, "ok", true);
             put(o, "streams", list == null ? 0 : list.length());
+            put(o, "cached", true);
         } catch (Exception e) {
             put(o, "ok", false);
             put(o, "error", e.getMessage());
             put(o, "streams", 0);
+            put(o, "cached", false);
         }
         put(o, "ms", System.currentTimeMillis() - t0);
         put(o, "manifestPath", "/addon/" + Settings.apiKey(ctx) + "/manifest.json");

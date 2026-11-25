@@ -594,7 +594,7 @@ public class MainActivity extends Activity {
         if (ip != null) {
             String ipUrl = "http://" + ip.getHostAddress() + ":" + ServerService.PORT + "\nhttps://" + ip.getHostAddress() + ":" + ServerService.HTTPS_PORT;
             urlIp.setText(ipUrl);
-            urlIp.setTag("https://" + ip.getHostAddress() + ":" + ServerService.HTTPS_PORT);
+            urlIp.setTag("http://" + ip.getHostAddress() + ":" + ServerService.PORT);
         } else {
             urlIp.setText("Not connected to Wi-Fi / Hotspot");
             urlIp.setTag(null);
@@ -605,7 +605,7 @@ public class MainActivity extends Activity {
         boolean davOn = Settings.webdavEnabled(this);
         if (davSwitch != null) davSwitch.setChecked(davOn);
         if (davUrl != null) {
-            String dUrl = (ip != null ? "https://" + ip.getHostAddress() + ":" + ServerService.HTTPS_PORT : "http://" + MdnsResponder.HOST + ":" + ServerService.PORT) + "/dav/";
+            String dUrl = (ip != null ? "http://" + ip.getHostAddress() + ":" + ServerService.PORT : "http://" + MdnsResponder.HOST + ":" + ServerService.PORT) + "/dav/";
             davUrl.setText(dUrl);
             davUrl.setTag(dUrl);
             davUrl.setAlpha(davOn && on ? 1f : 0.4f);
@@ -615,11 +615,11 @@ public class MainActivity extends Activity {
             String ipOrHost = (ip != null ? ip.getHostAddress() : MdnsResponder.HOST) + ":" + ServerService.PORT;
             if (Settings.MODE_PASSWORD.equals(mode)) {
                 String u = Settings.username(this);
-                davHint.setText("WebDAV: User: " + u + " | Password: (configured password)\nCommand: net use * http://" + ipOrHost + "/dav/ /user:" + u + " *");
+                davHint.setText("WebDAV: User: " + u + " | Password: (configured password)\nNo PC: map-drive.ps1 -PhoneIP " + (ip != null ? ip.getHostAddress() : MdnsResponder.HOST) + " -Key <API key>");
             } else if (Settings.MODE_PIN.equals(mode)) {
-                davHint.setText("WebDAV: User: nexshare | Password: PIN (" + Settings.pin(this) + ")\nCommand: net use * http://" + ipOrHost + "/dav/ /user:nexshare *");
+                davHint.setText("WebDAV: User: nexshare | Password: PIN (" + Settings.pin(this) + ")\nNo PC: map-drive.ps1 -PhoneIP " + (ip != null ? ip.getHostAddress() : MdnsResponder.HOST) + " -Pin " + Settings.pin(this));
             } else {
-                davHint.setText("WebDAV: No login required (anonymous LAN access)\nCommand: net use * http://" + ipOrHost + "/dav/");
+                davHint.setText("WebDAV: No login required (anonymous LAN access)\nNo PC: map-drive.ps1 -PhoneIP " + (ip != null ? ip.getHostAddress() : MdnsResponder.HOST));
             }
             davHint.setAlpha(davOn && on ? 1f : 0.4f);
         }

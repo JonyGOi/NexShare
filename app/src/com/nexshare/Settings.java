@@ -236,4 +236,56 @@ public final class Settings {
     public static String serverName(Context c) {
         return prefs(c).getString("name", "NexShare-" + Build.MODEL.replace(' ', '-'));
     }
+
+    // ---------- Nuvio / Debrid Addon settings ----------
+
+    /** Custom scraper URL for the Nuvio addon (default: torrentio.strem.fun). */
+    public static String addonScraperUrl(Context c) {
+        String url = prefs(c).getString("addonScraperUrl", null);
+        return url != null && !url.isEmpty() ? url : "https://torrentio.strem.fun";
+    }
+
+    public static void setAddonScraperUrl(Context c, String url) {
+        if (url == null) url = "";
+        url = url.trim();
+        if (url.isEmpty()) {
+            prefs(c).edit().remove("addonScraperUrl").apply();
+        } else {
+            if (!url.startsWith("http://") && !url.startsWith("https://")) url = "https://" + url;
+            prefs(c).edit().putString("addonScraperUrl", url).apply();
+        }
+    }
+
+    /** Cache duration for scraper results in minutes (default: 10). 0 = no cache. */
+    public static int addonCacheMinutes(Context c) {
+        return prefs(c).getInt("addonCacheMinutes", 10);
+    }
+
+    public static void setAddonCacheMinutes(Context c, int minutes) {
+        if (minutes < 0) minutes = 0;
+        if (minutes > 1440) minutes = 1440;
+        prefs(c).edit().putInt("addonCacheMinutes", minutes).apply();
+    }
+
+    /** Maximum streams to return per request (default: 30). */
+    public static int addonMaxStreams(Context c) {
+        return prefs(c).getInt("addonMaxStreams", 30);
+    }
+
+    public static void setAddonMaxStreams(Context c, int max) {
+        if (max < 1) max = 1;
+        if (max > 100) max = 100;
+        prefs(c).edit().putInt("addonMaxStreams", max).apply();
+    }
+
+    /** Timeout for metadata fetching in addonPlay (ms, default: 7000 — below the ~8 s player read timeout). */
+    public static int addonMetadataTimeoutMs(Context c) {
+        return prefs(c).getInt("addonMetadataTimeoutMs", 7000);
+    }
+
+    public static void setAddonMetadataTimeoutMs(Context c, int ms) {
+        if (ms < 5000) ms = 5000;
+        if (ms > 120000) ms = 120000;
+        prefs(c).edit().putInt("addonMetadataTimeoutMs", ms).apply();
+    }
 }

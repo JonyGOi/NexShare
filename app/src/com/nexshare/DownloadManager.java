@@ -42,6 +42,11 @@ public class DownloadManager {
         public boolean spacePaused;
         /** True when the torrent was added by the Nuvio/Stremio addon (do not auto-offload it). */
         public boolean fromAddon;
+        /**
+         * Held in metadata-only mode until the user (or the addon) chooses the files.
+         * Nothing is downloaded while this is true and selected is still null.
+         */
+        public boolean awaitingSelection;
         volatile boolean stop;
         Thread thread;
 
@@ -63,6 +68,7 @@ public class DownloadManager {
                     .put("eta", etaSeconds());
                 if (hash != null) o.put("hash", hash);
                 if (fromAddon) o.put("fromAddon", true);
+                if (awaitingSelection) o.put("awaitingSelection", true);
                 if (selected != null) {
                     JSONArray sel = new JSONArray();
                     for (int i : selected) sel.put(i);
@@ -515,6 +521,7 @@ public class DownloadManager {
                 t.created = o.optLong("created");
                 t.hash = o.has("hash") ? o.getString("hash") : null;
                 t.fromAddon = o.optBoolean("fromAddon", false);
+                t.awaitingSelection = o.optBoolean("awaitingSelection", false);
                 if (o.has("selected") && !o.isNull("selected")) {
                     JSONArray sel = o.optJSONArray("selected");
                     if (sel != null) {

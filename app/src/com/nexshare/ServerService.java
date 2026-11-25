@@ -21,6 +21,9 @@ import android.os.IBinder;
 import android.os.PowerManager;
 
 import java.net.Inet4Address;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Foreground service that keeps the HTTP/WebDAV server, mDNS responder and internet tunnel
@@ -53,6 +56,18 @@ public class ServerService extends Service {
     private NsdManager.RegistrationListener nsdListener;
     private ConnectivityManager connMgr;
     private ConnectivityManager.NetworkCallback networkCallback;
+
+    // Power management
+    private final ScheduledExecutorService powerScheduler = Executors.newSingleThreadScheduledExecutor(r -> {
+        Thread t = new Thread(r, "nexshare:power-mgr");
+        t.setDaemon(true);
+        return t;
+    });
+    private volatile boolean hasActiveTransfers = false;
+    private volatile boolean screenOff = false;
+    private volatile long lastEcoCheck = 0;
+    private static final long ECO_MODE_DELAY_MS = 60000; // Enter eco mode after 1 min idle
+    private static final long WAKE_LOCK_RELEASE_DELAY_MS = 300000; // Release wake locks after 5 min idle
 
     @Override
     public IBinder onBind(Intent intent) {
@@ -149,24 +164,18 @@ public class ServerService extends Service {
             TunnelManager.get(this).restoreIfEnabled();
             AutoUpdater.get(this).start();
 
-            // Acquire CPU wake lock so the server executes continuously with screen off
-            PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
-            if (pm != null) {
-                wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "nexshare:server");
-                wakeLock.setReferenceCounted(false);
-                wakeLock.acquire();
-            }
-
-            // Acquire Wi-Fi lock so Wi-Fi does not sleep or drop packets with screen off
-            // Using WIFI_MODE_FULL allows hardware 802.11 power saving when idle while keeping server reachable
+            // Initialize wake locks lazily - only acquire when there's actual activity
+            // Start with basic Wi-Fi lock (low power mode) to stay reachable
             WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
             if (wm != null) {
                 wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL, "nexshare:wifi");
                 wifiLock.setReferenceCounted(false);
                 wifiLock.acquire();
             }
+            // CPU wake lock will be acquired on first transfer via acquireWakeLocks()
 
             registerNetworkMonitoring();
+            startPowerScheduler();
 
             running = true;
             lastError = null;
@@ -221,6 +230,140 @@ public class ServerService extends Service {
             }
         } catch (Exception ignored) { }
         networkCallback = null;
+    }
+
+    // ---------- Power Management ----------
+
+    /** Called when a file transfer starts (HTTP, WebDAV, torrent download/upload, streaming). */
+    public static void onTransferStart() {
+        if (running) {
+            // Update activity time for eco mode detection
+            markActivity();
+        }
+    }
+
+    /** Called when a file transfer ends. */
+    public static void onTransferEnd() {
+        if (running) {
+            markActivity();
+        }
+    }
+
+    /** Checks if there are any active transfers (HTTP, torrent, streaming, WebDAV). */
+    private boolean checkActiveTransfers() {
+        // Check HTTP/WebDAV transfers
+        if (TransferTracker.getActiveCount() > 0) return true;
+
+        // Check torrent downloads/uploads
+        DownloadManager dm = DownloadManager.get(this);
+        for (DownloadManager.Task t : dm.getTorrentTasks()) {
+            if (t.speed > 0 || t.upSpeed > 0) return true;
+            if (t.priorityFile >= 0 && ("downloading".equals(t.status) || "seeding".equals(t.status))) return true;
+        }
+        return false;
+    }
+
+    /** Updates power state based on current activity. */
+    private void updatePowerState() {
+        boolean wasActive = hasActiveTransfers;
+        hasActiveTransfers = checkActiveTransfers();
+        long now = System.currentTimeMillis();
+
+        if (hasActiveTransfers) {
+            // Active transfers: ensure wake locks are held, exit eco mode
+            acquireWakeLocks();
+            lastEcoCheck = now;
+            screenOff = isScreenOff();
+        } else {
+            // No active transfers: check if we should enter eco mode
+            if (now - lastActivityTime > ECO_MODE_DELAY_MS) {
+                // We've been idle for a while - enter eco mode
+                enterEcoMode();
+            }
+        }
+
+        // If we just became idle after being active, schedule wake lock release
+        if (wasActive && !hasActiveTransfers) {
+            scheduleWakeLockRelease();
+        }
+    }
+
+    /** Enters eco mode: releases wake locks, reduces polling, etc. */
+    private void enterEcoMode() {
+        // Only release wake locks if we've been idle long enough AND screen is off
+        if (screenOff && (System.currentTimeMillis() - lastActivityTime) > WAKE_LOCK_RELEASE_DELAY_MS) {
+            releaseWakeLocks();
+        }
+        // mDNS and NSD can stay running - they're lightweight
+        // Network monitoring stays for auto-reconnect
+    }
+
+    /** Acquires wake locks for active operation. */
+    private void acquireWakeLocks() {
+        if (wakeLock == null || !wakeLock.isHeld()) {
+            PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+            if (pm != null) {
+                wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "nexshare:server");
+                wakeLock.setReferenceCounted(false);
+                wakeLock.acquire();
+            }
+        }
+        if (wifiLock == null || !wifiLock.isHeld()) {
+            WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+            if (wm != null) {
+                wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "nexshare:wifi");
+                wifiLock.setReferenceCounted(false);
+                wifiLock.acquire();
+            }
+        }
+    }
+
+    /** Releases wake locks to save power when idle. */
+    private void releaseWakeLocks() {
+        if (wakeLock != null && wakeLock.isHeld()) {
+            wakeLock.release();
+        }
+        if (wifiLock != null && wifiLock.isHeld()) {
+            wifiLock.release();
+        }
+        // Re-acquire with lower power mode if screen comes back on
+        if (wifiLock == null || !wifiLock.isHeld()) {
+            WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+            if (wm != null) {
+                wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL, "nexshare:wifi");
+                wifiLock.setReferenceCounted(false);
+                wifiLock.acquire();
+            }
+        }
+    }
+
+    /** Schedules wake lock release after a delay of inactivity. */
+    private void scheduleWakeLockRelease() {
+        powerScheduler.schedule(() -> {
+            if (!hasActiveTransfers && isScreenOff() && (System.currentTimeMillis() - lastActivityTime) > WAKE_LOCK_RELEASE_DELAY_MS) {
+                releaseWakeLocks();
+            }
+        }, WAKE_LOCK_RELEASE_DELAY_MS, TimeUnit.MILLISECONDS);
+    }
+
+    /** Checks if the screen is currently off. */
+    private boolean isScreenOff() {
+        PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+        if (pm == null) return false;
+        if (Build.VERSION.SDK_INT >= 20) {
+            return !pm.isInteractive();
+        } else {
+            return !pm.isScreenOn();
+        }
+    }
+
+    /** Starts the periodic power state checker. */
+    private void startPowerScheduler() {
+        powerScheduler.scheduleAtFixedRate(() -> {
+            try {
+                updatePowerState();
+            } catch (Exception ignored) { }
+        }, 10, 10, TimeUnit.SECONDS);
     }
 
     /** Whitelist app from battery optimizations (Doze mode) in Root edition, and optionally keep physical screen on. */
@@ -312,6 +455,7 @@ public class ServerService extends Service {
         } catch (Exception ignored) { }
         if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
         if (wifiLock != null && wifiLock.isHeld()) wifiLock.release();
+        powerScheduler.shutdown();
         super.onDestroy();
     }
 }

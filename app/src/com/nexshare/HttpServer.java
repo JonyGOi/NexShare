@@ -118,6 +118,13 @@ public class HttpServer {
             sb.append("HTTP/1.1 ").append(code).append(' ').append(statusText(code)).append("\r\n");
             sb.append("Server: NexShare\r\n");
             sb.append("Date: ").append(httpDate(System.currentTimeMillis())).append("\r\n");
+            // Keeps scanners/embedders from turning the app into a phishing-looking host and
+            // stops browsers from sniffing a text file as HTML/JS.
+            sb.append("X-Content-Type-Options: nosniff\r\n");
+            sb.append("Referrer-Policy: no-referrer\r\n");
+            sb.append("X-Frame-Options: SAMEORIGIN\r\n");
+            sb.append("Permissions-Policy: camera=(), microphone=(), geolocation=()\r\n");
+            sb.append("X-Robots-Tag: noindex, nofollow, noarchive\r\n");
             if (type != null) sb.append("Content-Type: ").append(type).append("\r\n");
             if (length >= 0) sb.append("Content-Length: ").append(length).append("\r\n");
             sb.append("Connection: ").append(keepAlive ? "keep-alive" : "close").append("\r\n");

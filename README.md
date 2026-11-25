@@ -136,11 +136,15 @@ NexShare **is** the addon: install it in Nuvio (or Stremio) and the phone resolv
 
 How it works: the addon asks [Torrentio](https://torrentio.strem.fun) for torrents (no debrid key
 needed) and turns every result into a link to `…/addon/<key>/play?h=<hash>&i=<file>`. Nothing is
-downloaded while you browse — the torrent is added **paused** only when you tap a stream, then the
-exact file (`fileIdx` from Torrentio, or the biggest video) is selected and served to the player
-with full `Range` support (seeking works while it downloads). Torrents created by the addon are
-flagged and skipped by the desktop app's auto-offload, so the file never disappears mid-movie.
-The **Testar addon** button (`/api/addon/test`) checks whether the phone can reach Torrentio.
+downloaded while you browse — the torrent is added in **metadata-only mode** when you tap a
+stream, then the exact file (`fileIdx` from Torrentio, or the biggest video) is selected and
+served to the player with full `Range` support (seeking works while it downloads). Until then
+every file is held at `IGNORE`; only the torrent metadata is fetched. Torrents created by the
+addon are flagged and skipped by the desktop app's auto-offload, so the file never disappears
+mid-movie. `/addon/<key>/error` answers JSON (not 404) when a player probes it after a failure,
+the manifest/stream endpoints send CORS headers, and the web UI is `noindex`, so search engines
+do not list the tunnel. The **Testar addon** button (`/api/addon/test`) checks whether the
+phone can reach Torrentio.
 
 ## Desktop app (Windows): NexShare Debrid
 
@@ -153,17 +157,20 @@ phone as a debrid server and **downloads straight to the PC** — no browser, no
   (Debrid Hub → *Usar no VLC / Stremio / Windows*), then **Conectar**.
 - Paste a magnet (or **Abrir .torrent...**) → the torrent appears with progress, speed and
   seeders. Select it to see the files.
-- As soon as the metadata arrives, a **"Escolher o que baixar"** window opens with the
-  torrent's folder tree (same tree the phone will create). Tick the folders/files you want,
-  use **Marcar tudo / Desmarcar tudo / Só vídeos**, then **Aplicar** — everything unticked is
-  ignored and never downloaded. Clear *Escolher arquivos antes de baixar* to skip this
-  window, and **Selecionar arquivos...** reopens it at any time (the file list shows
-  `ignorado (nao baixa)` in grey for what was left out).
+- As soon as the metadata arrives, **"Adicionar torrent - escolha os arquivos"** opens with
+  the torrent's folder tree (the same tree the phone will create). Tick what you want, use
+  **Marcar tudo / Desmarcar / Só vídeos / Vídeos + zips**, check the total size, then
+  **Baixar selecionados**. **Nothing is downloaded before that click**; **Cancelar** discards
+  the torrent ("Torrent descartado - nada foi baixado"). **Selecionar arquivos...** reopens
+  the picker later; the file list marks what was left out as `ignorado (nao baixa)`.
 - Select a file and **Baixar para o PC** (progress bar and cancel), **Copiar link** or
   **Abrir no VLC** (streams while the phone downloads).
 - **Remover** asks whether to delete the files from the phone too.
-- Downloads go to `%USERPROFILE%\Downloads\NexShare` by default (**Pasta...** changes it).
+- Downloads go to `%USERPROFILE%\Downloads\NexShare` by default (**Pasta...** changes the
+  default for the next torrents; the picker shows the folder this torrent will use).
   Settings live in `%APPDATA%\NexShareDebrid\config.json`.
+- **Unidade** runs `map-drive.ps1` with the connected server and API key: the phone storage
+  appears as a drive in Explorer without certificate, admin or registry changes.
 
 ### Transfer queue: phone → PC, then free the phone
 
@@ -266,34 +273,47 @@ using the built-in WebDAV server running at `http://<phone-ip>:8080/dav/`.
 
 ### 2. Configure Windows
 
-There are two ways to connect:
+Three ways, from easiest to most manual:
 
-#### Option A: RaiDrive (Recommended — No 4 GB limit, faster, visual interface)
-Windows' built-in WebDAV driver caps transfers at 4 GB. **RaiDrive** bypasses this limit completely and provides a much faster and more reliable network drive experience.
+#### Option A: `map-drive.ps1` + local bridge (recommended, no admin)
+The script starts `desktop/NexShareBridge.ps1`, a tiny local bridge. The bridge talks to the
+phone over HTTP (or HTTPS, accepting the self-signed certificate) and exposes plain HTTP on
+`127.0.0.1`; Windows mounts that local address and the bridge injects the **API key** on
+every request. Because Windows never sees a certificate or a remote Basic-auth challenge,
+this works without registry changes, without Administrator rights and without the
+`BasicAuthLevel` policy — the usual causes of **error 67**.
+
+```powershell
+.\map-drive.ps1 -PhoneIP 192.168.1.100 -Key <API key>       # home Wi-Fi, HTTP 8080
+.\map-drive.ps1 -Url https://<name>.trycloudflare.com -Key <API key>  # anywhere
+# the WebDAV PIN also works: -Pin 123456
+.\map-drive.ps1 -Unmount                                    # unmount and stop the bridge
+```
+
+It starts the WebClient service, picks a free drive letter, verifies the connection,
+falls back to a direct `net use` if the bridge cannot start, and explains the `net use`
+code when something fails. The API key/PIN is in the app: **Debrid Hub → Usar no VLC /
+Stremio / Windows**. Options: `-Drive E:`, `-NoProxy` (networks with a proxy),
+`-Direct` (skip the bridge), `-Verify` (validate the phone certificate).
+
+#### Option B: RaiDrive (no 4 GB limit, visual interface)
+Windows' built-in WebDAV driver caps single files at 4 GB. **RaiDrive** bypasses that limit
+and is faster for big libraries.
 
 1. Download and install [RaiDrive](https://www.raidrive.com/) (free).
 2. Open RaiDrive and click **Add** ➔ select **WebDAV** (under the NAS tab).
 3. Configure the connection:
    - **Drive**: choose a drive letter (e.g. `Z:`)
-   - **Address**: `http://` (uncheck HTTPS), enter phone IP (e.g. `192.168.1.100`), Port `8080`, Path `/dav/`
+   - **Address**: `http://` (uncheck HTTPS), phone IP (e.g. `192.168.1.100`), Port `8080`, Path `/dav/`
    - **Account**: `nexshare`
-   - **Password**: your 6-digit PIN
+   - **Password**: your API key (or the 6-digit PIN)
 4. Click **Connect**. Your phone's storage will mount as a full network drive with **no file size limit**.
 
-#### Option B: Windows Native Client (`net use` / File Explorer)
-If you prefer not to install third-party software, you can use the built-in Windows WebClient (subject to the 4 GB file size limit).
+#### Option C: Windows native client, direct (`net use` / Explorer)
+Use this only when you cannot run the bridge. Windows' built-in WebClient has a 4 GB
+per-file limit.
 
-1. **Automated Setup:**
-   Run `map-drive.ps1` in PowerShell as Administrator:
-   ```powershell
-   .\map-drive.ps1 -PhoneIP 192.168.1.100 -Pin 123456 -Drive Z:
-   # or through the tunnel:
-   .\map-drive.ps1 -Url https://<name>.trycloudflare.com/dav/ -Pin 123456
-   ```
-   The script checks connectivity first, auto-picks a free drive letter and explains the
-   `net use` error code if mapping fails.
-
-2. **Manual Setup:**
+1. **Manual Setup:**
    - Double-click `windows-webdav.reg` to set `BasicAuthLevel = 2` and `FileSizeLimitInBytes = 0xffffffff`.
    - Restart the WebClient service (PowerShell as Admin):
      ```powershell
@@ -314,27 +334,31 @@ You can also access the drive directly from Windows File Explorer or the Run dia
 
 ### 4. Windows says "network name cannot be found" (error 67)
 
-Error 67 from `net use` means Windows never got a usable WebDAV answer. In practice it is
-one of these, and the fixes are in order of reliability:
+Error 67 from `net use` means Windows never got a usable WebDAV answer. **Run
+`map-drive.ps1` first** — its local bridge removes the three most common causes at once
+(certificate, Basic-over-HTTP policy and proxy). If you still want the direct route:
 
 | Cause | Fix |
 |---|---|
-| The network blocks peer-to-peer traffic or port 8080 | Use the public HTTPS tunnel URL (works on port 443) |
-| Windows refuses Basic auth over plain HTTP (default policy, no admin rights) | Use the HTTPS URL — Basic over TLS is allowed by default |
-| Windows does not trust the phone's self-signed certificate | Use the tunnel URL (public CA certificate) instead of `https://<ip>:8443` |
+| Windows does not trust the phone's self-signed certificate | Use the bridge (default) or the public tunnel URL, whose certificate is from a public CA |
+| Windows refuses Basic auth over plain HTTP (`BasicAuthLevel`, default policy) | Use the bridge (localhost, no auth challenge) or HTTPS |
+| The network blocks peer-to-peer traffic or port 8080 | Use the public HTTPS tunnel URL (port 443) |
+| Corporate proxy intercepts the request | `map-drive.ps1 ... -NoProxy` (the bridge then connects directly) |
 | Stale credentials for the host | `net use * /delete /y` and retry |
-| WebClient service stopped | `Start-Service WebClient` (or run `map-drive.ps1` as admin) |
+| WebClient service stopped | `Start-Service WebClient` (the script does this for you) |
 
-With a tunnel running, the whole thing becomes one command — no registry, no admin:
+With a tunnel running, the whole thing becomes one command:
 
 ```powershell
-.\map-drive.ps1 -Url https://<name>.trycloudflare.com/dav/ -Pin 123456
-# or manually:
-net use Z: https://<name>.trycloudflare.com/dav/ /user:nexshare 123456 /persistent:no
+.\map-drive.ps1 -Url https://<name>.trycloudflare.com -Key <API key>
+# direct, no bridge (may need the registry/BasicAuthLevel):
+net use Z: https://<name>.trycloudflare.com/dav/ /user:nexshare <API key> /persistent:no
 ```
 
 The Control Panel and the Android app show this public WebDAV URL (tap to copy) whenever
-WebDAV and Remote Access are both on.
+WebDAV and Remote Access are both on. The API key is accepted as the WebDAV password
+(in addition to the PIN), so the same key works in VLC, Stremio/Nuvio, the desktop app and
+the network drive.
 
 ## Known limitations
 

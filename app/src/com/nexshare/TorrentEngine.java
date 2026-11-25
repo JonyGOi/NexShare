@@ -49,14 +49,21 @@ public class TorrentEngine {
                 t.hash = p.getInfoHashes().getBest().toHex();
                 String dn = p.getName();
                 if (dn != null && !dn.isEmpty()) t.name = dn;
-                session.download(magnet, dir, new torrent_flags_t());
+                // Metadata only by default: no payload is fetched before the file selection is
+                // applied (applyPriority() turns the files back on). This is what lets the
+                // qBittorrent-style picker work with magnets, where metadata arrives over the
+                // network only while the torrent is running.
+                session.download(magnet, dir, metadataFlags());
             } else {
                 TorrentInfo ti = new TorrentInfo(torrentFile);
                 t.hash = ti.infoHash().toHex();
                 t.name = ti.name();
                 t.total = ti.totalSize();
                 write(new File(torrentDir, t.hash + ".torrent"), torrentFile);
-                session.download(ti, dir);
+                // Start held for a moment: refresh()/applyPriority() releases the payload as
+                // soon as the picker decision is known, so a paused add cannot sneak bytes in
+                // between session.download() and the pause.
+                session.download(ti, dir, null, null, null, metadataFlags());
             }
         } catch (IOException e) {
             throw e;
@@ -72,8 +79,15 @@ public class TorrentEngine {
             try {
                 File f = new File(torrentDir, t.hash + ".torrent");
                 File dir = new File(t.dest);
-                if (f.exists()) session.download(new TorrentInfo(f), dir);
-                else if (t.url.startsWith("magnet:")) session.download(t.url, dir, new torrent_flags_t());
+                // A torrent waiting for the user's file selection must not start fetching
+                // payload after a restart either; metadata-only until the picker confirms.
+                boolean hold = t.awaitingSelection && t.selected == null;
+                if (f.exists()) {
+                    if (hold) session.download(new TorrentInfo(f), dir, null, null, null, metadataFlags());
+                    else session.download(new TorrentInfo(f), dir);
+                } else if (t.url.startsWith("magnet:")) {
+                    session.download(t.url, dir, metadataFlags());
+                }
                 TorrentHandle h = handle(t);
                 if (h != null && h.isValid()) {
                     if (t.status.equals("paused") || t.status.equals("done")) {
@@ -193,9 +207,10 @@ public class TorrentEngine {
             }
             try {
                 TorrentStatus s = h.status();
+                boolean choose = t.awaitingSelection && t.selected == null;
                 if (s.hasMetadata()) {
                     t.name = s.name();
-                    t.total = s.totalWanted();
+                    t.total = choose ? s.total() : s.totalWanted();
                     // Selection/streaming priorities requested before metadata arrived are applied now.
                     if (!t.selectionApplied || !t.prioApplied) applyPriority(t);
                 }
@@ -207,6 +222,12 @@ public class TorrentEngine {
                 if (s.errorCode() != null && s.errorCode().isError()) {
                     t.status = "error";
                     t.error = s.errorCode().getMessage();
+                    continue;
+                }
+                if (choose) {
+                    // Held for the file picker: metadata is there, payload is not downloaded.
+                    t.status = s.hasMetadata() ? "choose" : "metadata";
+                    t.speed = t.upSpeed = 0;
                     continue;
                 }
                 if (t.status.equals("paused") || t.status.equals("done")) {
@@ -295,6 +316,7 @@ public class TorrentEngine {
             java.util.Arrays.sort(copy);
             t.selected = copy;
         }
+        t.awaitingSelection = false;
         t.selectionApplied = false;
         t.prioApplied = false;
         applyPriority(t);
@@ -332,6 +354,21 @@ public class TorrentEngine {
             FileStorage fs = ti.files();
             int n = fs.numFiles();
             boolean[] want = wantedMask(t, n);
+
+            if (t.awaitingSelection && t.selected == null) {
+                // Picker/addon has not decided yet: keep every file ignored so metadata can be
+                // fetched without downloading a single byte of payload.
+                h.unsetFlags(TorrentFlags.SEQUENTIAL_DOWNLOAD);
+                Priority[] none = new Priority[n];
+                for (int i = 0; i < n; i++) none[i] = Priority.IGNORE;
+                h.prioritizeFiles(none);
+                t.prioApplied = true;
+                t.selectionApplied = true;
+                t.total = ti.totalSize();
+                return;
+            }
+            // The selection is known now: allow payload downloads again.
+            h.unsetFlags(TorrentFlags.DEFAULT_DONT_DOWNLOAD);
 
             int stream = t.priorityFile;
             if (stream == AUTO_STREAM || (want != null && stream >= 0 && stream < n && !want[stream])) {
@@ -477,6 +514,11 @@ public class TorrentEngine {
         try {
             session.stop();
         } catch (Throwable ignored) { }
+    }
+
+    /** Flags used when a magnet is added: metadata is fetched, payload is not. */
+    private static torrent_flags_t metadataFlags() {
+        return new torrent_flags_t().or_(TorrentFlags.DEFAULT_DONT_DOWNLOAD);
     }
 
     private void pauseHandle(TorrentHandle h) {

@@ -63,6 +63,24 @@ function Format-Rate([double]$bytes) {
     return (Format-Size $bytes) + '/s'
 }
 
+function Format-TorrentStatus($t) {
+    # Real-Debrid style statuses come from /rest/1.0; show something friendlier.
+    switch ([string]$t.status) {
+        'waiting_files_selection' { return 'escolher arquivos' }
+        'metadata' { return 'buscando metadados' }
+        'choose' { return 'escolher arquivos' }
+        'downloaded' { return 'concluido' }
+        'downloading' {
+            if ([double]$t.progress -ge 100) { return 'concluido' }
+            if ([double]$t.speed -le 0) { return 'aguardando' }
+            return 'baixando'
+        }
+        'paused' { return 'pausado' }
+        'error' { return 'erro' }
+        default { return [string]$t.status }
+    }
+}
+
 # ---------------------------------------------------------------- API
 
 function Api {
@@ -216,6 +234,27 @@ $btnChooseDir.Location = New-Object System.Drawing.Point(890, 54)
 $btnChooseDir.Size = New-Object System.Drawing.Size(80, 27)
 $btnChooseDir.FlatStyle = 'Flat'
 $top.Controls.Add($btnChooseDir)
+
+$btnMount = New-Object System.Windows.Forms.Button
+$btnMount.Text = 'Unidade'
+$btnMount.Location = New-Object System.Drawing.Point(974, 54)
+$btnMount.Size = New-Object System.Drawing.Size(66, 27)
+$btnMount.FlatStyle = 'Flat'
+$btnMount.Add_Click({
+        if (-not $script:Cfg.key) { Set-Status 'Conecte-se primeiro para montar a unidade' 'error'; return }
+        $map = Join-Path $PSScriptRoot '..\map-drive.ps1'
+        if (-not (Test-Path $map)) { Set-Status 'map-drive.ps1 nao encontrado ao lado da pasta desktop' 'error'; return }
+        try {
+            $map = (Resolve-Path $map).Path
+            $args = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $map + '"'),
+                      '-Url', ('"' + $script:Cfg.url + '"'), '-Key', ('"' + $script:Cfg.key + '"'), '-Drive', 'Z:')
+            Start-Process powershell.exe -ArgumentList ($args -join ' ')
+            Set-Status 'Siga a janela do mapeamento - a unidade abre no Explorer' 'ok'
+        } catch {
+            Set-Status "Falha ao abrir o mapeamento: $($_.Exception.Message)" 'error'
+        }
+    })
+$top.Controls.Add($btnMount)
 
 $lblDownloadDir = New-Object System.Windows.Forms.Label
 $lblDownloadDir.AutoSize = $true
@@ -416,7 +455,7 @@ function Refresh-Torrents {
         foreach ($t in $list) {
             $pct = 0
             if ($t.bytes -gt 0) { $pct = [math]::Round([double]$t.progress, 0) }
-            $idx = $dg.Rows.Add($t.filename, (Format-Size $t.bytes), ("{0}%" -f $pct), (Format-Rate $t.speed), $t.seeders, $t.status)
+            $idx = $dg.Rows.Add($t.filename, (Format-Size $t.bytes), ("{0}%" -f $pct), (Format-Rate $t.speed), $t.seeders, (Format-TorrentStatus $t))
             $dg.Rows[$idx].Tag = $t
         }
         if ($keepId) { Select-TorrentId $keepId }
@@ -517,7 +556,7 @@ function Show-FilePicker([string]$torrentId) {
         }
 
         $pf = New-Object System.Windows.Forms.Form
-        $pf.Text = 'Escolher o que baixar'
+        $pf.Text = if ($script:NeedsStart -and [string]$script:NeedsStart -eq [string]$torrentId) { 'Adicionar torrent - escolha os arquivos' } else { 'Escolher o que baixar' }
         $pf.Size = New-Object System.Drawing.Size(800, 620)
         $pf.MinimumSize = New-Object System.Drawing.Size(560, 400)
         $pf.StartPosition = 'CenterParent'
@@ -525,7 +564,7 @@ function Show-FilePicker([string]$torrentId) {
         $pf.Font = New-Object System.Drawing.Font('Segoe UI', 9)
 
         $hint = New-Object System.Windows.Forms.Label
-        $hint.Text = 'Marque as pastas/arquivos que voce quer baixar. O resto e ignorado (nao gasta dados nem espaco).'
+        $hint.Text = 'Marque o que voce quer baixar. Nada foi baixado ainda: o download so comeca ao confirmar.'
         $hint.Dock = 'Top'
         $hint.Height = 28
         $hint.Padding = New-Object System.Windows.Forms.Padding(8, 7, 8, 0)
@@ -540,20 +579,29 @@ function Show-FilePicker([string]$torrentId) {
         $lblSave.Location = New-Object System.Drawing.Point(8, 9)
         $savePanel.Controls.Add($lblSave)
         $txtSave = New-Object System.Windows.Forms.TextBox
-        $txtSave.Text = [string]$script:Cfg.downloadDir
+        # The folder is decided when the torrent is added; show it here and let the
+        # button change the default used by the next torrents (qBittorrent style).
+        $txtSave.Text = if ($info.dest) { [string]$info.dest } else { [string]$script:Cfg.downloadDir }
         $txtSave.Location = New-Object System.Drawing.Point(78, 6)
-        $txtSave.Size = New-Object System.Drawing.Size(([Math]::Max(200, $pf.ClientSize.Width - 190)), 23)
+        $txtSave.Size = New-Object System.Drawing.Size(([Math]::Max(180, $pf.ClientSize.Width - 240)), 23)
+        $txtSave.ReadOnly = $true
+        $txtSave.BackColor = [System.Drawing.Color]::White
         $txtSave.Anchor = 'Top,Left,Right'
         $savePanel.Controls.Add($txtSave)
         $btnSavePick = New-Object System.Windows.Forms.Button
-        $btnSavePick.Text = '...'
-        $btnSavePick.Size = New-Object System.Drawing.Size(28, 23)
-        $btnSavePick.Location = New-Object System.Drawing.Point(($pf.ClientSize.Width - 108), 5)
+        $btnSavePick.Text = 'Padrao...'
+        $btnSavePick.Size = New-Object System.Drawing.Size(76, 23)
+        $btnSavePick.Location = New-Object System.Drawing.Point(([Math]::Max(300, $pf.ClientSize.Width - 160)), 5)
         $btnSavePick.Anchor = 'Top,Right'
         $btnSavePick.Add_Click({
                 $fbd = New-Object System.Windows.Forms.FolderBrowserDialog
-                $fbd.SelectedPath = $txtSave.Text
-                if ($fbd.ShowDialog($pf) -eq 'OK') { $txtSave.Text = $fbd.SelectedPath }
+                $fbd.SelectedPath = $script:Cfg.downloadDir
+                if ($fbd.ShowDialog($pf) -eq 'OK') {
+                    $script:Cfg.downloadDir = $fbd.SelectedPath
+                    $lblDownloadDir.Text = 'Baixar em: ' + $script:Cfg.downloadDir
+                    Save-Config
+                    Set-Status 'Pasta padrao salva - vale para os proximos torrents' 'ok'
+                }
             })
         $savePanel.Controls.Add($btnSavePick)
 
@@ -637,7 +685,7 @@ function Show-FilePicker([string]$torrentId) {
         $pCount.ForeColor = [System.Drawing.Color]::FromArgb(110, 120, 135)
         $pbar.Controls.Add($pCount)
 
-        $pOk = New-PickButton 'Aplicar' $null
+        $pOk = New-PickButton 'Baixar selecionados' $null
         $pOk.DialogResult = 'OK'
         $pOk.BackColor = [System.Drawing.Color]::FromArgb(30, 111, 217)
         $pOk.ForeColor = [System.Drawing.Color]::White
@@ -743,14 +791,6 @@ function Show-FilePicker([string]$torrentId) {
         $answer = $pf.ShowDialog()
         if ($answer -eq 'OK') {
             $ids = @(Get-CheckedIds $tv.Nodes)
-            $sd = $txtSave.Text.Trim()
-            if ($sd -and $sd -ne $script:Cfg.downloadDir) {
-                try {
-                    if (-not (Test-Path -LiteralPath $sd)) { [void][System.IO.Directory]::CreateDirectory($sd) }
-                    $script:Cfg.downloadDir = $sd
-                    Save-Config
-                } catch { }
-            }
             Apply-Selection $torrentId $ids $files.Count
             if ($script:NeedsStart -and [string]$script:NeedsStart -eq [string]$torrentId) {
                 try { Api -Method 'POST' -Path ("torrents/resume/" + $torrentId) | Out-Null } catch { }
@@ -761,13 +801,51 @@ function Show-FilePicker([string]$torrentId) {
             Refresh-Torrents
             if ($script:Current -and [string]$script:Current.id -eq $torrentId) { Load-Files $script:Current }
         } else {
-            $pn = if ($script:NeedsStart) { ' - torrent pausado: escolha os arquivos e Aplicar para comecar' } else { '' }
-            Set-Status ('Selecao mantida como estava' + $pn)
+            if ($script:NeedsStart -and [string]$script:NeedsStart -eq [string]$torrentId) {
+                # Cancelled the "add torrent" dialog: discard the held torrent so it does not
+                # sit forever in the list downloading nothing.
+                try { Api -Method 'POST' -Path ("torrents/delete/" + $torrentId) | Out-Null } catch { }
+                $script:NeedsStart = $null
+                $script:SelectId = $null
+                Set-Status 'Torrent descartado - nada foi baixado' 'ok'
+                Refresh-Torrents
+            } else {
+                Set-Status 'Selecao mantida como estava'
+            }
         }
     } catch {
         Set-Status "Falha ao escolher arquivos: $($_.Exception.Message)" 'error'
     } finally {
         $script:Picking = $false
+    }
+}
+
+function Wait-TorrentFiles([string]$id, [int]$timeoutMs = 20000) {
+    # Keeps the window responsive while the phone fetches the metadata from the swarm.
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($timeoutMs)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        try {
+            $info = Api -Path ("torrents/info/" + $id)
+            $files = @($info.files)
+            if ($files.Count -gt 0) { return , $files }
+        } catch { }
+        [System.Windows.Forms.Application]::DoEvents()
+        Start-Sleep -Milliseconds 400
+    }
+    return , @()
+}
+
+function Open-Picker-WhenReady([string]$id, [int]$timeoutMs) {
+    Set-Status 'Buscando metadados... a lista de arquivos abre sozinha' 'busy'
+    $files = Wait-TorrentFiles $id $timeoutMs
+    Refresh-Torrents
+    if ($files.Count -gt 0) {
+        $script:PendingSelect = $null
+        $script:SelectId = $id
+        Show-FilePicker $id
+    } else {
+        $script:PendingSelect = $id
+        Set-Status 'Metadados ainda nao chegaram (depende de seeders) - a lista abre quando chegarem' 'error'
     }
 }
 
@@ -777,14 +855,12 @@ function Add-Magnet([string]$magnet) {
     try {
         Set-Status 'Adicionando torrent...'
         $body = 'magnet=' + [uri]::EscapeDataString($magnet)
-        $r = Api -Method 'POST' -Path 'torrents/addMagnet' -Body $body -ContentType 'application/x-www-form-urlencoded' -Query @{ paused = '1' }
+        $r = Api -Method 'POST' -Path 'torrents/addMagnet' -Body $body -ContentType 'application/x-www-form-urlencoded' -Query @{ paused = '1'; dest = $script:Cfg.downloadDir }
         $txtMagnet.Text = ''
         $script:SelectId = [string]$r.id
-        $script:PendingSelect = [string]$r.id
         $script:NeedsStart = [string]$r.id
-        Set-Status "Torrent adicionado - buscando metadados para voce escolher os arquivos" 'ok'
-        Start-Sleep -Milliseconds 700
-        Refresh-Torrents
+        $script:PendingSelect = $null
+        Open-Picker-WhenReady ([string]$r.id) 20000
     } catch {
         Set-Status "Falha ao adicionar: $($_.Exception.Message)" 'error'
     }
@@ -1561,13 +1637,11 @@ $btnTorrentFile.Add_Click({
             try {
                 $bytes = [System.IO.File]::ReadAllBytes($ofd.FileName)
                 Set-Status 'Enviando .torrent...'
-                $r = Api -Method 'POST' -Path 'torrents/addTorrent' -Body $bytes -ContentType 'application/x-bittorrent' -Query @{ paused = '1' }
+                $r = Api -Method 'POST' -Path 'torrents/addTorrent' -Body $bytes -ContentType 'application/x-bittorrent' -Query @{ paused = '1'; dest = $script:Cfg.downloadDir }
                 $script:SelectId = [string]$r.id
-                $script:PendingSelect = [string]$r.id
+                $script:PendingSelect = $null
                 $script:NeedsStart = [string]$r.id
-                Set-Status 'Torrent enviado - buscando metadados para voce escolher os arquivos' 'ok'
-                Start-Sleep -Milliseconds 700
-                Refresh-Torrents
+                Open-Picker-WhenReady ([string]$r.id) 6000
             } catch {
                 Set-Status "Falha ao enviar .torrent: $($_.Exception.Message)" 'error'
             }
@@ -1611,7 +1685,7 @@ $form.Add_FormClosing({
     })
 
 $timerTorrents = New-Object System.Windows.Forms.Timer
-$timerTorrents.Interval = 3000
+$timerTorrents.Interval = 1000
 $timerTorrents.Add_Tick({
       try {
         if (-not $form.Visible) { return }
