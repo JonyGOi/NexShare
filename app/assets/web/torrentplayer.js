@@ -2,7 +2,8 @@
 function TorrentPlayer(body, win) {
   const st = {
     tasks: [], id: null, data: null, loading: false, timer: null, busy: false,
-    playing: null, videoEl: null, playError: '', showAll: false, destroyed: false, autoPicked: false
+    playing: null, videoEl: null, playError: '', showAll: false, destroyed: false, autoPicked: false,
+    ephemeral: false, discarding: false
   };
   const pane = el('div', { class: 'pane tp-pane' });
   body.append(pane);
@@ -18,7 +19,7 @@ function TorrentPlayer(body, win) {
   });
   const addBtn = el('button', { class: 'btn primary', onclick: () => addMagnet() }, icon('play'), ' Abrir torrent');
   const uploadBtn = el('button', { class: 'btn', onclick: () => fileInput.click() }, icon('download'), ' Arquivo .torrent');
-  const addStatus = el('div', { class: 'hint tp-add-status', text: 'O vídeo começa assim que os primeiros pedaços chegam — não precisa baixar o torrent inteiro.' });
+  const addStatus = el('div', { class: 'hint tp-add-status', text: 'Nada fica salvo: o torrent baixa só enquanto você assiste. Ao parar ou fechar, os arquivos temporários são apagados.' });
   const tasksBox = el('div', { class: 'tp-tasks' });
   const detail = el('div', { class: 'tp-detail' });
 
@@ -27,14 +28,14 @@ function TorrentPlayer(body, win) {
       el('div', { class: 'tp-add-head' },
         el('div', null,
           el('h3', { style: { margin: '0 0 4px' }, text: 'Torrent Player' }),
-          el('div', { class: 'hint', text: 'Assista enquanto baixa. Para MKV, HEVC, AVI e outros formatos use também “Abrir no VLC”.' })),
+          el('div', { class: 'hint', text: 'Sessão temporária: o vídeo baixa enquanto assiste e é apagado ao parar. Para MKV, HEVC, AVI e outros formatos use “Abrir no VLC”.' })),
         el('span', { class: 'tp-live', text: 'streaming' })),
       input,
       el('div', { class: 'tp-add-row' }, addBtn, uploadBtn, fileInput, addStatus)),
     el('div', { class: 'tp-body' },
       el('div', { class: 'card tp-side' },
         el('div', { class: 'tp-side-head' },
-          el('span', { text: 'Na biblioteca' }),
+          el('span', { text: 'Nesta sessão' }),
           el('span', { class: 'hint', id: 'tp-count', text: '0' })),
         tasksBox),
       el('div', { class: 'card tp-main' }, detail))
@@ -95,13 +96,13 @@ function TorrentPlayer(body, win) {
     const count = document.getElementById('tp-count');
     if (count) count.textContent = String(st.tasks.length);
     if (!st.tasks.length) {
-      tasksBox.append(el('div', { class: 'tp-empty', text: 'Nenhum torrent ainda. Cole um magnet acima para começar.' }));
+      tasksBox.append(el('div', { class: 'tp-empty', text: 'Nenhum vídeo aberto. Cole um magnet acima; nada fica salvo depois.' }));
       return;
     }
     for (const t of st.tasks.slice(0, 100)) {
       const row = el('button', {
         class: 'tp-task' + (t.id === st.id ? ' active' : ''),
-        onclick: () => selectTask(t.id)
+        onclick: () => selectTask(t.id, t.ephemeral)
       },
         el('div', { class: 'tp-task-top' },
           el('span', { class: 'tp-task-name', text: t.name || 'Torrent' }),
@@ -123,15 +124,56 @@ function TorrentPlayer(body, win) {
     st.playError = '';
   }
 
-  async function refreshTasks() {
+  /** Deletes the current temporary torrent immediately (used by stop/close/page unload). */
+  function discardBeacon(id) {
+    if (!id) return;
     try {
-      const r = await api('dl/list');
+      navigator.sendBeacon('/api/dl/remove?id=' + encodeURIComponent(id) + '&files=1');
+    } catch (e) { /* ignore */ }
+  }
+
+  /**
+   * Stops the video and, for a Torrent Player session, removes the task and all temporary
+   * files. A torrent borrowed from Torrent Downloader is never deleted here.
+   */
+  async function discardCurrent(quiet) {
+    if (st.discarding) return;
+    const id = st.id;
+    const ephemeral = !!st.ephemeral;
+    st.discarding = true;
+    stopPlayback();
+    st.id = null;
+    st.data = null;
+    st.ephemeral = false;
+    st.showAll = false;
+    if (id) st.tasks = st.tasks.filter(t => t.id !== id);
+    renderTasks();
+    renderDetail();
+    if (id && ephemeral) {
+      try { await api('dl/remove', { id, files: 1 }, { method: 'POST' }); } catch (e) { /* already gone */ }
+    }
+    st.discarding = false;
+    if (!quiet) setAddStatus('Sessão encerrada. Torrent e arquivos temporários apagados.', false);
+  }
+
+  async function refreshTasks() {
+    if (st.discarding) return;
+    try {
+      const r = await api('dl/list', { ephemeral: 1 });
       if (st.destroyed) return;
-      st.tasks = (r.tasks || []).filter(t => t && t.type === 'torrent');
+      // Only live player sessions belong here. Torrents from Torrent Downloader stay in
+      // their own app and are never copied into this temporary list.
+      st.tasks = (r.tasks || []).filter(t => t && t.type === 'torrent' && t.ephemeral);
       renderTasks();
+      if (st.id && st.ephemeral && !st.tasks.some(t => t.id === st.id)) {
+        st.id = null;
+        st.data = null;
+        stopPlayback();
+        renderDetail();
+      }
       if (!st.id && !st.autoPicked && st.tasks.length) {
         st.autoPicked = true;
-        await selectTask(st.tasks[0].id);
+        await selectTask(st.tasks[0].id, true);
         return;
       }
       if (st.id) await loadTask(st.id);
@@ -147,6 +189,7 @@ function TorrentPlayer(body, win) {
       const d = await api('debrid/files', { id });
       if (st.destroyed || st.id !== id) return;
       st.data = d;
+      st.ephemeral = !!(d.task && d.task.ephemeral);
       if (st.playing) updatePlayingStats();
       else renderDetail();
     } catch (e) {
@@ -158,10 +201,13 @@ function TorrentPlayer(body, win) {
     }
   }
 
-  async function selectTask(id) {
+  async function selectTask(id, ephemeral) {
+    if (st.discarding) return;
+    if (st.id && st.id !== id) await discardCurrent(true);
     stopPlayback();
     st.id = id;
     st.data = null;
+    st.ephemeral = !!ephemeral;
     st.showAll = false;
     renderTasks();
     renderDetail();
@@ -183,7 +229,7 @@ function TorrentPlayer(body, win) {
       el('div', { class: 'tp-warn-actions' },
         el('button', { class: 'btn primary', onclick: () => openExternal(f) }, icon('play'), ' Abrir no VLC do celular'),
         el('button', { class: 'btn', onclick: () => copyLink(f) }, icon('link'), ' Copiar link'),
-        el('a', { class: 'btn', href: f.streamUrl + (f.streamUrl.indexOf('?') >= 0 ? '&' : '?') + 'dl=1', download: '' }, icon('download'), ' Baixar arquivo')),
+        el('a', { class: 'btn', href: f.streamUrl + (f.streamUrl.indexOf('?') >= 0 ? '&' : '?') + 'attach=1', download: '' }, icon('download'), ' Baixar arquivo')),
       el('div', { class: 'hint', text: 'O VLC recebe o mesmo stream local e baixa os pedaços sob demanda; o torrent não precisa terminar antes.' }));
   }
 
@@ -193,8 +239,8 @@ function TorrentPlayer(body, win) {
     if (!st.id) {
       detail.append(el('div', { class: 'tp-empty' },
         el('div', { class: 'tp-empty-ico' }, icon('play')),
-        el('h3', { text: 'Escolha um torrent para assistir' }),
-        el('p', { class: 'hint', text: 'Cole um magnet ou envie um .torrent. A lista de vídeos aparece assim que os metadados chegarem.' })));
+        el('h3', { text: 'Escolha um vídeo para assistir' }),
+        el('p', { class: 'hint', text: 'Cole um magnet ou envie um .torrent. Nada baixa antes de você clicar em Assistir e nada fica salvo ao parar.' })));
       return;
     }
     if (!t) {
@@ -233,13 +279,16 @@ function TorrentPlayer(body, win) {
                   renderDetail();
                 }
               });
+              v.addEventListener('ended', () => {
+                if (st.videoEl === v) discardCurrent(true);
+              });
               setTimeout(() => { if (st.videoEl === v) v.play().catch(() => { /* autoplay blocked */ }); }, 80);
               return v;
             })(),
             el('div', { class: 'tp-player-bar' },
               el('span', { id: 'tp-playing-stat', class: 'hint', text: statusLabel(t) + ' · ' + fmtSize(t.done) + ' / ' + fmtSize(t.total) }),
               el('span', { class: 'tp-player-acts' },
-                el('button', { class: 'btn', onclick: () => stopPlayback() || renderDetail() }, 'Parar'),
+                el('button', { class: 'btn', onclick: () => discardCurrent(false) }, 'Parar e apagar'),
                 el('button', { class: 'btn', onclick: () => openExternal(st.playing.file) }, 'Abrir no VLC'),
                 el('button', { class: 'btn', onclick: () => copyLink(st.playing.file) }, 'Copiar link')))))] : []),
       el('div', { class: 'tp-files-head' },
@@ -265,10 +314,12 @@ function TorrentPlayer(body, win) {
 
   async function playFile(f) {
     if (!f || !f.streamUrl) return toast('Link de stream indisponível para este arquivo.');
+    const id = st.id;
     stopPlayback();
     try {
-      await api('debrid/prioritize', null, { method: 'POST', body: JSON.stringify({ id: st.id, fileIndex: f.id }) });
-      st.playing = { task: st.id, index: f.id, file: f };
+      await api('debrid/prioritize', null, { method: 'POST', body: JSON.stringify({ id, fileIndex: f.id, confirm: true }) });
+      if (st.destroyed || st.id !== id) return;
+      st.playing = { task: id, index: f.id, file: f };
       st.playError = '';
       setAddStatus('Reproduzindo enquanto baixa. O player busca os pedaços conforme você assiste.', false);
       renderDetail();
@@ -300,13 +351,15 @@ function TorrentPlayer(body, win) {
     addBtn.disabled = true;
     setAddStatus('Buscando metadados e lista de arquivos…', false);
     try {
-      const r = await api('dl/add', null, { method: 'POST', body: JSON.stringify({ urls: url, paused: true }) });
+      await discardCurrent(true);
+      const r = await api('dl/add', null, { method: 'POST', body: JSON.stringify({ urls: url, paused: true, ephemeral: true }) });
       const id = r.ids && r.ids[0];
       if (!id) throw new Error('o servidor não retornou a tarefa');
       input.value = '';
       st.autoPicked = true;
       await refreshTasks();
-      await selectTask(id);
+      const known = st.tasks.some(t => t.id === id);
+      await selectTask(id, known);
       setAddStatus('Lista pronta. Clique em Assistir para começar a baixar e tocar.');
     } catch (e) {
       setAddStatus('Falha ao adicionar o magnet: ' + e.message, true);
@@ -323,14 +376,16 @@ function TorrentPlayer(body, win) {
     uploadBtn.disabled = true;
     setAddStatus('Enviando o .torrent e buscando metadados…', false);
     try {
-      const r = await fetch('/api/dl/torrent?paused=1', { method: 'POST', body: f, credentials: 'same-origin' });
+      await discardCurrent(true);
+      const r = await fetch('/api/dl/torrent?paused=1&ephemeral=1', { method: 'POST', body: f, credentials: 'same-origin' });
       const j = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
       const id = j.ids && j.ids[0];
       if (!id) throw new Error('o servidor não retornou a tarefa');
       st.autoPicked = true;
       await refreshTasks();
-      await selectTask(id);
+      const known = st.tasks.some(t => t.id === id);
+      await selectTask(id, known);
       setAddStatus('Lista pronta. Clique em Assistir para começar a baixar e tocar.');
     } catch (e) {
       setAddStatus('Falha ao enviar o .torrent: ' + e.message, true);
@@ -340,6 +395,9 @@ function TorrentPlayer(body, win) {
       fileInput.value = '';
     }
   }
+
+  const onUnload = () => { if (st.id && st.ephemeral) discardBeacon(st.id); };
+  window.addEventListener('beforeunload', onUnload);
 
   win.setTitle('Torrent Player');
   renderTasks();
@@ -354,8 +412,11 @@ function TorrentPlayer(body, win) {
     destroy() {
       st.destroyed = true;
       clearInterval(st.timer);
+      window.removeEventListener('beforeunload', onUnload);
       stopPlayback();
-      if (st.data) st.data = null;
+      if (st.id && st.ephemeral) discardBeacon(st.id);
+      st.id = null;
+      st.data = null;
     },
     handle(arg) {
       if (!arg) return;

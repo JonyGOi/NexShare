@@ -42,6 +42,8 @@ public class DownloadManager {
         public boolean spacePaused;
         /** True when the torrent was added by the Nuvio/Stremio addon (do not auto-offload it). */
         public boolean fromAddon;
+        /** Torrent Player session: never persisted, kept in an isolated folder and deleted on stop. */
+        public boolean ephemeral;
         /**
          * Held in metadata-only mode until the user (or the addon) chooses the files.
          * Nothing is downloaded while this is true and selected is still null.
@@ -68,6 +70,7 @@ public class DownloadManager {
                     .put("eta", etaSeconds());
                 if (hash != null) o.put("hash", hash);
                 if (fromAddon) o.put("fromAddon", true);
+                if (ephemeral) o.put("ephemeral", true);
                 if (awaitingSelection) o.put("awaitingSelection", true);
                 if (selected != null) {
                     JSONArray sel = new JSONArray();
@@ -94,10 +97,59 @@ public class DownloadManager {
         this.ctx = ctx;
         stateFile = new File(ctx.getFilesDir(), "downloads.json");
         load();
+        // Player sessions are never persisted. If the process died mid-play, its folder and
+        // .torrent metadata are garbage; remove them before the first stream request sees them.
+        cleanupPlayerFiles();
+        cleanupOrphanTorrentMetadata();
+    }
+
+    /** Deletes .torrent files that no surviving task references (player sessions, old deletes). */
+    private void cleanupOrphanTorrentMetadata() {
+        try {
+            java.util.Set<String> keep = new java.util.HashSet<>();
+            for (Task t : tasks.values()) if (t.hash != null) keep.add(t.hash);
+            File[] files = new File(ctx.getFilesDir(), "torrents").listFiles();
+            if (files == null) return;
+            for (File f : files) {
+                String n = f.getName();
+                if (!n.endsWith(".torrent")) continue;
+                if (!keep.contains(n.substring(0, n.length() - 8))) f.delete();
+            }
+        } catch (Throwable ignored) { }
     }
 
     public static File defaultDir() {
         return new File(Environment.getExternalStorageDirectory(), "Download/NexShare");
+    }
+
+    /**
+     * Isolated folder for Torrent Player sessions. It lives in the app-specific external
+     * folder so /api/file can stream from it, but it is never shown as a download destination
+     * and is wiped when the player stops, the window closes or the app restarts.
+     */
+    public File playerDir() throws IOException {
+        File base = ctx.getExternalFilesDir(null);
+        if (base == null) {
+            base = new File(Environment.getExternalStorageDirectory(),
+                "Android/data/" + ctx.getPackageName() + "/files");
+        }
+        File dir = new File(base, "torrentplayer");
+        if (!dir.isDirectory() && !dir.mkdirs()) throw new IOException("cannot create player folder");
+        return dir;
+    }
+
+    private void cleanupPlayerFiles() {
+        try {
+            File base = ctx.getExternalFilesDir(null);
+            if (base != null) deleteTree(new File(base, "torrentplayer"));
+        } catch (Throwable ignored) { }
+    }
+
+    private static void deleteTree(File f) {
+        if (f == null || !f.exists()) return;
+        File[] kids = f.listFiles();
+        if (kids != null) for (File k : kids) deleteTree(k);
+        f.delete();
     }
 
     // ---------- public API used by WebApi ----------
@@ -111,11 +163,16 @@ public class DownloadManager {
     }
 
     public synchronized Task addUrl(String url, File dir) throws IOException {
+        return addUrl(url, dir, false);
+    }
+
+    public synchronized Task addUrl(String url, File dir, boolean ephemeral) throws IOException {
         url = url.trim();
-        if (url.startsWith("magnet:")) return addTorrent(url, null, dir);
+        if (url.startsWith("magnet:")) return addTorrent(url, null, dir, ephemeral);
         if (!url.startsWith("http://") && !url.startsWith("https://")) throw new IOException("unsupported link");
-        Task t = newTask("http", url, dir);
+        Task t = newTask("http", url, ephemeral ? playerDir() : dir);
         t.name = guessName(url);
+        t.ephemeral = ephemeral;
         tasks.put(t.id, t);
         schedule();
         save();
@@ -123,11 +180,17 @@ public class DownloadManager {
     }
 
     public synchronized Task addTorrent(String magnet, byte[] torrentFile, File dir) throws IOException {
+        return addTorrent(magnet, torrentFile, dir, false);
+    }
+
+    public synchronized Task addTorrent(String magnet, byte[] torrentFile, File dir, boolean ephemeral) throws IOException {
         TorrentEngine te = torrents();
-        Task t = newTask("torrent", magnet != null ? magnet : "(torrent file)", dir);
+        File targetDir = ephemeral ? playerDir() : dir;
+        Task t = newTask("torrent", magnet != null ? magnet : "(torrent file)", targetDir);
         t.name = magnet != null ? magnetName(magnet) : "torrent";
+        t.ephemeral = ephemeral;
         t.status = "downloading";
-        te.add(t, magnet, torrentFile, dir);
+        te.add(t, magnet, torrentFile, targetDir);
         for (Task other : tasks.values()) {
             if (t.hash != null && t.hash.equals(other.hash)) {
                 // Already in the list: drop the duplicate handle and reuse the existing task.
@@ -277,7 +340,16 @@ public class DownloadManager {
             new File(t.dest, t.name + ".part").delete();
             if (deleteFiles && t.status.equals("done")) new File(t.dest, t.name).delete();
         }
+        if (t.ephemeral && deleteFiles) deleteTree(new File(t.dest));
         save();
+    }
+
+    /** Removes every Torrent Player task (and its partial files) without touching downloads. */
+    public synchronized void cleanupEphemeral() {
+        for (Task t : new ArrayList<>(tasks.values())) {
+            if (t.ephemeral) remove(t.id, true);
+        }
+        cleanupPlayerFiles();
     }
 
     public synchronized void clearFinished() {
@@ -307,10 +379,12 @@ public class DownloadManager {
 
     public void shutdown() {
         synchronized (this) {
+            cleanupEphemeral();
             for (Task t : tasks.values()) t.stop = true;
             save();
         }
         if (torrents != null) torrents.stop();
+        cleanupPlayerFiles();
     }
 
     // ---------- internals ----------
@@ -548,7 +622,10 @@ public class DownloadManager {
 
     synchronized void save() {
         JSONArray arr = new JSONArray();
-        for (Task t : tasks.values()) arr.put(t.toJson());
+        for (Task t : tasks.values()) {
+            if (t.ephemeral) continue; // never in history / downloads.json
+            arr.put(t.toJson());
+        }
         File tmp = new File(stateFile.getPath() + ".tmp");
         try (OutputStream out = new FileOutputStream(tmp)) {
             out.write(arr.toString().getBytes(StandardCharsets.UTF_8));

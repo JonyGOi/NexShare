@@ -114,6 +114,12 @@ function toast(msg, ms = 2600) {
   setTimeout(() => t.remove(), ms);
 }
 
+function copyText(text, msg) {
+  if (!text) { toast('Nada para copiar'); return; }
+  if (navigator.clipboard && isSecureContext) navigator.clipboard.writeText(text).then(() => toast(msg || 'Copiado!'), () => dialog({ title: 'Link', input: text, cancel: false }));
+  else dialog({ title: 'Link', input: text, cancel: false });
+}
+
 function dialog({ title, message, input, okText = 'OK', danger, cancel = true }) {
   return new Promise(resolve => {
     const field = input != null ? el('input', { value: input, spellcheck: 'false' }) : null;
@@ -176,6 +182,7 @@ const G = {
   search: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/>',
   upload: '<path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/>',
   download: '<path d="M12 4v12M7 11l5 5 5-5"/><path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/>',
+  monitor: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
   newfolder: '<path d="M3 6h6l2 2h10v11H3z"/><path d="M12 11v6M9 14h6"/>',
   rename: '<path d="M4 20h4L19 9l-4-4L4 16z"/>',
@@ -245,6 +252,9 @@ const APP_ICO = {
     <rect x="4" y="4" width="56" height="56" rx="14" fill="url(#upA)"/><path d="M20 40a9 9 0 0 1 1-18 12 12 0 0 1 23 2 8 8 0 0 1 0 16" fill="none" stroke="#fff" stroke-width="3.5" stroke-linecap="round"/><path d="M32 48V30M25 36l7-7 7 7" fill="none" stroke="#fff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
   download: `<svg viewBox="0 0 64 64"><defs><linearGradient id="dsA" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#4fc3f7"/><stop offset="1" stop-color="#0b7bd6"/></linearGradient></defs>
     <rect x="4" y="4" width="56" height="56" rx="14" fill="url(#dsA)"/><circle cx="32" cy="30" r="15" fill="none" stroke="#fff" stroke-width="3.5" opacity=".35"/>
+    <path d="M32 14v26M22 31l10 10 10-10" fill="none" stroke="#fff" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M18 48h28" stroke="#fff" stroke-width="4.5" stroke-linecap="round"/></svg>`,
+  torrent: `<svg viewBox="0 0 64 64"><defs><linearGradient id="trA" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#39d98a"/><stop offset="1" stop-color="#0b8f56"/></linearGradient></defs>
+    <rect x="4" y="4" width="56" height="56" rx="14" fill="url(#trA)"/><circle cx="32" cy="30" r="15" fill="none" stroke="#fff" stroke-width="3.5" opacity=".35"/>
     <path d="M32 14v26M22 31l10 10 10-10" fill="none" stroke="#fff" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M18 48h28" stroke="#fff" stroke-width="4.5" stroke-linecap="round"/></svg>`,
   player: `<svg viewBox="0 0 64 64"><defs><linearGradient id="mpA" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffa53a"/><stop offset="1" stop-color="#f05a28"/></linearGradient></defs>
     <rect x="4" y="4" width="56" height="56" rx="14" fill="url(#mpA)"/><circle cx="32" cy="32" r="17" fill="rgba(255,255,255,.22)"/><path d="M27 22v20l16-10z" fill="#fff"/></svg>`,
@@ -1870,6 +1880,7 @@ function addDownloadDialog(info, preset) {
       torrentFile = tPick.files[0] || null;
       tName.textContent = torrentFile ? ' ' + torrentFile.name : '';
     } });
+    const pc = onlyTorrents ? el('input', { type: 'checkbox' }) : null;
     const close = v => { wrap.remove(); resolve(v); };
     const wrap = el('div', { id: 'modal', onmousedown: e => { if (e.target === wrap) close(null); } },
       el('div', { class: 'dialog wide' },
@@ -1880,12 +1891,14 @@ function addDownloadDialog(info, preset) {
             el('button', { class: 'btn', onclick: () => tPick.click() }, icon('upload'), 'Escolher arquivo .torrent'), tName, tPick)
             : el('div', { class: 'hint', text: 'BitTorrent não suportado neste dispositivo' }),
           el('label', { class: 'f', text: 'Salvar na pasta do celular' }), dest,
+          onlyTorrents ? el('label', { style: { display: 'flex', alignItems: 'center', gap: '8px', marginTop: '10px', cursor: 'pointer', fontSize: '13px' } },
+            pc, 'Baixar no PC por link direto (não baixar no celular)') : null,
           el('div', { class: 'hint', text: onlyTorrents
             ? 'Primeiro o NexShare busca os metadados e mostra a lista de arquivos. Nada é baixado antes de você confirmar a seleção.'
             : 'O celular baixa em segundo plano mesmo se você fechar esta página' })),
         el('div', { class: 'd-foot' },
           el('button', { class: 'btn', text: 'Cancelar', onclick: () => close(null) }),
-          el('button', { class: 'btn primary', text: onlyTorrents ? 'Buscar metadados e escolher arquivos' : 'Próximo: Selecionar Arquivos', onclick: () => close({ urls: urls.value, dest: dest.value.trim(), torrentFile, torrentsOnly: onlyTorrents, showFilePicker: true }) }))));
+          el('button', { class: 'btn primary', text: onlyTorrents ? 'Buscar metadados e escolher arquivos' : 'Próximo: Selecionar Arquivos', onclick: () => close({ urls: urls.value, dest: dest.value.trim(), torrentFile, torrentsOnly: onlyTorrents, showFilePicker: true, pc: !!(pc && pc.checked) }) }))));
     document.body.append(wrap);
     urls.focus();
   });
@@ -1910,7 +1923,7 @@ function showTorrentFilePicker(taskId, dest, onConfirm) {
   });
 }
 
-function showFilePickerDialog(task, files, defaultDest, onConfirm) {
+function showFilePickerDialog(task, files, defaultDest, onConfirm, pcMode) {
   const st = {
     files: files,
     checked: new Set(files.filter(f => f.selected !== 0).map(f => f.id)),
@@ -1946,7 +1959,7 @@ function showFilePickerDialog(task, files, defaultDest, onConfirm) {
 
   const destInput = el('input', { value: st.dest || '', spellcheck: 'false', readOnly: true, style: { flex: 1, marginRight: '8px', color: '#667085', background: '#f6f8fb' } });
   const pickDestBtn = el('span', { class: 'dim', style: { fontSize: '12px', whiteSpace: 'nowrap' }, text: 'definida ao adicionar' });
-  const applyBtn = el('button', { class: 'btn primary', onclick: () => apply() }, 'Confirmar e Baixar');
+  const applyBtn = el('button', { class: 'btn primary', onclick: () => apply() }, pcMode ? 'Escolher no PC' : 'Confirmar e Baixar');
   const countLabel = el('span', { class: 'dim', style: { fontSize: '12px' } });
 
   function refreshCount() {
@@ -2048,19 +2061,34 @@ function showFilePickerDialog(task, files, defaultDest, onConfirm) {
   async function apply() {
     applyBtn.disabled = true;
     applyBtn.textContent = 'Aplicando…';
+    const selected = [...st.checked];
     try {
+      // PC mode must keep the metadata-only hold: calling debrid/select here would clear
+      // awaitingSelection and start downloading every checked file on the phone. The direct
+      // link endpoint selects only the file the PC actually asks for.
+      if (pcMode) {
+        const chosen = files.filter(f => st.checked.has(f.id));
+        if (!chosen.length) throw new Error('selecione ao menos um arquivo');
+        const videos = chosen.filter(f => isVideoName(f.name)).sort((a, b) => (b.size || 0) - (a.size || 0));
+        const pcFiles = videos.length ? videos : chosen.slice().sort((a, b) => (b.size || 0) - (a.size || 0));
+        wrap.remove();
+        if (onConfirm) onConfirm({ taskId: task.id, selectedFiles: selected, dest: st.dest, pc: true });
+        if (pcFiles.length === 1) openPcLink(task, pcFiles[0]);
+        else showPcPicker(task, pcFiles);
+        return;
+      }
       // The destination is fixed when the torrent is added; the picker only chooses files.
-      const r = await api('debrid/select', null, { method: 'POST', body: JSON.stringify({ id: task.id, files: [...st.checked], start: true }) });
+      const r = await api('debrid/select', null, { method: 'POST', body: JSON.stringify({ id: task.id, files: selected, start: true }) });
       st.dirty = false;
-      toast(st.checked.size === files.length
+      toast(selected.length === files.length
         ? 'Download iniciado (todos os arquivos)'
-        : `Download iniciado — ${st.checked.size} de ${files.length} arquivos selecionados`);
-      if (onConfirm) onConfirm({ taskId: task.id, selectedFiles: [...st.checked], dest: st.dest });
+        : `Download iniciado — ${selected.length} de ${files.length} arquivos selecionados`);
+      if (onConfirm) onConfirm({ taskId: task.id, selectedFiles: selected, dest: st.dest });
       wrap.remove();
     } catch (e) {
       toast('Falha ao aplicar seleção: ' + e.message);
       applyBtn.disabled = false;
-      applyBtn.textContent = 'Confirmar e Baixar';
+      applyBtn.textContent = pcMode ? 'Escolher no PC' : 'Confirmar e Baixar';
     }
   }
 
@@ -2071,7 +2099,9 @@ function showFilePickerDialog(task, files, defaultDest, onConfirm) {
       el('div', { class: 'd-body', style: { maxHeight: '60vh', overflow: 'auto' } },
         el('label', { class: 'f', text: 'Pasta de destino no celular' }),
         el('div', { style: { display: 'flex', gap: '8px', marginBottom: '12px', alignItems: 'center' } }, destInput, pickDestBtn),
-        el('div', { class: 'hint', style: { marginBottom: '10px' }, text: 'Desmarque arquivos/pastas que não quer baixar. O download só começa após clicar em "Confirmar e Baixar". Para outra pasta, cancele e adicione o torrent de novo.' }),
+        el('div', { class: 'hint', style: { marginBottom: '10px' }, text: pcMode
+          ? 'Marque o que o PC deve baixar. Nada baixa no celular agora: ao confirmar, você recebe um link direto para abrir no navegador do PC.'
+          : 'Desmarque arquivos/pastas que não quer baixar. O download só começa após clicar em "Confirmar e Baixar". Para outra pasta, cancele e adicione o torrent de novo.' }),
         bar,
         treeBox),
       el('div', { class: 'd-foot' },
@@ -2107,12 +2137,12 @@ function waitForTorrentFiles(taskId) {
   });
 }
 
-async function pickFilesForTask(taskId, dest) {
+async function pickFilesForTask(taskId, dest, pcMode) {
   const data = await waitForTorrentFiles(taskId);
   if (!data) return null;
   if (data.timeout) return 'timeout';
   return await new Promise(resolve => {
-    showFilePickerDialog(data.task, data.files, dest, res => resolve(res));
+    showFilePickerDialog(data.task, data.files, dest, res => resolve(res), !!pcMode);
   });
 }
 
@@ -2148,7 +2178,7 @@ async function submitDownloads(v) {
       ok = true;
     }
     for (const id of pending) {
-      const res = await pickFilesForTask(id, dest);
+      const res = await pickFilesForTask(id, dest, v.pc);
       if (res === 'timeout') {
         toast('Os metadados ainda não chegaram. O torrent continua buscando apenas as informações — nada foi baixado. Use "Selecionar arquivos" quando a lista aparecer.', 7000);
         continue;
@@ -2162,6 +2192,46 @@ async function submitDownloads(v) {
   return ok;
 }
 
+function pcLink(t, f) {
+  return location.origin + '/api/dl/pc' + qs({ id: t.id, index: f && f.id != null ? f.id : null, token: State.apiKey || null });
+}
+
+function openPcLink(t, f) {
+  const url = pcLink(t, f);
+  // On a phone, opening the link would save on the phone. Copy it instead so it can be
+  // pasted into the PC browser; on a desktop browser the redirect starts the real download.
+  if (/Android|iPhone|iPad|iPod/i.test(navigator.userAgent)) {
+    copyText(url, 'Link direto copiado — abra no navegador do PC para baixar lá');
+    return;
+  }
+  const a = el('a', { href: url, download: '', rel: 'noopener' });
+  document.body.append(a);
+  a.click();
+  setTimeout(() => a.remove(), 800);
+  toast('Baixando no PC pelo link direto do celular…', 6000);
+}
+
+function showPcPicker(t, files) {
+  const close = () => wrap.remove();
+  const list = el('div', { style: { display: 'flex', flexDirection: 'column', gap: '6px', maxHeight: '52vh', overflow: 'auto' } });
+  for (const f of files.slice(0, 400)) {
+    list.append(el('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 10px', border: '1px solid var(--line)', borderRadius: '8px' } },
+      el('div', { style: { flex: 1, minWidth: 0 } },
+        el('div', { style: { fontSize: '13px', fontWeight: '600', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, text: f.name }),
+        el('div', { class: 'dim', style: { fontSize: '11px' }, text: fmtSize(f.size || 0) })),
+      el('button', { class: 'btn primary', style: { padding: '4px 9px', fontSize: '12px' }, onclick: () => { close(); openPcLink(t, f); } }, icon('monitor'), ' Baixar no PC'),
+      el('button', { class: 'btn', style: { padding: '4px 9px', fontSize: '12px' }, onclick: () => copyText(pcLink(t, f), 'Link direto copiado — abra no PC') }, icon('link'), ' Copiar link')));
+  }
+  const wrap = el('div', { id: 'modal', onmousedown: e => { if (e.target === wrap) close(); } },
+    el('div', { class: 'dialog wide', style: { maxWidth: '780px' } },
+      el('div', { class: 'd-head', text: 'Baixar no PC — ' + (t.name || 'torrent') }),
+      el('div', { class: 'd-body' },
+        el('div', { class: 'hint', style: { marginBottom: '10px' }, text: 'O PC recebe um link direto e baixa enquanto o celular envia os pedaços. No celular, o link é copiado para você abrir no navegador do PC. O torrent fica como cache no celular até você excluir a tarefa.' }),
+        list),
+      el('div', { class: 'd-foot' }, el('button', { class: 'btn', text: 'Fechar', onclick: close }))));
+  document.body.append(wrap);
+}
+
 function DownloadStation(body, win, opts) {
   const onlyTorrents = !!(opts && opts.torrentsOnly);
   const st = { filter: 'all', tasks: [], info: { torrentsOnly: onlyTorrents }, sel: new Set() };
@@ -2173,6 +2243,7 @@ function DownloadStation(body, win, opts) {
   const btn = (ico, label, run, cls) => el('button', { class: 'btn ' + (cls || ''), onclick: run }, icon(ico), el('span', { class: cls === 'primary' ? null : 'hide-sm', text: label }));
   const tools = el('div', { class: 'ds-tools' },
     btn('plus', onlyTorrents ? 'Adicionar torrent' : 'Create', () => create(), 'primary'),
+    onlyTorrents ? btn('monitor', 'Baixar no PC', () => sendSelectedToPc()) : null,
     btn('play', onlyTorrents ? 'Retomar' : 'Resume', () => act('resume')),
     btn('min', onlyTorrents ? 'Pausar' : 'Pause', () => act('pause')),
     btn('trash', onlyTorrents ? 'Excluir' : 'Delete', () => removeSel()),
@@ -2233,6 +2304,27 @@ function DownloadStation(body, win, opts) {
     } catch (e) { toast('Não consegui montar o link: ' + e.message); }
   }
 
+  const isVideoName = n => /\.(mp4|mkv|avi|mov|webm|flv|m4v|ts|m2ts|mpg|mpeg|wmv|vob|ogv)$/i.test(n || '');
+
+  async function sendTaskToPc(t) {
+    if (!t || t.type !== 'torrent') return toast('Escolha um torrent para mandar ao PC.');
+    try {
+      const d = await api('debrid/files', { id: t.id });
+      const files = (d.files || []).filter(f => f && f.name);
+      if (!files.length) return toast('Os metadados ainda não chegaram. Tente de novo em alguns segundos.');
+      const videos = files.filter(f => isVideoName(f.name));
+      const list = videos.length ? videos : files;
+      if (list.length === 1) openPcLink(t, list[0]);
+      else showPcPicker(t, list);
+    } catch (e) { toast('Não consegui montar o link para o PC: ' + e.message, 6000); }
+  }
+
+  function sendSelectedToPc() {
+    const t = st.tasks.find(x => st.sel.has(x.id));
+    if (!t) return toast('Selecione um torrent na lista para mandar ao PC.');
+    sendTaskToPc(t);
+  }
+
   function taskMenu(t) {
     return [
       { label: 'Open File', ico: 'open', disabled: t.status !== 'done' && t.status !== 'seeding', run: () => openTask(t) },
@@ -2241,6 +2333,7 @@ function DownloadStation(body, win, opts) {
       '-',
       { label: t.status === 'metadata' ? 'Aguardar metadados e escolher…' : 'Selecionar arquivos…', ico: 'list', disabled: !['choose', 'metadata', 'paused'].includes(t.status) || t.type !== 'torrent', run: () => pickFiles(t) },
       t.type === 'torrent' ? { label: 'Abrir no Torrent Player', ico: 'play', run: () => openApp('torrentplayer', { task: t.id }) } : null,
+      t.type === 'torrent' ? { label: 'Baixar no PC (link direto)', ico: 'monitor', disabled: t.status === 'error', run: () => sendTaskToPc(t) } : null,
       t.type === 'torrent' ? { label: 'Abrir conteúdo do ZIP…', ico: 'archive', disabled: t.status !== 'done' && t.status !== 'seeding', run: () => openArchiveForTask(t) } : null,
       t.type === 'torrent' && (t.status === 'done' || t.status === 'seeding') ? { label: 'Copiar link para VLC', ico: 'link', run: () => copyTaskStream(t) } : null,
       { label: onlyTorrents ? 'Retomar' : 'Resume', ico: 'play', disabled: !['paused', 'error'].includes(t.status), run: () => act('resume') },
@@ -3941,7 +4034,7 @@ function DebridHub(body, win) {
             onclick: () => {
               if (isDirect) { window.open(f.streamUrl, '_blank'); return; }
               if (!st.checked.has(f.id)) { st.checked.add(f.id); st.dirty = true; refreshCount(); }
-              api('debrid/prioritize', null, { method: 'POST', body: JSON.stringify({ id: st.task && st.task.id, fileIndex: f.id }) }).catch(() => { });
+              api('debrid/prioritize', null, { method: 'POST', body: JSON.stringify({ id: st.task && st.task.id, fileIndex: f.id, confirm: true }) }).catch(() => { });
               openApp('player', { entry: entryOf(f), list: videoFiles.map(entryOf) });
             }
           }, '▶ Assistir') : null,
@@ -4152,7 +4245,7 @@ const APPS = {
   control: { id: 'control', name: 'Control Panel', ico: 'control', w: 620, h: 600, mount: ControlPanel },
   help: { id: 'help', name: 'NexShare Help', ico: 'help', w: 640, h: 560, mount: Help },
   download: { id: 'download', name: 'Download Station', ico: 'download', w: 960, h: 560, mount: DownloadStation },
-  torrents: { id: 'torrents', name: 'Torrent Downloader', ico: 'download', w: 980, h: 600, mount: TorrentDownloader },
+  torrents: { id: 'torrents', name: 'Torrent Downloader', ico: 'torrent', w: 980, h: 600, mount: TorrentDownloader },
   torrentplayer: { id: 'torrentplayer', name: 'Torrent Player', ico: 'player', w: 1040, h: 660, mount: TorrentPlayer },
   debrid: { id: 'debrid', name: 'Debrid Hub', ico: 'debrid', w: 900, h: 620, mount: DebridHub },
   player: { id: 'player', name: 'Media Player', ico: 'player', w: 1000, h: 600, mount: MediaPlayer },

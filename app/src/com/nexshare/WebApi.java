@@ -205,13 +205,14 @@ public class WebApi implements HttpServer.Handler {
             case "/api/tunnel/start": tunnelStart(req, res); break;
             case "/api/tunnel/stop": TunnelManager.get(ctx).stop(); Settings.setTunnel(ctx, "off", Settings.tunnelToken(ctx)); tunnelStatus(res); break;
             case "/api/tunnel/diagnose": res.json(200, TunnelManager.get(ctx).diagnose().toString()); break;
-            case "/api/dl/list": dlList(res); break;
+            case "/api/dl/list": dlList(req, res); break;
             case "/api/dl/add": dlAdd(req, res); break;
             case "/api/dl/torrent": dlTorrent(req, res); break;
-            case "/api/dl/pause": DownloadManager.get(ctx).pause(req.param("id")); dlList(res); break;
-            case "/api/dl/resume": DownloadManager.get(ctx).resume(req.param("id")); dlList(res); break;
-            case "/api/dl/remove": DownloadManager.get(ctx).remove(req.param("id"), "1".equals(req.param("files"))); dlList(res); break;
-            case "/api/dl/clear": DownloadManager.get(ctx).clearFinished(); dlList(res); break;
+            case "/api/dl/pc": dlPc(req, res); break;
+            case "/api/dl/pause": DownloadManager.get(ctx).pause(req.param("id")); dlList(req, res); break;
+            case "/api/dl/resume": DownloadManager.get(ctx).resume(req.param("id")); dlList(req, res); break;
+            case "/api/dl/remove": DownloadManager.get(ctx).remove(req.param("id"), "1".equals(req.param("files"))); dlList(req, res); break;
+            case "/api/dl/clear": DownloadManager.get(ctx).clearFinished(); dlList(req, res); break;
             case "/api/archive/list": archiveList(req, res); break;
             case "/api/archive/find": archiveFind(req, res); break;
             case "/api/archive/extract": archiveExtract(req, res); break;
@@ -530,6 +531,9 @@ public class WebApi implements HttpServer.Handler {
         // A torrent file may not have been created on disk yet when the player asks for it.
         // Find its torrent metadata first so the expected size is known even before the first
         // piece arrives, otherwise the browser receives a zero-length video and gives up.
+        boolean attach = "1".equals(req.param("dl")) || "1".equals(req.param("attach"));
+        // attach=1 downloads a torrent through the same awaited-piece stream as playback.
+        // dl=1 is a plain file download and deliberately bypasses torrent streaming.
         DownloadManager.StreamRef stream = "1".equals(req.param("dl")) ? null : DownloadManager.get(ctx).locateTorrentFile(f);
         if (!f.isFile() && stream != null) {
             long until = System.currentTimeMillis() + 5000;
@@ -569,7 +573,7 @@ public class WebApi implements HttpServer.Handler {
         // Never render HTML/SVG/JS from the storage inline on the app's own origin: that is how
         // a shared folder becomes a phishing page or steals the session cookie.
         boolean risky = fmime.startsWith("text/html") || fmime.contains("svg") || fmime.contains("javascript");
-        String disp = ("1".equals(req.param("dl")) || risky) ? "attachment" : "inline";
+        String disp = (attach || risky) ? "attachment" : "inline";
         res.header("Content-Disposition", disp + "; filename*=UTF-8''" + URLEncoder.encode(f.getName(), "UTF-8").replace("+", "%20"));
         if (partial) res.header("Content-Range", "bytes " + start + "-" + end + "/" + len);
         long count = end - start + 1;
@@ -1125,10 +1129,19 @@ public class WebApi implements HttpServer.Handler {
 
     // ---------- download station ----------
 
-    private void dlList(HttpServer.Response res) throws IOException {
+    private void dlList(HttpServer.Request req, HttpServer.Response res) throws IOException {
         DownloadManager dm = DownloadManager.get(ctx);
         JSONObject o = new JSONObject();
-        put(o, "tasks", dm.list());
+        // Torrent Player sessions are visible only to the player (ephemeral=1). The regular
+        // Downloader never lists them, so closing the session leaves no task history behind.
+        boolean wantEphemeral = "1".equals(req.param("ephemeral"));
+        JSONArray visible = new JSONArray();
+        JSONArray all = dm.list();
+        for (int i = 0; i < all.length(); i++) {
+            JSONObject t = all.optJSONObject(i);
+            if (t != null && t.optBoolean("ephemeral") == wantEphemeral) visible.put(t);
+        }
+        put(o, "tasks", visible);
         put(o, "defaultDir", DownloadManager.defaultDir().getAbsolutePath());
         put(o, "torrent", dm.torrentSupported());
         res.json(200, o.toString());
@@ -1150,6 +1163,8 @@ public class WebApi implements HttpServer.Handler {
         File dir = dlDir(body.optString("dest", null));
         String urls = body.optString("urls", "");
         boolean hold = body.optBoolean("paused", false);
+        // Torrent Player sessions are temporary: isolated folder, never saved in history.
+        boolean ephemeral = body.optBoolean("ephemeral", false);
         int added = 0;
         StringBuilder errors = new StringBuilder();
         JSONArray ids = new JSONArray();
@@ -1157,7 +1172,7 @@ public class WebApi implements HttpServer.Handler {
             line = line.trim();
             if (line.isEmpty()) continue;
             try {
-                DownloadManager.Task t = DownloadManager.get(ctx).addUrl(line, dir);
+                DownloadManager.Task t = DownloadManager.get(ctx).addUrl(line, dir, ephemeral);
                 if (hold && "torrent".equals(t.type)) {
                     // Keep the torrent in metadata-only mode so the workspace can show the
                     // file list before anything is actually downloaded.
@@ -1187,8 +1202,9 @@ public class WebApi implements HttpServer.Handler {
         int off = 0, n;
         while (off < data.length && (n = req.body.read(data, off, data.length - off)) > 0) off += n;
         DownloadManager.Task t;
+        boolean ephemeral = isOn(req, null, "ephemeral");
         try {
-            t = DownloadManager.get(ctx).addTorrent(null, data, dlDir(req.param("dest")));
+            t = DownloadManager.get(ctx).addTorrent(null, data, dlDir(req.param("dest")), ephemeral);
         } catch (IOException e) {
             res.error(400, e.getMessage());
             return;
@@ -1203,6 +1219,84 @@ public class WebApi implements HttpServer.Handler {
             if (te != null) te.prepareMetadata(t);
         }
         res.json(200, "{\"added\":1,\"ids\":[" + JSONObject.quote(t.id) + "]}");
+    }
+
+    /**
+     * Direct PC download: confirms the chosen torrent file, prioritises its pieces and
+     * redirects the PC browser to the attachment stream. The PC downloads while the phone
+     * feeds pieces; it does not need to wait for the whole torrent. No payload starts until
+     * this link is opened (or the Torrent Player's play button is pressed).
+     */
+    private void dlPc(HttpServer.Request req, HttpServer.Response res) throws IOException {
+        String id = req.param("id");
+        DownloadManager dm = DownloadManager.get(ctx);
+        DownloadManager.Task t = dm.getTask(id);
+        if (t == null) {
+            res.error(404, "tarefa não encontrada");
+            return;
+        }
+        if ("http".equals(t.type)) {
+            if (t.url == null || t.url.isEmpty()) {
+                res.error(404, "link não encontrado");
+                return;
+            }
+            res.header("Location", t.url);
+            res.text(302, "text/plain", "Baixando no PC: " + t.url);
+            return;
+        }
+        if (!"torrent".equals(t.type)) {
+            res.error(400, "tarefa não é um torrent");
+            return;
+        }
+        TorrentEngine te = dm.torrentEngine();
+        if (te == null) {
+            res.error(503, "motor de torrent indisponível");
+            return;
+        }
+        List<JSONObject> files = te.listFiles(t);
+        if (files.isEmpty()) {
+            res.error(503, "metadados ainda não chegaram; tente de novo em alguns segundos");
+            return;
+        }
+        int idx = -1;
+        try { idx = Integer.parseInt(req.param("index")); } catch (Exception ignored) { }
+        if (idx < 0 || idx >= files.size()) idx = te.pickBestFile(t);
+        if (idx < 0 || idx >= files.size()) {
+            // A selection may exclude every file; for a direct PC download the chosen video
+            // is still valid and prioritizeFile(confirm) will add it to the selection.
+            long best = -1;
+            for (int i = 0; i < files.size(); i++) {
+                String name = files.get(i).optString("name", "");
+                if (!TorrentEngine.isVideo(name)) continue;
+                long size = files.get(i).optLong("size", 0);
+                if (size > best) { best = size; idx = i; }
+            }
+            if (idx < 0) {
+                // A torrent does not need a video to be sent to the PC (ZIP, ISO, etc.).
+                for (int i = 0; i < files.size(); i++) {
+                    long size = files.get(i).optLong("size", 0);
+                    if (size > best) { best = size; idx = i; }
+                }
+            }
+        }
+        if (idx < 0 || idx >= files.size()) {
+            res.error(404, "nenhum arquivo disponível");
+            return;
+        }
+        JSONObject fi = files.get(idx);
+        String path = fi.optString("fullPath", "");
+        if (path.isEmpty()) {
+            res.error(404, "arquivo não encontrado");
+            return;
+        }
+        // Opening the PC link is an explicit confirmation to download this file.
+        te.prioritizeFile(t, idx, true);
+        dm.resume(t.id);
+        dm.save();
+        String url = "/api/file?path=" + encodeQuery(path)
+            + "&token=" + getOrCreateStreamToken() + "&attach=1";
+        res.header("Location", url);
+        res.text(302, "text/plain", "Baixando no PC: " + fi.optString("name", "arquivo"));
     }
 
     /** Converts HEIC/HEIF/TIFF to JPEG so every browser can display it. */
@@ -2343,7 +2437,7 @@ public class WebApi implements HttpServer.Handler {
                 return;
             }
 
-            if (te != null) te.prioritizeFile(t, fileIdx);
+            if (te != null) te.prioritizeFile(t, fileIdx, t.awaitingSelection);
 
             String fileName = t.name;
             String streamUrl;
@@ -2925,7 +3019,7 @@ public class WebApi implements HttpServer.Handler {
         }
         // Only narrow selection for addon-created torrents
         if (t.fromAddon && t.selected == null) te.setSelection(t, new int[]{idx});
-        te.prioritizeFile(t, idx);
+        te.prioritizeFile(t, idx, t.awaitingSelection);
         dm.resume(t.id);
         dm.save();
         String path = files.get(idx).optString("fullPath");
@@ -3060,7 +3154,7 @@ public class WebApi implements HttpServer.Handler {
             if (t.selected == null) te.setSelection(t, new int[]{idx});
             t.awaitingSelection = false;
         }
-        te.prioritizeFile(t, idx);
+        te.prioritizeFile(t, idx, t.awaitingSelection);
         dm.resume(t.id);
         dm.save();
         String path = files.get(idx).optString("fullPath");
@@ -3169,7 +3263,7 @@ public class WebApi implements HttpServer.Handler {
         DownloadManager.Task t = dm.getTask(id);
         if (t != null) {
             TorrentEngine te = dm.torrentEngine();
-            if (te != null) te.prioritizeFile(t, fileIndex);
+            if (te != null) te.prioritizeFile(t, fileIndex, body.optBoolean("confirm", false));
             dm.resume(t.id);
             dm.save();
         }
@@ -3211,7 +3305,7 @@ public class WebApi implements HttpServer.Handler {
         }
         // Clicking play is the confirmation. It releases the metadata-only hold, selects this
         // file (so the rest of a giant collection is not downloaded) and prioritises its pieces.
-        te.prioritizeFile(t, idx);
+        te.prioritizeFile(t, idx, true);
         dm.resume(t.id);
         dm.save();
         File f = new File(path);

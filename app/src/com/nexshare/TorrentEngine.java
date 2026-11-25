@@ -294,13 +294,21 @@ public class TorrentEngine {
 
     /** Prioritizes a specific file for instant sequential streaming. */
     public void prioritizeFile(DownloadManager.Task t, int fileIndex) {
+        prioritizeFile(t, fileIndex, false);
+    }
+
+    /**
+     * Prioritizes a file for streaming. When confirm is true (the Torrent Player's play
+     * button or a direct PC download), it also releases the metadata-only hold and selects
+     * just that file. Merely previewing a file in the picker does not start a payload.
+     */
+    public void prioritizeFile(DownloadManager.Task t, int fileIndex, boolean confirm) {
         if (t == null) return;
         t.priorityFile = Math.max(0, fileIndex);
-        // Starting playback is the user's confirmation: release the metadata-only hold and
-        // download at least this file. Without this a held magnet would stay at 0 B forever
-        // when opened directly in the Torrent Player.
-        if (t.awaitingSelection) {
-            if (t.selected == null) t.selected = new int[]{t.priorityFile};
+        if (confirm) {
+            // A play/PC action downloads this file, not a whole season pack. If the user had
+            // selected everything, narrow to the file being watched/sent.
+            if (t.selected == null || t.awaitingSelection) t.selected = new int[]{t.priorityFile};
             t.awaitingSelection = false;
             t.selectionApplied = false;
         }
