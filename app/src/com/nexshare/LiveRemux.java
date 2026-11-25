@@ -51,10 +51,12 @@ public final class LiveRemux {
         cmd.add(bin.getAbsolutePath());
         cmd.add("-hide_banner");
         cmd.add("-loglevel"); cmd.add("error");
+        cmd.add("-max_alloc"); cmd.add("268435456");
         cmd.add("-fflags"); cmd.add("+genpts");
         cmd.add("-probesize"); cmd.add("5M");
         cmd.add("-analyzeduration"); cmd.add("5M");
         cmd.add("-i"); cmd.add("pipe:0");
+        cmd.add("-threads"); cmd.add("1");
         cmd.add("-map"); cmd.add("0:V:0");
         cmd.add("-map"); cmd.add("0:a:0?");
         cmd.add("-sn"); cmd.add("-dn");

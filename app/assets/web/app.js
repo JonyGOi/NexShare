@@ -1264,9 +1264,9 @@ function ControlPanel(body) {
         updateState.autoUpdate = st.autoUpdate !== false;
         updateState.activeTransfers = st.activeTransfers || 0;
         updateState.busy = !!st.busy;
-        if (st.state === 'waiting_idle' || st.state === 'downloading' || st.state === 'installing') {
+        if (st.state === 'waiting_idle' || st.state === 'downloading' || st.state === 'installing' || st.state === 'prompt') {
           updateState.statusMsg = st.msg || updateState.statusMsg;
-          if (st.state === 'downloading') updateState.progress = st.progress || 0;
+          if (st.state === 'downloading' || st.state === 'waiting_idle') updateState.progress = st.progress || updateState.progress || 0;
         }
       }
     } catch (ignored) { }
@@ -1398,31 +1398,50 @@ function ControlPanel(body) {
                 class: 'btn primary',
                 disabled: updateState.installing,
                 onclick: async () => {
+                  if (!updateState.info.downloadUrl) {
+                    toast('Este release não tem um APK compatível com esta edição.');
+                    return;
+                  }
                   updateState.installing = true;
                   updateState.progress = 0;
                   updateState.statusMsg = 'Initiating download on phone...';
                   render();
                   try {
-                    await api('update/install', null, { method: 'POST', body: JSON.stringify({ url: updateState.info.downloadUrl }) });
-                    
+                    await api('update/install', null, { method: 'POST', body: JSON.stringify({
+                      url: updateState.info.downloadUrl,
+                      version: updateState.info.latestVersion || '',
+                      size: updateState.info.size || 0
+                    }) });
+
+                    const schedulePoll = () => {
+                      if (!updateState.installing) return;
+                      if (updateState.pollTimer) clearTimeout(updateState.pollTimer);
+                      updateState.pollTimer = setTimeout(pollStatus, 900);
+                    };
                     const pollStatus = async () => {
                       if (!updateState.installing) return;
                       try {
                         const st = await api('update/status');
+                        if (!updateState.installing) return;
                         if (st.state === 'downloading') {
                           updateState.progress = st.progress;
                           updateState.statusMsg = `Downloading APK: ${st.progress}% (${fmtSize(st.downloaded)} / ${fmtSize(st.total)})`;
                           render();
-                          updateState.pollTimer = setTimeout(pollStatus, 800);
+                          schedulePoll();
+                        } else if (st.state === 'waiting_idle') {
+                          updateState.progress = st.progress || updateState.progress || 0;
+                          updateState.statusMsg = st.msg || 'Aguardando as transferências terminarem para instalar...';
+                          render();
+                          schedulePoll();
                         } else if (st.state === 'installing') {
                           updateState.progress = 100;
-                          updateState.statusMsg = 'Installing via Root... NexShare will restart in a few seconds.';
+                          updateState.statusMsg = st.msg || 'Installing via Root... NexShare will restart in a few seconds.';
                           render();
                           setTimeout(waitForRestart, 3000);
                         } else if (st.state === 'prompt') {
                           updateState.installing = false;
-                          updateState.statusMsg = '✓ APK downloaded. Installer prompt opened on your phone screen!';
-                          toast('Check your phone screen to confirm installation!');
+                          updateState.statusMsg = '✓ APK baixado. Abra a notificação do NexShare no celular para instalar.';
+                          toast('APK baixado: toque na notificação do NexShare para instalar.');
                           render();
                         } else if (st.state === 'error') {
                           updateState.installing = false;
@@ -1434,6 +1453,10 @@ function ControlPanel(body) {
                           updateState.statusMsg = 'Update applied! Server restarting...';
                           render();
                           setTimeout(waitForRestart, 2000);
+                        } else {
+                          updateState.statusMsg = st.msg || 'Preparando a atualização...';
+                          render();
+                          schedulePoll();
                         }
                       } catch (err) {
                         if (updateState.installing) {
@@ -1464,7 +1487,7 @@ function ControlPanel(body) {
                   }
                 }
               }, updateState.installing ? 'Updating on phone...' : (updateState.info.flavor === 'root' ? 'Install Update via Root' : 'Send & Install on Phone')),
-              el('a', { class: 'btn', href: updateState.info.downloadUrl, target: '_blank', text: 'Download APK to PC' })
+              el('a', { class: 'btn', href: updateState.info.downloadUrl, target: '_blank', text: 'Baixar APK (celular/PC)' })
             )
           ] : [
             el('div', { style: { color: '#16a34a', fontSize: '13px' }, text: `✓ NexShare is up to date (v${updateState.info.currentVersion})` }),

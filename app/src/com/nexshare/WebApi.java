@@ -16,6 +16,7 @@ import android.os.Environment;
 import android.os.StatFs;
 import android.os.SystemClock;
 import android.provider.MediaStore;
+import android.util.Log;
 import android.util.LruCache;
 
 import org.json.JSONArray;
@@ -597,7 +598,15 @@ public class WebApi implements HttpServer.Handler {
         res.header("Content-Disposition", "inline");
         OutputStream out = res.begin(200, "video/mp4", -1);
         if ("HEAD".equals(req.method)) return;
-        LiveRemux.stream(ctx, f, stream, out);
+        // Keep the auto-updater away while this long-lived fallback stream is open.
+        TransferTracker.onTransferStart();
+        try {
+            LiveRemux.stream(ctx, f, stream, out);
+        } catch (Throwable t) {
+            Log.w("NexShareLive", "live stream ended: " + t.getMessage());
+        } finally {
+            TransferTracker.onTransferEnd();
+        }
     }
 
     /**
@@ -670,7 +679,7 @@ public class WebApi implements HttpServer.Handler {
         LiveHls.Session session;
         try {
             session = LiveHls.start(ctx, f, ref);
-        } catch (Exception e) {
+        } catch (Throwable e) {
             res.error(500, "conversão ao vivo falhou: " + e.getMessage());
             return;
         }
@@ -2102,6 +2111,11 @@ public class WebApi implements HttpServer.Handler {
         }
     }
 
+    private static long parseLong(String s, long fallback) {
+        if (s == null || s.isEmpty()) return fallback;
+        try { return Long.parseLong(s); } catch (NumberFormatException e) { return fallback; }
+    }
+
     static String mime(String name) {
         int dot = name.lastIndexOf('.');
         String t = dot >= 0 ? MIME.get(name.substring(dot + 1).toLowerCase(Locale.ROOT)) : null;
@@ -2113,61 +2127,26 @@ public class WebApi implements HttpServer.Handler {
             @Override
             public void run() {
                 try {
-                    String apiUrl = "https://api.github.com/repos/JonyGOi/NexShare/releases/latest";
-                    java.net.HttpURLConnection conn = (java.net.HttpURLConnection) new java.net.URL(apiUrl).openConnection();
-                    conn.setRequestProperty("User-Agent", "NexShare/" + Flavor.VERSION);
-                    conn.setRequestProperty("Accept", "application/vnd.github+json");
-                    conn.setConnectTimeout(8000);
-                    conn.setReadTimeout(12000);
-                    int code = conn.getResponseCode();
-                    if (code != 200) {
-                        res.error(code, "GitHub returned " + code);
-                        return;
-                    }
-                    InputStream in = conn.getInputStream();
-                    ByteArrayOutputStream bo = new ByteArrayOutputStream();
-                    byte[] buf = new byte[8192];
-                    int n;
-                    while ((n = in.read(buf)) > 0) bo.write(buf, 0, n);
-                    String json = new String(bo.toByteArray(), StandardCharsets.UTF_8);
-                    JSONObject rel = new JSONObject(json);
-
-                    String tag = rel.optString("tag_name", "");
-                    String latestVer = tag.startsWith("v") ? tag.substring(1) : tag;
+                    // Use GitHub release pages instead of api.github.com: the
+                    // unauthenticated API is limited to 60 requests/hour and returns
+                    // 403 when that quota is exhausted.
+                    GitHubRelease.Release rel = GitHubRelease.latest();
+                    String latestVer = rel.version;
                     String currentVer = Flavor.VERSION;
-                    boolean hasUpdate = !currentVer.equals(latestVer);
-
-                    JSONArray assets = rel.optJSONArray("assets");
-                    String downloadUrl = "";
-                    String assetName = "";
-                    long size = 0;
-                    if (assets != null) {
-                        for (int i = 0; i < assets.length(); i++) {
-                            JSONObject a = assets.getJSONObject(i);
-                            String aname = a.optString("name", "");
-                            if (aname.endsWith(".apk")) {
-                                boolean isRootAsset = aname.toLowerCase(Locale.ROOT).contains("root");
-                                if (Flavor.ROOT == isRootAsset) {
-                                    downloadUrl = a.optString("browser_download_url", "");
-                                    assetName = aname;
-                                    size = a.optLong("size", 0);
-                                    break;
-                                }
-                            }
-                        }
-                    }
+                    boolean hasUpdate = AutoUpdater.isNewerVersion(latestVer, currentVer)
+                        && rel.downloadUrl != null && !rel.downloadUrl.isEmpty();
 
                     JSONObject out = new JSONObject();
                     put(out, "ok", true);
                     put(out, "currentVersion", currentVer);
                     put(out, "latestVersion", latestVer);
                     put(out, "hasUpdate", hasUpdate);
-                    put(out, "title", rel.optString("name", tag));
-                    put(out, "notes", rel.optString("body", ""));
-                    put(out, "releaseUrl", rel.optString("html_url", ""));
-                    put(out, "downloadUrl", downloadUrl);
-                    put(out, "assetName", assetName);
-                    put(out, "size", size);
+                    put(out, "title", rel.title);
+                    put(out, "notes", rel.notes);
+                    put(out, "releaseUrl", rel.pageUrl);
+                    put(out, "downloadUrl", rel.downloadUrl);
+                    put(out, "assetName", rel.assetName);
+                    put(out, "size", rel.size);
                     put(out, "flavor", Flavor.ROOT ? "root" : "normal");
                     res.json(200, out.toString());
                 } catch (Exception e) {
@@ -2233,10 +2212,14 @@ public class WebApi implements HttpServer.Handler {
 
     private void installUpdate(HttpServer.Request req, HttpServer.Response res) throws IOException {
         String downloadUrl = req.param("url");
+        String version = req.param("version");
+        long expectedSize = parseLong(req.param("size"), 0);
         if (downloadUrl == null || downloadUrl.isEmpty()) {
             try {
                 JSONObject b = new JSONObject(req.bodyString(4096));
                 downloadUrl = b.optString("url", null);
+                if (version == null || version.isEmpty()) version = b.optString("version", "");
+                if (expectedSize <= 0) expectedSize = b.optLong("size", 0);
             } catch (Exception ignored) { }
         }
         if (downloadUrl == null || downloadUrl.isEmpty()) {
@@ -2252,7 +2235,8 @@ public class WebApi implements HttpServer.Handler {
         UpdateTask.state = "downloading";
         UpdateTask.progress = 0;
         UpdateTask.downloaded = 0;
-        UpdateTask.total = 0;
+        UpdateTask.total = expectedSize > 0 ? expectedSize : 0;
+        UpdateTask.version = version == null ? "" : version;
         UpdateTask.message = "Starting download...";
         UpdateTask.error = "";
 
@@ -2268,6 +2252,19 @@ public class WebApi implements HttpServer.Handler {
                 File apk = new File(apkDir, "update.apk");
 
                 try {
+                    // Do not compete with an active player or transfer. Downloading a
+                    // 50 MB APK while ffmpeg is remuxing is exactly when low-memory
+                    // devices tend to kill the app.
+                    while (TransferTracker.isBusy(ctx) || LiveHls.hasActiveSessions()) {
+                        UpdateTask.state = "waiting_idle";
+                        UpdateTask.message = "Aguardando transferências e o Torrent Player fecharem para baixar a atualização...";
+                        try {
+                            Thread.sleep(3000);
+                        } catch (InterruptedException ignored) { }
+                    }
+                    UpdateTask.state = "downloading";
+                    UpdateTask.message = "Baixando atualização...";
+
                     java.net.HttpURLConnection conn = (java.net.HttpURLConnection) new java.net.URL(targetUrl).openConnection();
                     conn.setRequestProperty("User-Agent", "NexShare/" + Flavor.VERSION);
                     conn.setInstanceFollowRedirects(true);
@@ -2280,7 +2277,8 @@ public class WebApi implements HttpServer.Handler {
                         return;
                     }
                     long len = conn.getContentLengthLong();
-                    UpdateTask.total = len > 0 ? len : 48000000;
+                    if (len > 0) UpdateTask.total = len;
+                    else if (UpdateTask.total <= 0) UpdateTask.total = 48000000;
                     UpdateTask.message = "Downloading update...";
 
                     try (InputStream in = conn.getInputStream(); OutputStream out = new FileOutputStream(apk)) {
@@ -2297,12 +2295,19 @@ public class WebApi implements HttpServer.Handler {
                         }
                     }
 
+                    if (apk.length() < 1024 * 1024) {
+                        throw new IOException("APK inválido ou download incompleto (" + apk.length() + " bytes)");
+                    }
+                    if (len > 0 && apk.length() != len) {
+                        throw new IOException("Download incompleto: " + apk.length() + " de " + len + " bytes");
+                    }
+
                     UpdateTask.progress = 100;
 
                     // Before applying the update, ensure no active transfers are in flight
-                    while (TransferTracker.isBusy(ctx)) {
+                    while (TransferTracker.isBusy(ctx) || LiveHls.hasActiveSessions()) {
                         UpdateTask.state = "waiting_idle";
-                        UpdateTask.message = "Update downloaded. Waiting for active file transfers to complete before updating...";
+                        UpdateTask.message = "Atualização baixada. Aguardando transferências e o Torrent Player fecharem para instalar...";
                         try {
                             Thread.sleep(3000);
                         } catch (InterruptedException ignored) { }
@@ -2324,13 +2329,14 @@ public class WebApi implements HttpServer.Handler {
                             UpdateTask.error = "Root install failed: " + out.trim();
                         }
                     } else {
+                        // A background app cannot reliably open an Activity on Android 10+.
+                        // Post a high-priority notification instead; its PendingIntent opens
+                        // the system installer when the user taps it.
                         UpdateTask.state = "prompt";
-                        UpdateTask.message = "Update downloaded. Installer prompt opened on your phone screen.";
-                        Uri uri = NexFileProvider.uriFor(ctx, apk);
-                        Intent i = new Intent(Intent.ACTION_VIEW);
-                        i.setDataAndType(uri, "application/vnd.android.package-archive");
-                        i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
-                        ctx.startActivity(i);
+                        UpdateTask.message = "APK baixado. Abra a notificação do NexShare para instalar.";
+                        String ver = UpdateTask.version == null || UpdateTask.version.isEmpty()
+                            ? "nova versão" : UpdateTask.version;
+                        AutoUpdater.get(ctx).notifyUpdateReady(ver, apk);
                     }
                 } catch (Exception e) {
                     apk.delete();

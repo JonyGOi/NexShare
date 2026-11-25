@@ -44,6 +44,10 @@ public final class TransferTracker {
      */
     public static boolean isBusy(Context ctx, long quietWindowMs) {
         if (activeTransfers.get() > 0) return true;
+        // Torrent Player keeps ffmpeg writing HLS segments while the user watches.
+        // That is a live transfer even when the torrent itself already finished, so
+        // an auto-update must not restart the app in the middle of playback.
+        if (LiveHls.hasActiveSessions()) return true;
         if (ctx != null) {
             try {
                 if (DownloadManager.get(ctx).hasActiveTransfers()) return true;

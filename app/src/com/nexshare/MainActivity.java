@@ -348,54 +348,21 @@ public class MainActivity extends Activity {
             updateStatus.setText("Connecting to GitHub...");
             new Thread(() -> {
                 try {
-                    String apiUrl = "https://api.github.com/repos/JonyGOi/NexShare/releases/latest";
-                    java.net.HttpURLConnection conn = (java.net.HttpURLConnection) new java.net.URL(apiUrl).openConnection();
-                    conn.setRequestProperty("User-Agent", "NexShare/" + Flavor.VERSION);
-                    conn.setRequestProperty("Accept", "application/vnd.github+json");
-                    conn.setConnectTimeout(8000);
-                    conn.setReadTimeout(12000);
-                    int code = conn.getResponseCode();
-                    if (code != 200) {
-                        runOnUiThread(() -> {
-                            checkUpdateBtn.setEnabled(true);
-                            checkUpdateBtn.setText("Check for updates");
-                            updateStatus.setText("Failed to check: HTTP " + code);
-                        });
-                        return;
-                    }
-                    java.io.InputStream in = conn.getInputStream();
-                    java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
-                    byte[] buf = new byte[8192];
-                    int n;
-                    while ((n = in.read(buf)) > 0) bo.write(buf, 0, n);
-                    org.json.JSONObject rel = new org.json.JSONObject(bo.toString("UTF-8"));
-                    String tag = rel.optString("tag_name", "");
-                    String latestVer = tag.startsWith("v") ? tag.substring(1) : tag;
-                    boolean hasUpdate = !Flavor.VERSION.equals(latestVer);
-
-                    org.json.JSONArray assets = rel.optJSONArray("assets");
-                    String dlUrl = "";
-                    if (assets != null) {
-                        for (int i = 0; i < assets.length(); i++) {
-                            org.json.JSONObject a = assets.getJSONObject(i);
-                            String aname = a.optString("name", "");
-                            if (aname.endsWith(".apk")) {
-                                boolean isRootAsset = aname.toLowerCase(java.util.Locale.ROOT).contains("root");
-                                if (Flavor.ROOT == isRootAsset) {
-                                    dlUrl = a.optString("browser_download_url", "");
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    final String finalDlUrl = dlUrl;
+                    GitHubRelease.Release rel = GitHubRelease.latest();
+                    String latestVer = rel.version;
+                    String dlUrl = rel.downloadUrl;
+                    boolean hasUpdate = AutoUpdater.isNewerVersion(latestVer, Flavor.VERSION)
+                        && dlUrl != null && !dlUrl.isEmpty();
+                    final String finalDlUrl = dlUrl == null ? "" : dlUrl;
+                    final String finalLatestVer = latestVer;
+                    final boolean finalHasUpdate = hasUpdate;
                     runOnUiThread(() -> {
                         checkUpdateBtn.setEnabled(true);
                         checkUpdateBtn.setText("Check for updates");
-                        if (hasUpdate && !finalDlUrl.isEmpty()) {
-                            updateStatus.setText("🎉 New version available: v" + latestVer);
+                        if (finalHasUpdate) {
+                            updateStatus.setText("🎉 New version available: v" + finalLatestVer);
                             installUpdateBtn.setVisibility(View.VISIBLE);
-                            installUpdateBtn.setText("Download & Install v" + latestVer);
+                            installUpdateBtn.setText("Download & Install v" + finalLatestVer);
                             installUpdateBtn.setOnClickListener(iv -> downloadAndInstall(finalDlUrl, installUpdateBtn, updateStatus));
                         } else if (!finalDlUrl.isEmpty()) {
                             updateStatus.setText("✓ App is up to date (v" + Flavor.VERSION + ")");

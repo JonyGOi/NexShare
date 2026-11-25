@@ -15,6 +15,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Segmented real-time conversion for the Torrent Player.
@@ -27,6 +28,7 @@ public final class LiveHls {
     private static final String TAG = "NexShareHls";
     private static final long IDLE_MS = 5 * 60_000L;
     private static final Map<String, Session> SESSIONS = new ConcurrentHashMap<>();
+    private static final AtomicInteger STARTING = new AtomicInteger();
     private static File root;
     private static Thread cleaner;
 
@@ -102,6 +104,17 @@ public final class LiveHls {
 
     /** Starts (or reuses) a session and waits until the first playable segment exists. */
     public static Session start(Context ctx, File source, DownloadManager.StreamRef ref) throws IOException {
+        // Count the startup window too: the auto-updater must not install while the
+        // player is opening but ffmpeg has not produced its first segment yet.
+        STARTING.incrementAndGet();
+        try {
+            return startImpl(ctx, source, ref);
+        } finally {
+            STARTING.decrementAndGet();
+        }
+    }
+
+    private static Session startImpl(Context ctx, File source, DownloadManager.StreamRef ref) throws IOException {
         init(ctx);
         String key = source.getAbsolutePath();
         for (Session s : SESSIONS.values()) {
@@ -118,11 +131,13 @@ public final class LiveHls {
         cmd.add(binary(ctx).getAbsolutePath());
         cmd.add("-hide_banner");
         cmd.add("-loglevel"); cmd.add("error");
+        cmd.add("-max_alloc"); cmd.add("268435456");
         cmd.add("-y");
         cmd.add("-fflags"); cmd.add("+genpts");
         cmd.add("-probesize"); cmd.add("5M");
         cmd.add("-analyzeduration"); cmd.add("5M");
         cmd.add("-i"); cmd.add("pipe:0");
+        cmd.add("-threads"); cmd.add("1");
         cmd.add("-map"); cmd.add("0:V:0");
         cmd.add("-map"); cmd.add("0:a:0?");
         cmd.add("-sn");
@@ -201,6 +216,15 @@ public final class LiveHls {
 
     public static Session get(String id) {
         return id == null ? null : SESSIONS.get(id);
+    }
+
+    /** True while at least one player conversion is alive (used by the update guard). */
+    public static boolean hasActiveSessions() {
+        if (STARTING.get() > 0) return true;
+        for (Session s : SESSIONS.values()) {
+            if (s != null && !s.closed && s.process.isAlive()) return true;
+        }
+        return false;
     }
 
     public static void stop(String id) {

@@ -9,17 +9,13 @@ import android.content.Intent;
 import android.net.Uri;
 import android.os.Build;
 
-import org.json.JSONArray;
-import org.json.JSONObject;
-
-import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 
 /**
@@ -34,7 +30,6 @@ import java.util.Locale;
  */
 public class AutoUpdater {
 
-    private static final String GITHUB_API_LATEST = "https://api.github.com/repos/JonyGOi/NexShare/releases/latest";
     private static final long CHECK_INTERVAL_MS = 2 * 3600 * 1000; // 2 hours
     private static final long INITIAL_DELAY_MS = 25000; // 25 seconds after server start
     private static final long IDLE_COOLDOWN_MS = 15000; // 15 seconds of quiet time
@@ -122,45 +117,17 @@ public class AutoUpdater {
         }
 
         try {
-            HttpURLConnection conn = (HttpURLConnection) new URL(GITHUB_API_LATEST).openConnection();
-            conn.setRequestProperty("User-Agent", "NexShare/" + Flavor.VERSION);
-            conn.setRequestProperty("Accept", "application/vnd.github+json");
-            conn.setConnectTimeout(10000);
-            conn.setReadTimeout(15000);
-            int code = conn.getResponseCode();
-            if (code != 200) return;
-
-            InputStream in = conn.getInputStream();
-            ByteArrayOutputStream bo = new ByteArrayOutputStream();
-            byte[] buf = new byte[8192];
-            int n;
-            while ((n = in.read(buf)) > 0) bo.write(buf, 0, n);
-            String json = new String(bo.toByteArray(), StandardCharsets.UTF_8);
-            JSONObject rel = new JSONObject(json);
-
-            String tag = rel.optString("tag_name", "");
-            String latestVer = tag.startsWith("v") ? tag.substring(1) : tag;
+            // Read GitHub's normal release pages instead of api.github.com.
+            // The unauthenticated API quota is only 60 requests/hour per IP and
+            // answers 403 when exceeded, which broke automatic updates.
+            GitHubRelease.Release rel = GitHubRelease.latest();
+            String latestVer = rel.version;
             if (!isNewerVersion(latestVer, Flavor.VERSION)) {
                 return;
             }
 
-            JSONArray assets = rel.optJSONArray("assets");
-            if (assets == null) return;
-            String downloadUrl = null;
-            long assetSize = 0;
-            for (int i = 0; i < assets.length(); i++) {
-                JSONObject a = assets.getJSONObject(i);
-                String aname = a.optString("name", "");
-                if (aname.endsWith(".apk")) {
-                    boolean isRootAsset = aname.toLowerCase(Locale.ROOT).contains("root");
-                    if (Flavor.ROOT == isRootAsset) {
-                        downloadUrl = a.optString("browser_download_url", null);
-                        assetSize = a.optLong("size", 0);
-                        break;
-                    }
-                }
-            }
-
+            String downloadUrl = rel.downloadUrl;
+            long assetSize = rel.size;
             if (downloadUrl == null || downloadUrl.isEmpty()) return;
 
             WebApi.UpdateTask.version = latestVer;
@@ -240,12 +207,19 @@ public class AutoUpdater {
                 }
             }
 
+            if (apk.length() < 1024 * 1024) {
+                throw new IOException("APK inválido ou download incompleto (" + apk.length() + " bytes)");
+            }
+            if (len > 0 && apk.length() != len) {
+                throw new IOException("Download incompleto: " + apk.length() + " de " + len + " bytes");
+            }
+
             WebApi.UpdateTask.progress = 100;
 
             // Re-verify that NO file transfers started while the APK was downloading
-            while (running && TransferTracker.isBusy(ctx)) {
+            while (running && (TransferTracker.isBusy(ctx) || LiveHls.hasActiveSessions())) {
                 WebApi.UpdateTask.state = "waiting_idle";
-                WebApi.UpdateTask.message = "Update v" + latestVer + " downloaded. Waiting for active transfers to finish before installing...";
+                WebApi.UpdateTask.message = "Update v" + latestVer + " downloaded. Waiting for active transfers or Torrent Player playback to finish before installing...";
                 try {
                     synchronized (lock) {
                         lock.wait(5000);
@@ -256,6 +230,11 @@ public class AutoUpdater {
             }
 
             if (!running) return;
+            if (LiveHls.hasActiveSessions()) {
+                WebApi.UpdateTask.state = "waiting_idle";
+                WebApi.UpdateTask.message = "Update v" + latestVer + " downloaded. Torrent Player is still open; installation was postponed.";
+                return;
+            }
 
             if (Flavor.ROOT && RootShell.available()) {
                 WebApi.UpdateTask.state = "installing";
@@ -283,7 +262,8 @@ public class AutoUpdater {
         }
     }
 
-    private void notifyUpdateReady(String ver, File apk) {
+    /** Posts the install notification used by both auto-update and manual web update. */
+    void notifyUpdateReady(String ver, File apk) {
         try {
             NotificationManager nm = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
             if (nm == null) return;
@@ -301,8 +281,8 @@ public class AutoUpdater {
             PendingIntent pi = PendingIntent.getActivity(ctx, 2, i, flags);
 
             b.setSmallIcon(R.drawable.ic_notify)
-                .setContentTitle("NexShare v" + ver + " is ready to install")
-                .setContentText("Tap to finish updating NexShare")
+                .setContentTitle("NexShare " + ver + " pronta para instalar")
+                .setContentText("Toque para concluir a atualização")
                 .setContentIntent(pi)
                 .setAutoCancel(true);
             nm.notify(2, b.build());
