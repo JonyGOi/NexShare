@@ -29,6 +29,9 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.RandomAccessFile;
 import java.net.Inet4Address;
+import java.net.Inet6Address;
+import java.net.InetAddress;
+import java.net.NetworkInterface;
 import java.net.URLDecoder;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
@@ -187,6 +190,7 @@ public class WebApi implements HttpServer.Handler {
             case "/api/file": file(req, res); break;
             case "/api/hash": hash(req, res); break;
             case "/api/thumb": thumb(req, res); break;
+            case "/api/image": image(req, res); break;
             case "/api/zip": zip(req, res); break;
             case "/api/upload": upload(req, res); break;
             case "/api/mkdir": mkdir(req, res); break;
@@ -207,6 +211,14 @@ public class WebApi implements HttpServer.Handler {
             case "/api/dl/resume": DownloadManager.get(ctx).resume(req.param("id")); dlList(res); break;
             case "/api/dl/remove": DownloadManager.get(ctx).remove(req.param("id"), "1".equals(req.param("files"))); dlList(res); break;
             case "/api/dl/clear": DownloadManager.get(ctx).clearFinished(); dlList(res); break;
+            case "/api/archive/list": archiveList(req, res); break;
+            case "/api/archive/find": archiveFind(req, res); break;
+            case "/api/archive/extract": archiveExtract(req, res); break;
+            case "/api/archive/status": archiveStatus(req, res); break;
+            case "/api/archive/cancel": ArchiveManager.cancel(req.param("id")); res.json(200, "{\"ok\":true}"); break;
+            case "/api/remux": remuxStart(req, res); break;
+            case "/api/remux/status": remuxStatus(req, res); break;
+            case "/api/remux/file": remuxFile(req, res); break;
             case "/api/debrid/unrestrict": debridUnrestrict(req, res); break;
             case "/api/debrid/files": debridFiles(req, res); break;
             case "/api/debrid/prioritize": debridPrioritize(req, res); break;
@@ -1171,10 +1183,273 @@ public class WebApi implements HttpServer.Handler {
             return;
         }
         if (isOn(req, null, "paused")) {
+            // Stay metadata-only, but do NOT pause the handle: a paused magnet never
+            // receives metadata and the file picker would stay empty forever.
             t.awaitingSelection = true;
-            DownloadManager.get(ctx).pause(t.id);
+            t.status = "metadata";
+            DownloadManager.get(ctx).save();
+            TorrentEngine te = DownloadManager.get(ctx).torrentEngine();
+            if (te != null) te.prepareMetadata(t);
         }
         res.json(200, "{\"added\":1,\"ids\":[" + JSONObject.quote(t.id) + "]}");
+    }
+
+    /** Converts HEIC/HEIF/TIFF to JPEG so every browser can display it. */
+    private void image(HttpServer.Request req, HttpServer.Response res) throws IOException {
+        File f;
+        try {
+            f = resolve(req.param("path"));
+        } catch (SecurityException e) {
+            res.error(403, "fora do armazenamento");
+            return;
+        }
+        if (!f.isFile()) {
+            res.error(404, "imagem não encontrada");
+            return;
+        }
+        Bitmap bmp;
+        try {
+            bmp = BitmapFactory.decodeFile(f.getAbsolutePath());
+            if (bmp == null) throw new IOException("formato de imagem não suportado");
+            int max = 4096;
+            if (Math.max(bmp.getWidth(), bmp.getHeight()) > max) {
+                float scale = max / (float) Math.max(bmp.getWidth(), bmp.getHeight());
+                Bitmap scaled = Bitmap.createScaledBitmap(bmp, Math.round(bmp.getWidth() * scale), Math.round(bmp.getHeight() * scale), true);
+                if (scaled != bmp) bmp.recycle();
+                bmp = scaled;
+            }
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            bmp.compress(Bitmap.CompressFormat.JPEG, 92, out);
+            bmp.recycle();
+            byte[] data = out.toByteArray();
+            res.header("Cache-Control", "private, max-age=86400");
+            OutputStream os = res.begin(200, "image/jpeg", data.length);
+            os.write(data);
+        } catch (Exception e) {
+            res.error(415, "não foi possível converter esta imagem: " + e.getMessage());
+        }
+    }
+
+    // ---------- browser compatibility (remux) ----------
+
+    private void remuxStart(HttpServer.Request req, HttpServer.Response res) throws IOException {
+        JSONObject body;
+        try {
+            body = new JSONObject(req.bodyString(65536));
+        } catch (Exception e) {
+            res.error(400, "bad request");
+            return;
+        }
+        File src;
+        try {
+            src = resolve(body.optString("path", ""));
+        } catch (SecurityException e) {
+            res.error(403, "fora do armazenamento");
+            return;
+        }
+        if (!src.isFile()) {
+            res.error(404, "arquivo não encontrado");
+            return;
+        }
+        try {
+            MediaRemux.Job job = MediaRemux.start(ctx, src);
+            res.json(200, job.toJson().toString());
+        } catch (Exception e) {
+            res.error(400, e.getMessage());
+        }
+    }
+
+    private void remuxStatus(HttpServer.Request req, HttpServer.Response res) throws IOException {
+        MediaRemux.Job job = MediaRemux.get(req.param("id"));
+        if (job == null) {
+            res.error(404, "conversão não encontrada");
+            return;
+        }
+        res.json(200, job.toJson().toString());
+    }
+
+    private void remuxFile(HttpServer.Request req, HttpServer.Response res) throws IOException {
+        File f = MediaRemux.file(req.param("id"));
+        if (f == null || !f.isFile()) {
+            res.error(404, "vídeo ainda não convertido");
+            return;
+        }
+        long len = f.length();
+        long start = 0, end = len - 1;
+        boolean partial = false;
+        String range = req.header("range");
+        if (range != null && range.startsWith("bytes=") && !range.contains(",")) {
+            String[] rr = range.substring(6).split("-", -1);
+            try {
+                if (rr[0].isEmpty()) start = Math.max(0, len - Long.parseLong(rr[1]));
+                else {
+                    start = Long.parseLong(rr[0]);
+                    if (!rr[1].isEmpty()) end = Math.min(Long.parseLong(rr[1]), len - 1);
+                }
+                partial = true;
+            } catch (NumberFormatException ignored) { }
+            if (start >= len || start > end) {
+                res.header("Content-Range", "bytes */" + len);
+                res.begin(416, null, 0);
+                return;
+            }
+        }
+        res.header("Accept-Ranges", "bytes");
+        res.header("Content-Disposition", "inline");
+        if (partial) res.header("Content-Range", "bytes " + start + "-" + end + "/" + len);
+        long count = len == 0 ? 0 : end - start + 1;
+        OutputStream out = res.begin(partial ? 206 : 200, "video/mp4", count);
+        if (len == 0) return;
+        try (RandomAccessFile raf = new RandomAccessFile(f, "r")) {
+            raf.seek(start);
+            byte[] buf = new byte[65536];
+            long left = count;
+            while (left > 0) {
+                int n = raf.read(buf, 0, (int) Math.min(buf.length, left));
+                if (n < 0) break;
+                out.write(buf, 0, n);
+                left -= n;
+            }
+        }
+    }
+
+    private static boolean isTailscale(String host) {
+        // Tailscale uses CGNAT 100.64.0.0/10.
+        try {
+            String[] p = host.split("\\.");
+            if (p.length != 4) return false;
+            int a = Integer.parseInt(p[0]), b = Integer.parseInt(p[1]);
+            return a == 100 && b >= 64 && b <= 127;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private static boolean isGlobalV6(String host) {
+        return host != null && !host.isEmpty()
+            && !host.startsWith("fe80") && !host.startsWith("fc") && !host.startsWith("fd")
+            && !host.equals("::1");
+    }
+
+    // ---------- ZIP archives ----------
+
+    private void archiveList(HttpServer.Request req, HttpServer.Response res) throws IOException {
+        File f;
+        try {
+            f = resolve(req.param("path"));
+        } catch (SecurityException e) {
+            res.error(403, "fora do armazenamento");
+            return;
+        }
+        if (!f.isFile() || !ArchiveManager.isArchive(f.getName())) {
+            res.error(400, "não é um arquivo ZIP");
+            return;
+        }
+        try {
+            JSONArray entries = ArchiveManager.list(f);
+            JSONObject o = new JSONObject();
+            put(o, "path", f.getAbsolutePath());
+            put(o, "name", f.getName());
+            put(o, "count", entries.length());
+            put(o, "entries", entries);
+            res.json(200, o.toString());
+        } catch (Exception e) {
+            res.error(400, "ZIP inválido ou protegido: " + e.getMessage());
+        }
+    }
+
+    /** Finds ZIP files inside a torrent's destination folder (or any folder). */
+    private void archiveFind(HttpServer.Request req, HttpServer.Response res) throws IOException {
+        JSONArray out = new JSONArray();
+        String taskId = req.param("task");
+        if (taskId != null && !taskId.isEmpty()) {
+            DownloadManager.Task t = DownloadManager.get(ctx).getTask(taskId);
+            if (t == null) {
+                res.error(404, "tarefa não encontrada");
+                return;
+            }
+            TorrentEngine te = DownloadManager.get(ctx).torrentEngine();
+            if (te != null) {
+                for (JSONObject fi : te.listFiles(t)) {
+                    String full = fi.optString("fullPath", "");
+                    if (!full.isEmpty() && ArchiveManager.isArchive(full)) {
+                        File f = new File(full);
+                        if (f.isFile()) out.put(entry(f));
+                    }
+                }
+            }
+            File direct = new File(t.dest, t.name == null ? "" : t.name);
+            if (direct.isFile() && ArchiveManager.isArchive(direct.getName())) out.put(entry(direct));
+            if (out.length() == 0) findArchives(new File(t.dest), out, 0);
+        } else {
+            File dir;
+            try {
+                dir = resolve(req.param("path"));
+            } catch (SecurityException e) {
+                res.error(403, "fora do armazenamento");
+                return;
+            }
+            findArchives(dir, out, 0);
+        }
+        JSONObject o = new JSONObject();
+        put(o, "entries", out);
+        res.json(200, o.toString());
+    }
+
+    private void findArchives(File dir, JSONArray out, int depth) {
+        if (dir == null || depth > 5 || out.length() >= 100) return;
+        File[] files = dir.listFiles();
+        if (files == null) return;
+        for (File f : files) {
+            if (out.length() >= 100) return;
+            if (f.isDirectory()) {
+                if (!f.getName().equals("Android")) findArchives(f, out, depth + 1);
+            } else if (ArchiveManager.isArchive(f.getName())) {
+                out.put(entry(f));
+            }
+        }
+    }
+
+    private void archiveExtract(HttpServer.Request req, HttpServer.Response res) throws IOException {
+        JSONObject body;
+        try {
+            body = new JSONObject(req.bodyString(1 << 20));
+        } catch (Exception e) {
+            res.error(400, "bad request");
+            return;
+        }
+        File zip, dest;
+        try {
+            zip = resolve(body.optString("path", ""));
+            dest = body.optString("dest", "").isEmpty()
+                ? zip.getParentFile()
+                : resolve(body.optString("dest"));
+        } catch (SecurityException e) {
+            res.error(403, "fora do armazenamento");
+            return;
+        }
+        List<String> entries = new ArrayList<>();
+        JSONArray arr = body.optJSONArray("entries");
+        if (arr != null) {
+            for (int i = 0; i < arr.length(); i++) entries.add(arr.optString(i));
+        }
+        try {
+            ArchiveManager.Job job = ArchiveManager.start(zip, dest, entries);
+            JSONObject o = job.toJson();
+            put(o, "ok", true);
+            res.json(200, o.toString());
+        } catch (Exception e) {
+            res.error(400, e.getMessage());
+        }
+    }
+
+    private void archiveStatus(HttpServer.Request req, HttpServer.Response res) throws IOException {
+        ArchiveManager.Job job = ArchiveManager.get(req.param("id"));
+        if (job == null) {
+            res.error(404, "extração não encontrada");
+            return;
+        }
+        res.json(200, job.toJson().toString());
     }
 
     // ---------- system ----------
@@ -1190,6 +1465,41 @@ public class WebApi implements HttpServer.Handler {
         Inet4Address ip = MdnsResponder.lanAddress();
         put(o, "ip", ip == null ? "" : ip.getHostAddress());
         put(o, "host", MdnsResponder.HOST);
+        JSONArray urls = new JSONArray();
+        String ipv6 = "";
+        try {
+            java.util.Enumeration<NetworkInterface> ifaces = NetworkInterface.getNetworkInterfaces();
+            while (ifaces != null && ifaces.hasMoreElements()) {
+                NetworkInterface ni = ifaces.nextElement();
+                if (!ni.isUp() || ni.isLoopback()) continue;
+                for (java.net.InterfaceAddress ia : ni.getInterfaceAddresses()) {
+                    InetAddress a = ia.getAddress();
+                    if (a == null || a.isLoopbackAddress() || a.isLinkLocalAddress() || a.isAnyLocalAddress()) continue;
+                    String host = a.getHostAddress();
+                    if (host == null) continue;
+                    int pct = host.indexOf('%');
+                    if (pct > 0) host = host.substring(0, pct);
+                    boolean v6 = a instanceof Inet6Address;
+                    String url;
+                    if (v6) {
+                        if (!isGlobalV6(host)) continue;
+                        url = "http://[" + host + "]:" + ServerService.PORT;
+                        if (ipv6.isEmpty()) ipv6 = host;
+                    } else {
+                        if (host.startsWith("169.254.")) continue;
+                        url = "http://" + host + ":" + ServerService.PORT;
+                    }
+                    JSONObject u = new JSONObject();
+                    put(u, "kind", v6 ? "ipv6" : (isTailscale(host) ? "tailscale" : "lan"));
+                    put(u, "label", v6 ? "IPv6 direto" : (isTailscale(host) ? "Tailscale" : "Rede local"));
+                    put(u, "url", url);
+                    put(u, "host", host);
+                    urls.put(u);
+                }
+            }
+        } catch (Exception ignored) { }
+        put(o, "ipv6", ipv6);
+        put(o, "urls", urls);
         put(o, "port", ServerService.PORT);
         put(o, "httpsPort", ServerService.HTTPS_PORT);
         put(o, "httpsEnabled", serverRef.length > 1 && serverRef[1] != null);
@@ -1825,8 +2135,12 @@ public class WebApi implements HttpServer.Handler {
             }
             DownloadManager.Task t = dm.addTorrent(null, torrentBytes, dlDir(req.param("dest")));
             if (isOn(req, null, "paused")) {
+                // .torrent already has metadata, but keep the handle alive so the picker
+                // can list it; nothing is downloaded while every file is ignored.
                 t.awaitingSelection = true;
-                dm.pause(t.id); // .torrent already has metadata, so it can stay paused
+                t.status = "choose";
+                dm.save();
+                if (te != null) te.prepareMetadata(t);
             } else if (te != null) {
                 te.autoPrioritize(t);
             }
@@ -2119,9 +2433,12 @@ public class WebApi implements HttpServer.Handler {
         DownloadManager dm = DownloadManager.get(ctx);
         DownloadManager.Task t = dm.addUrl(magnet, dest);
         TorrentEngine te = dm.torrentEngine();
-        if (te != null) te.autoPrioritize(t);
-        // Added paused on purpose: the file picker must come before any byte is downloaded.
-        if (body.optBoolean("paused", true)) dm.pause(t.id);
+        // Added held on purpose: the file picker must come before any payload byte is
+        // downloaded. Metadata still has to flow, so the handle is never paused here.
+        t.awaitingSelection = true;
+        t.status = "metadata";
+        dm.save();
+        if (te != null) te.prepareMetadata(t);
 
         String token = getOrCreateStreamToken();
         String host = req.header("host");
@@ -2143,11 +2460,16 @@ public class WebApi implements HttpServer.Handler {
 
     private void debridFiles(HttpServer.Request req, HttpServer.Response res) throws IOException {
         String id = req.param("id");
-        DownloadManager.Task t = DownloadManager.get(ctx).getTask(id);
+        DownloadManager dm = DownloadManager.get(ctx);
+        DownloadManager.Task t = dm.getTask(id);
         if (t == null) {
             res.error(404, "task not found");
             return;
         }
+        // Refresh progress/metadata before serialising: this is what makes the picker
+        // appear as soon as the magnet metadata arrives.
+        dm.list();
+        t = dm.getTask(id);
         res.json(200, debridPayload(req, t).toString());
     }
 

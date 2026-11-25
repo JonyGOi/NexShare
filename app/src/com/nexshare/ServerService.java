@@ -44,8 +44,9 @@ public class ServerService extends Service {
         lastActivityTime = System.currentTimeMillis();
     }
 
+    /** Kept for the UI. The server is always fully awake while the service runs. */
     public static boolean isEcoMode() {
-        return (System.currentTimeMillis() - lastActivityTime) > 45000;
+        return false;
     }
 
     private final HttpServer[] server = new HttpServer[2];
@@ -66,8 +67,8 @@ public class ServerService extends Service {
     private volatile boolean hasActiveTransfers = false;
     private volatile boolean screenOff = false;
     private volatile long lastEcoCheck = 0;
-    private static final long ECO_MODE_DELAY_MS = 60000; // Enter eco mode after 1 min idle
-    private static final long WAKE_LOCK_RELEASE_DELAY_MS = 300000; // Release wake locks after 5 min idle
+    private static final long ECO_MODE_DELAY_MS = 60000; // status only; never releases the locks
+    private static final long WAKE_LOCK_RELEASE_DELAY_MS = 300000; // kept for compatibility
 
     @Override
     public IBinder onBind(Intent intent) {
@@ -164,15 +165,11 @@ public class ServerService extends Service {
             TunnelManager.get(this).restoreIfEnabled();
             AutoUpdater.get(this).start();
 
-            // Initialize wake locks lazily - only acquire when there's actual activity
-            // Start with basic Wi-Fi lock (low power mode) to stay reachable
-            WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
-            if (wm != null) {
-                wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL, "nexshare:wifi");
-                wifiLock.setReferenceCounted(false);
-                wifiLock.acquire();
-            }
-            // CPU wake lock will be acquired on first transfer via acquireWakeLocks()
+            // Keep the CPU and Wi-Fi awake for the whole time the server is running.
+            // The previous "eco mode" released them after a few idle minutes, which made
+            // Android suspend the process and drop HTTP/WebDAV/tunnel connections while
+            // the screen was off or the app was in the background.
+            acquireWakeLocks();
 
             registerNetworkMonitoring();
             startPowerScheduler();
@@ -258,6 +255,7 @@ public class ServerService extends Service {
         DownloadManager dm = DownloadManager.get(this);
         for (DownloadManager.Task t : dm.getTorrentTasks()) {
             if (t.speed > 0 || t.upSpeed > 0) return true;
+            if (t.awaitingSelection || "metadata".equals(t.status) || "choose".equals(t.status)) return true;
             if (t.priorityFile >= 0 && ("downloading".equals(t.status) || "seeding".equals(t.status))) return true;
         }
         return false;
@@ -269,33 +267,22 @@ public class ServerService extends Service {
         hasActiveTransfers = checkActiveTransfers();
         long now = System.currentTimeMillis();
 
-        if (hasActiveTransfers) {
-            // Active transfers: ensure wake locks are held, exit eco mode
-            acquireWakeLocks();
-            lastEcoCheck = now;
-            screenOff = isScreenOff();
-        } else {
-            // No active transfers: check if we should enter eco mode
-            if (now - lastActivityTime > ECO_MODE_DELAY_MS) {
-                // We've been idle for a while - enter eco mode
-                enterEcoMode();
-            }
-        }
+        // The server is a 24/7 foreground service: keep the locks regardless of
+        // transfers. Android can suspend the CPU and Wi-Fi very quickly when the
+        // screen turns off, so releasing them while "idle" breaks remote access.
+        acquireWakeLocks();
+        lastEcoCheck = now;
+        screenOff = isScreenOff();
 
-        // If we just became idle after being active, schedule wake lock release
+        // Kept for logs/diagnostics; no lock is released while the service lives.
         if (wasActive && !hasActiveTransfers) {
             scheduleWakeLockRelease();
         }
     }
 
-    /** Enters eco mode: releases wake locks, reduces polling, etc. */
+    /** Legacy entry point kept so old callers cannot accidentally release the locks. */
     private void enterEcoMode() {
-        // Only release wake locks if we've been idle long enough AND screen is off
-        if (screenOff && (System.currentTimeMillis() - lastActivityTime) > WAKE_LOCK_RELEASE_DELAY_MS) {
-            releaseWakeLocks();
-        }
-        // mDNS and NSD can stay running - they're lightweight
-        // Network monitoring stays for auto-reconnect
+        acquireWakeLocks();
     }
 
     /** Acquires wake locks for active operation. */
@@ -318,32 +305,15 @@ public class ServerService extends Service {
         }
     }
 
-    /** Releases wake locks to save power when idle. */
+    /** Only used by onDestroy. Idle time never releases the locks anymore. */
     private void releaseWakeLocks() {
-        if (wakeLock != null && wakeLock.isHeld()) {
-            wakeLock.release();
-        }
-        if (wifiLock != null && wifiLock.isHeld()) {
-            wifiLock.release();
-        }
-        // Re-acquire with lower power mode if screen comes back on
-        if (wifiLock == null || !wifiLock.isHeld()) {
-            WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
-            if (wm != null) {
-                wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL, "nexshare:wifi");
-                wifiLock.setReferenceCounted(false);
-                wifiLock.acquire();
-            }
-        }
+        if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
+        if (wifiLock != null && wifiLock.isHeld()) wifiLock.release();
     }
 
-    /** Schedules wake lock release after a delay of inactivity. */
+    /** No-op: keeping this method makes the intent explicit and avoids regressions. */
     private void scheduleWakeLockRelease() {
-        powerScheduler.schedule(() -> {
-            if (!hasActiveTransfers && isScreenOff() && (System.currentTimeMillis() - lastActivityTime) > WAKE_LOCK_RELEASE_DELAY_MS) {
-                releaseWakeLocks();
-            }
-        }, WAKE_LOCK_RELEASE_DELAY_MS, TimeUnit.MILLISECONDS);
+        if (wakeLock == null || !wakeLock.isHeld()) acquireWakeLocks();
     }
 
     /** Checks if the screen is currently off. */

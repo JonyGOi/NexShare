@@ -284,14 +284,28 @@ public class WebDavHandler implements HttpServer.Handler {
         if (rel.startsWith("/")) rel = rel.substring(1);
         if (rel.isEmpty() || rel.equals("/")) return storageRoot.getCanonicalFile();
 
-        // Block path traversal attempts
+        // Block path traversal attempts, including percent-encoded "..".
         rel = rel.replace('\\', '/');
         for (String part : rel.split("/")) {
             if ("..".equals(part)) throw new SecurityException("path traversal blocked");
         }
+        try {
+            for (String part : java.net.URLDecoder.decode(rel, "UTF-8").split("/")) {
+                if ("..".equals(part)) throw new SecurityException("path traversal blocked");
+            }
+        } catch (IllegalArgumentException ignored) { }
 
         File canonicalRoot = storageRoot.getCanonicalFile();
-        File target = new File(canonicalRoot, rel).getCanonicalFile();
+        File target = walkPath(canonicalRoot, rel);
+        // Some Windows clients double-encode accented names (e.g. %2520). Only use the
+        // decoded form when the literal path does not exist; this keeps real '%' names.
+        if (target == null && rel.indexOf('%') >= 0) {
+            try {
+                target = walkPath(canonicalRoot, java.net.URLDecoder.decode(rel, "UTF-8"));
+            } catch (Exception ignored) { }
+        }
+        if (target == null) target = new File(canonicalRoot, rel).getCanonicalFile();
+        target = target.getCanonicalFile();
         String rootPath = canonicalRoot.getPath();
         String targetPath = target.getPath();
 
@@ -299,6 +313,45 @@ public class WebDavHandler implements HttpServer.Handler {
             throw new SecurityException("outside storage");
         }
         return target;
+    }
+
+    /**
+     * Walks one segment at a time. Android storage is case-sensitive, while Windows
+     * remembers the exact case from PROPFIND; a renamed/accented folder (or an NFC/NFD
+     * mismatch) otherwise produces a 404 that Explorer reports as "the file was moved".
+     */
+    private File walkPath(File root, String rel) throws IOException {
+        File cur = root;
+        for (String part : rel.split("/")) {
+            if (part.isEmpty()) continue;
+            File exact = new File(cur, part);
+            if (exact.exists()) {
+                cur = exact;
+                continue;
+            }
+            File[] children = cur.listFiles();
+            if (children == null) return null;
+            String wanted = normalizeName(part);
+            File found = null;
+            for (File c : children) {
+                if (normalizeName(c.getName()).equals(wanted)) { found = c; break; }
+            }
+            if (found == null) {
+                for (File c : children) {
+                    if (normalizeName(c.getName()).equalsIgnoreCase(wanted)) { found = c; break; }
+                }
+            }
+            if (found == null) return null;
+            cur = found;
+        }
+        return cur;
+    }
+
+    private static String normalizeName(String s) {
+        if (s == null) return "";
+        // macOS/SMB tools often write NFD; Windows asks for NFC.
+        return java.text.Normalizer.normalize(s, java.text.Normalizer.Form.NFC)
+            .replace('\u00a0', ' ').trim();
     }
 
     // ---------- WebDAV methods ----------

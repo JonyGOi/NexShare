@@ -127,6 +127,13 @@ if ($isAdmin) {
     try {
         Set-ItemProperty -Path $regPath -Name 'BasicAuthLevel' -Value 2 -Type DWord -ErrorAction SilentlyContinue
         Set-ItemProperty -Path $regPath -Name 'FileSizeLimitInBytes' -Value ([uint32]::MaxValue) -Type DWord -ErrorAction SilentlyContinue
+        # The WebClient reads these values only at startup; without a restart the old
+        # 50 MB limit remains and Explorer reports large files as "moved".
+        $wcNow = Get-Service -Name WebClient -ErrorAction SilentlyContinue
+        if ($wcNow -and $wcNow.Status -eq 'Running') {
+            Restart-Service -Name WebClient -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Milliseconds 800
+        }
     } catch { }
 }
 $svc = Get-Service -Name WebClient -ErrorAction SilentlyContinue

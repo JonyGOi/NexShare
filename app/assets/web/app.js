@@ -55,17 +55,19 @@ async function api(path, params, opt = {}) {
 }
 
 const fileUrl = (p, dl) => '/api/file' + qs({ path: p, dl: dl ? 1 : null });
+const imageUrl = (p) => /\.(heic|heif|tif|tiff)$/i.test(p || '') ? '/api/image' + qs({ path: p }) : fileUrl(p);
 const thumbUrl = (p, s = 240) => '/api/thumb' + qs({ path: p, s });
 
 function fmtSize(n) {
-  if (n == null || n < 0) return '-';
+  n = Number(n);
+  if (!isFinite(n) || n < 0) return '-';
   if (n < 1024) return Math.round(n) + ' B';
   const u = ['KB', 'MB', 'GB', 'TB'];
   let i = -1;
   do { n /= 1024; i++; } while (n >= 1024 && i < u.length - 1);
   return (n >= 100 ? n.toFixed(0) : n.toFixed(1)) + ' ' + u[i];
 }
-const fmtRate = n => fmtSize(Math.max(0, n)).replace(' B', ' B') + '/s';
+const fmtRate = n => fmtSize(Math.max(0, Number(n) || 0)) + '/s';
 function fmtAgo(ms) {
   if (ms == null || ms < 0) return '-';
   const s = Math.round(ms / 1000);
@@ -93,7 +95,7 @@ const extOf = n => { const i = n.lastIndexOf('.'); return i > 0 ? n.slice(i + 1)
 const KIND = {};
 for (const [k, list] of Object.entries({
   image: 'jpg jpeg png gif webp bmp heic heif svg',
-  video: 'mp4 m4v webm mkv 3gp mov avi',
+  video: 'mp4 m4v webm mkv 3gp mov avi ts m2ts mpg mpeg wmv flv vob ogv',
   audio: 'mp3 m4a aac ogg opus wav flac amr',
   pdf: 'pdf',
   text: 'txt log md csv json xml html htm css js ini conf yml yaml srt',
@@ -793,6 +795,7 @@ function FileStation(body, win) {
       { label: 'Download', ico: 'download', disabled: !sel.length, run: download },
       { label: 'Download as ZIP', ico: 'zip', disabled: !sel.length, run: () => download(true) },
       { label: 'Copy Download Link', ico: 'link', disabled: !one || one.dir, run: () => copyLink(one) },
+      one && /\.(zip|cbz)$/i.test(one.name) ? { label: 'Abrir conteúdo do ZIP…', ico: 'archive', run: () => openZipPicker(one.path) } : null,
       one && /\.torrent$/i.test(one.name) ? { label: 'Add to Download Station', ico: 'download', run: () => addTorrentFromPhone(one) } : null,
       one && !one.dir && kindOf(one) === 'image' ? { label: 'Set as Wallpaper', ico: 'open', run: () => setWallpaperFromFile(one) } : null,
       '-',
@@ -1230,6 +1233,7 @@ function ControlPanel(body) {
       el('h2', { text: 'Control Panel' }),
       State.roots.length && !State.roots[0].readable ? el('div', { class: 'notice', style: { margin: '0 0 12px' }, text: 'Storage access not granted — open NexShare app on your phone and tap "Grant All Files Access"' }) : null,
       Auth.pinRequired === false ? el('div', { class: 'notice', style: { margin: '0 0 12px' }, text: 'PIN authentication is disabled. Anyone on this Wi-Fi can access your files. You can enable PIN in the mobile app.' }) : null,
+      el('div', { class: 'notice', style: { margin: '0 0 12px' }, text: '⚡ O servidor fica ativo com a tela desligada e em segundo plano. Se o Android ainda suspender o app, abra as configurações do NexShare e desative a otimização de bateria (sem isso alguns fabricantes encerram serviços à força).' }),
       el('div', { class: 'card' }, el('h3', { text: 'Device', style: { marginTop: 0 } }), el('dl', { class: 'kv' },
         el('dt', { text: 'Server Name' }), el('dd', { text: s.name || '-' }),
         el('dt', { text: 'Model' }), el('dd', { text: s.model || '-' }),
@@ -1605,6 +1609,12 @@ const Viewer = {
   },
   async show() {
     this.resetTransform();
+    if (this.video) {
+      this.video.pause();
+      this.video.removeAttribute('src');
+      this.video.load();
+      this.video = null;
+    }
     const e = this.cur = this.list[this.i];
     this.title.textContent = `${e.name}  ·  ${fmtSize(e.size)}` + (this.list.length > 1 ? `  ·  ${this.i + 1}/${this.list.length}` : '');
     this.prev.classList.toggle('hidden', this.i === 0);
@@ -1622,12 +1632,30 @@ const Viewer = {
     this.btnFit.classList.toggle('hidden', !isImg && !isVid);
 
     if (isImg) {
-      this.img = el('img', { src: url, alt: e.name });
+      this.img = el('img', { src: imageUrl(e.path), alt: e.name });
+      this.img.onerror = () => { this.img.src = fileUrl(e.path); };
       this.body.append(this.img);
     }
     else if (isVid) {
-      this.video = el('video', { src: url, controls: true, autoplay: true, playsinline: true });
-      this.body.append(this.video);
+      const note = el('div', { class: 'v-info', style: { marginBottom: '6px', fontSize: '12px' } });
+      this.video = el('video', { controls: true, autoplay: true, playsinline: true });
+      const video = this.video;
+      this.body.append(note, video);
+      setPlayableSource(video, e.path, text => {
+        if (this.video === video) { note.classList.remove('hidden'); note.textContent = text; }
+      }, () => this.video === video).then(() => {
+        if (this.video !== video) return;
+        note.classList.add('hidden');
+        video.play().catch(() => {});
+      }).catch(err => {
+        if (this.video !== video) return;
+        note.classList.remove('hidden');
+        note.replaceChildren(
+          el('div', { text: 'Não foi possível tocar no navegador: ' + err.message }),
+          el('div', { style: { display: 'flex', gap: '8px', marginTop: '8px', flexWrap: 'wrap' } },
+            el('a', { class: 'btn', href: fileUrl(e.path, true), text: 'Baixar arquivo', style: { textDecoration: 'none' } }),
+            el('a', { class: 'btn', href: 'vlc://' + location.origin + fileUrl(e.path), text: 'Abrir no VLC', style: { textDecoration: 'none' } })));
+      });
     }
     else if (k === 'audio') this.body.append(el('div', { class: 'v-info' }, fileIcon('audio'), el('audio', { src: url, controls: true, autoplay: true })));
     else if (k === 'pdf') this.body.append(el('iframe', { src: url }));
@@ -1819,6 +1847,7 @@ function initWidgets() {
 // ---------------------------------------------------------------- Download Station
 
 const DL_STATUS = { queued: 'Queued', downloading: 'Downloading', paused: 'Paused', done: 'Completed', seeding: 'Seeding', error: 'Error', checking: 'Checking', metadata: 'Fetching metadata', choose: 'Waiting for file selection' };
+const DL_STATUS_PT = { queued: 'Na fila', downloading: 'Baixando', paused: 'Pausado', done: 'Concluído', seeding: 'Semeando', error: 'Erro', checking: 'Verificando', metadata: 'Buscando metadados', choose: 'Escolha os arquivos' };
 
 function fmtEta(secs) {
   if (!isFinite(secs) || secs <= 0) return '';
@@ -1829,7 +1858,8 @@ function fmtEta(secs) {
 
 function addDownloadDialog(info, preset) {
   return new Promise(resolve => {
-    const urls = el('textarea', { placeholder: 'https://example.com/file.zip\nmagnet:?xt=urn:btih:...', spellcheck: 'false', rows: 4 });
+    const onlyTorrents = !!info.torrentsOnly;
+    const urls = el('textarea', { placeholder: onlyTorrents ? 'magnet:?xt=urn:btih:...' : 'https://example.com/file.zip\nmagnet:?xt=urn:btih:...', spellcheck: 'false', rows: 4 });
     if (preset) urls.value = preset;
     const dest = el('input', { value: info.defaultDir || '', spellcheck: 'false' });
     let torrentFile = null;
@@ -1841,17 +1871,19 @@ function addDownloadDialog(info, preset) {
     const close = v => { wrap.remove(); resolve(v); };
     const wrap = el('div', { id: 'modal', onmousedown: e => { if (e.target === wrap) close(null); } },
       el('div', { class: 'dialog wide' },
-        el('div', { class: 'd-head', text: 'Criar Tarefa de Download' }),
+        el('div', { class: 'd-head', text: onlyTorrents ? 'Adicionar Torrent' : 'Criar Tarefa de Download' }),
         el('div', { class: 'd-body' },
-          el('label', { class: 'f', text: 'Links (um por linha) — http, https, ou magnet' }), urls,
+          el('label', { class: 'f', text: onlyTorrents ? 'Magnet link (magnet:?xt=urn:btih:...)' : 'Links (um por linha) — http, https, ou magnet' }), urls,
           info.torrent ? el('div', { style: { marginTop: '10px' } },
             el('button', { class: 'btn', onclick: () => tPick.click() }, icon('upload'), 'Escolher arquivo .torrent'), tName, tPick)
             : el('div', { class: 'hint', text: 'BitTorrent não suportado neste dispositivo' }),
           el('label', { class: 'f', text: 'Salvar na pasta do celular' }), dest,
-          el('div', { class: 'hint', text: 'O celular baixa em segundo plano mesmo se você fechar esta página' })),
+          el('div', { class: 'hint', text: onlyTorrents
+            ? 'Primeiro o NexShare busca os metadados e mostra a lista de arquivos. Nada é baixado antes de você confirmar a seleção.'
+            : 'O celular baixa em segundo plano mesmo se você fechar esta página' })),
         el('div', { class: 'd-foot' },
           el('button', { class: 'btn', text: 'Cancelar', onclick: () => close(null) }),
-          el('button', { class: 'btn primary', text: 'Próximo: Selecionar Arquivos', onclick: () => close({ urls: urls.value, dest: dest.value.trim(), torrentFile, showFilePicker: true }) }))));
+          el('button', { class: 'btn primary', text: onlyTorrents ? 'Buscar metadados e escolher arquivos' : 'Próximo: Selecionar Arquivos', onclick: () => close({ urls: urls.value, dest: dest.value.trim(), torrentFile, torrentsOnly: onlyTorrents, showFilePicker: true }) }))));
     document.body.append(wrap);
     urls.focus();
   });
@@ -1908,7 +1940,7 @@ function showFilePickerDialog(task, files, defaultDest, onConfirm) {
     return total;
   };
 
-  const isVideoName = (n) => /\.(mp4|mkv|avi|mov|webm|flv|m4v|ts|mpg|mpeg|wmv)$/i.test(n || '');
+  const isVideoName = (n) => /\.(mp4|mkv|avi|mov|webm|flv|m4v|ts|m2ts|mpg|mpeg|wmv|vob|ogv)$/i.test(n || '');
 
   const destInput = el('input', { value: st.dest || '', spellcheck: 'false', readOnly: true, style: { flex: 1, marginRight: '8px', color: '#667085', background: '#f6f8fb' } });
   const pickDestBtn = el('span', { class: 'dim', style: { fontSize: '12px', whiteSpace: 'nowrap' }, text: 'definida ao adicionar' });
@@ -2087,7 +2119,10 @@ async function submitDownloads(v) {
   const dest = v.dest;
   const lines = String(v.urls || '').split('\n').map(s => s.trim()).filter(Boolean);
   const magnets = lines.filter(l => l.startsWith('magnet:'));
-  const others = lines.filter(l => !l.startsWith('magnet:'));
+  const others = v.torrentsOnly ? [] : lines.filter(l => !l.startsWith('magnet:'));
+  if (v.torrentsOnly && lines.some(l => !l.startsWith('magnet:'))) {
+    toast('No Torrent Downloader use um magnet ou envie um arquivo .torrent; links HTTP são do Download Station.', 6000);
+  }
   let ok = false;
   try {
     if (others.length) {
@@ -2113,7 +2148,7 @@ async function submitDownloads(v) {
     for (const id of pending) {
       const res = await pickFilesForTask(id, dest);
       if (res === 'timeout') {
-        toast('Os metadados ainda não chegaram — o torrent ficou pausado. Use "Selecionar arquivos" quando a lista aparecer; nada foi baixado.', 7000);
+        toast('Os metadados ainda não chegaram. O torrent continua buscando apenas as informações — nada foi baixado. Use "Selecionar arquivos" quando a lista aparecer.', 7000);
         continue;
       }
       if (!res) {
@@ -2125,28 +2160,33 @@ async function submitDownloads(v) {
   return ok;
 }
 
-function DownloadStation(body, win) {
-  const st = { filter: 'all', tasks: [], info: {}, sel: new Set() };
+function DownloadStation(body, win, opts) {
+  const onlyTorrents = !!(opts && opts.torrentsOnly);
+  const st = { filter: 'all', tasks: [], info: { torrentsOnly: onlyTorrents }, sel: new Set() };
   const side = el('div', { class: 'ds-side' });
   const tbody = el('tbody');
-  const empty = el('div', { class: 'empty hidden' }, fileIcon('folder'), 'No download tasks yet — click "Create" and paste links or magnets');
+  const empty = el('div', { class: 'empty hidden' }, fileIcon('archive'), onlyTorrents
+    ? 'Nenhum torrent ainda — clique em "Adicionar" e cole um magnet ou envie um .torrent'
+    : 'No download tasks yet — click "Create" and paste links or magnets');
   const btn = (ico, label, run, cls) => el('button', { class: 'btn ' + (cls || ''), onclick: run }, icon(ico), el('span', { class: cls === 'primary' ? null : 'hide-sm', text: label }));
   const tools = el('div', { class: 'ds-tools' },
-    btn('plus', 'Create', () => create(), 'primary'),
-    btn('play', 'Resume', () => act('resume')),
-    btn('min', 'Pause', () => act('pause')),
-    btn('trash', 'Delete', () => removeSel()),
+    btn('plus', onlyTorrents ? 'Adicionar torrent' : 'Create', () => create(), 'primary'),
+    btn('play', onlyTorrents ? 'Retomar' : 'Resume', () => act('resume')),
+    btn('min', onlyTorrents ? 'Pausar' : 'Pause', () => act('pause')),
+    btn('trash', onlyTorrents ? 'Excluir' : 'Delete', () => removeSel()),
     el('div', { style: { flex: 1 } }),
-    btn('folderUp', 'Open Folder', () => openFolder()),
-    btn('x', 'Clear Completed', async () => { await api('dl/clear', null, { method: 'POST' }); refresh(); }));
+    btn('folderUp', onlyTorrents ? 'Abrir pasta' : 'Open Folder', () => openFolder()),
+    btn('x', onlyTorrents ? 'Limpar concluídos' : 'Clear Completed', async () => { await api('dl/clear', null, { method: 'POST' }); refresh(); }));
   const table = el('table', { class: 'files dl' },
     el('colgroup', null, el('col', { style: { width: '36px' } }), el('col'), el('col', { style: { width: '90px' } }), el('col', { style: { width: '170px' } }), el('col', { class: 'col-type', style: { width: '120px' } }), el('col', { class: 'col-date', style: { width: '140px' } })),
-    el('thead', null, el('tr', null, el('th', { class: 'chk' }), el('th', { text: 'File Name' }), el('th', { text: 'Size' }), el('th', { text: 'Progress' }), el('th', { class: 'col-type', text: 'Speed' }), el('th', { class: 'col-date', text: 'Status' }))),
+    el('thead', null, el('tr', null, el('th', { class: 'chk' }), el('th', { text: onlyTorrents ? 'Nome' : 'File Name' }), el('th', { text: onlyTorrents ? 'Tamanho' : 'Size' }), el('th', { text: onlyTorrents ? 'Progresso' : 'Progress' }), el('th', { class: 'col-type', text: onlyTorrents ? 'Velocidade' : 'Speed' }), el('th', { class: 'col-date', text: 'Status' }))),
     tbody);
   body.append(el('div', { class: 'ds' }, side, el('div', { class: 'ds-main' }, tools, el('div', { class: 'ds-list' }, table, empty))));
 
-  const FILTERS = [['all', 'All'], ['active', 'Downloading'], ['done', 'Completed'], ['paused', 'Paused'], ['error', 'Error']];
-  const match = (t, f) => f === 'all' || (f === 'active' ? ['downloading', 'queued', 'checking', 'metadata', 'seeding'].includes(t.status) : f === 'paused' ? ['paused', 'choose'].includes(t.status) : t.status === f);
+  const FILTERS = onlyTorrents
+    ? [['all', 'Todos'], ['active', 'Baixando'], ['paused', 'Aguardando escolha'], ['done', 'Concluídos'], ['error', 'Erro']]
+    : [['all', 'All'], ['active', 'Downloading'], ['done', 'Completed'], ['paused', 'Paused'], ['error', 'Error']];
+  const match = (t, f) => f === 'all' || (f === 'active' ? ['downloading', 'queued', 'checking', 'seeding'].includes(t.status) : f === 'paused' ? ['paused', 'choose', 'metadata'].includes(t.status) : t.status === f);
 
   function render() {
     side.replaceChildren(...FILTERS.map(([k, label]) => el('div', { class: 'tn' + (st.filter === k ? ' cur' : ''), onclick: () => { st.filter = k; render(); } },
@@ -2169,11 +2209,26 @@ function DownloadStation(body, win) {
         el('td', { class: 'dim', text: t.total > 0 ? fmtSize(t.total) : '-' }),
         el('td', { class: 'prog' }, el('div', { class: 'pct', text: `${pct.toFixed(1)}%${eta ? ' · ETA ' + eta : ''}${t.type === 'torrent' && t.peers ? ' · ' + t.peers + ' peers' : ''}` }), el('div', { class: 'bar' }, el('i', { style: { width: pct + '%' } }))),
         el('td', { class: 'dim col-type', style: { whiteSpace: 'pre', lineHeight: '1.3', fontSize: '12px' }, text: speed }),
-        el('td', { class: 'col-date' }, el('span', { class: 'st-pill ' + t.status, text: t.status === 'error' ? 'Error: ' + (t.error || '') : (DL_STATUS[t.status] || t.status) })));
+        el('td', { class: 'col-date' }, el('span', { class: 'st-pill ' + t.status, text: t.status === 'error' ? 'Erro: ' + (t.error || '') : ((onlyTorrents ? DL_STATUS_PT[t.status] : DL_STATUS[t.status]) || t.status) })));
       return tr;
     }));
     const active = st.tasks.filter(t => t.status === 'downloading').length;
-    win.setTitle('Download Station' + (active ? ` — Downloading ${active}` : ''));
+    win.setTitle((onlyTorrents ? 'Torrent Downloader' : 'Download Station') + (active ? ` — ${onlyTorrents ? 'Baixando' : 'Downloading'} ${active}` : ''));
+  }
+
+  async function copyTaskStream(t) {
+    try {
+      const r = await api('list', { path: t.dest });
+      let target = r.entries.find(x => x.path === t.dest + '/' + t.name);
+      if (target && target.dir) {
+        const inside = await api('list', { path: target.path });
+        const videos = inside.entries.filter(x => !x.dir && /\.(mp4|mkv|avi|mov|webm|m4v|ts|m2ts|mpg|mpeg|wmv)$/i.test(x.name));
+        videos.sort((a, b) => (b.size || 0) - (a.size || 0));
+        target = videos[0];
+      }
+      if (!target || target.dir) return toast('Nenhum vídeo encontrado nesse torrent. Abra a pasta para ver os arquivos.');
+      copyText(location.origin + fileUrl(target.path), 'Link copiado — cole no VLC');
+    } catch (e) { toast('Não consegui montar o link: ' + e.message); }
   }
 
   function taskMenu(t) {
@@ -2182,17 +2237,20 @@ function DownloadStation(body, win) {
       { label: 'Open Destination Folder', ico: 'folderUp', run: () => openApp('filestation', { path: t.dest }) },
       { label: 'Copy Source Link', ico: 'link', run: () => dialog({ title: 'Source Link', input: t.url, cancel: false }) },
       '-',
-      { label: 'Select Files…', ico: 'list', disabled: t.status !== 'choose', run: () => pickFiles(t) },
-      { label: 'Resume', ico: 'play', disabled: !['paused', 'error'].includes(t.status), run: () => act('resume') },
-      { label: 'Pause', ico: 'min', disabled: !['downloading', 'queued', 'seeding', 'metadata'].includes(t.status), run: () => act('pause') },
-      { label: 'Delete Task', ico: 'trash', danger: true, run: removeSel },
+      { label: t.status === 'metadata' ? 'Aguardar metadados e escolher…' : 'Selecionar arquivos…', ico: 'list', disabled: !['choose', 'metadata', 'paused'].includes(t.status) || t.type !== 'torrent', run: () => pickFiles(t) },
+      t.type === 'torrent' ? { label: 'Abrir conteúdo do ZIP…', ico: 'archive', disabled: t.status !== 'done' && t.status !== 'seeding', run: () => openArchiveForTask(t) } : null,
+      t.type === 'torrent' && (t.status === 'done' || t.status === 'seeding') ? { label: 'Copiar link para VLC', ico: 'link', run: () => copyTaskStream(t) } : null,
+      { label: onlyTorrents ? 'Retomar' : 'Resume', ico: 'play', disabled: !['paused', 'error'].includes(t.status), run: () => act('resume') },
+      { label: onlyTorrents ? 'Pausar' : 'Pause', ico: 'min', disabled: !['downloading', 'queued', 'seeding', 'metadata'].includes(t.status), run: () => act('pause') },
+      { label: onlyTorrents ? 'Excluir tarefa' : 'Delete Task', ico: 'trash', danger: true, run: removeSel },
     ];
   }
   async function pickFiles(t) {
     try {
-      const d = await api('debrid/files', { id: t.id });
-      if (!d.files || !d.files.length) return toast('Metadados ainda não chegaram — tente de novo em instantes');
-      showFilePickerDialog(d.task, d.files, t.dest, res => { if (res) refresh(); });
+      const data = await waitForTorrentFiles(t.id);
+      if (!data) return;
+      if (data.timeout) return toast('Os metadados ainda não chegaram. O torrent continua só buscando metadados — nada foi baixado. Tente de novo em alguns segundos.', 7000);
+      showFilePickerDialog(data.task, data.files, t.dest, res => { if (res) refresh(); });
     } catch (e) { toast('Falha ao abrir os arquivos: ' + e.message); }
   }
 
@@ -2238,8 +2296,8 @@ function DownloadStation(body, win) {
   async function refresh() {
     try {
       const r = await api('dl/list');
-      st.tasks = r.tasks;
-      st.info = { defaultDir: r.defaultDir, torrent: r.torrent };
+      st.tasks = (r.tasks || []).filter(t => !onlyTorrents || t.type === 'torrent');
+      st.info = { defaultDir: r.defaultDir, torrent: r.torrent, torrentsOnly: onlyTorrents };
       for (const id of [...st.sel]) if (!st.tasks.some(t => t.id === id)) st.sel.delete(id);
       render();
     } catch { /* offline */ }
@@ -2247,6 +2305,181 @@ function DownloadStation(body, win) {
   refresh();
   const timer = setInterval(refresh, 1500);
   return { destroy() { clearInterval(timer); }, handle(arg) { if (arg.add) create(arg.add); } };
+}
+
+function TorrentDownloader(body, win) {
+  return DownloadStation(body, win, { torrentsOnly: true });
+}
+
+// ---------------------------------------------------------------- ZIP archives
+
+/** Opens the selective extraction dialog for a ZIP file. */
+async function openZipPicker(path) {
+  let data;
+  try { data = await api('archive/list', { path }); }
+  catch (e) { return toast('Não foi possível abrir o ZIP: ' + e.message, 6000); }
+  const all = data.entries || [];
+  const files = all.filter(e => !e.dir);
+  if (!files.length) return toast('Este ZIP está vazio');
+
+  const zipName = String(path).split('/').pop() || 'arquivo.zip';
+  const folder = zipName.replace(/\.(zip|cbz)$/i, '');
+  const baseDir = String(path).replace(/\/[^/]+$/, '');
+  const defaultDest = baseDir + '/' + folder;
+  const destInput = el('input', { value: defaultDest, spellcheck: 'false', style: { width: '100%', fontFamily: 'monospace', fontSize: '12px' } });
+  const filter = el('input', { placeholder: 'Filtrar arquivos ou pastas…', spellcheck: 'false', style: { width: '100%', marginBottom: '8px' } });
+  const list = el('div', { style: { maxHeight: '360px', overflow: 'auto', border: '1px solid #e2e8f0', borderRadius: '8px', background: '#f8fafc' } });
+  const checked = new Set(files.map(f => f.name));
+  const count = el('span', { class: 'dim', style: { fontSize: '12px' } });
+  const allBox = el('input', { type: 'checkbox' });
+  allBox.checked = true;
+  let query = '';
+  const close = v => { wrap.remove(); resolve(v); };
+  let resolve;
+  const result = new Promise(r => { resolve = r; });
+
+  function visible() {
+    const q = query.toLowerCase();
+    const rows = all.filter(e => !q || e.name.toLowerCase().includes(q));
+    // Keep the list responsive with huge repacks.
+    return rows.slice(0, 2500);
+  }
+  function refreshCount() {
+    let size = 0;
+    for (const f of files) if (checked.has(f.name)) size += Number(f.size) || 0;
+    count.textContent = `${checked.size} de ${files.length} arquivo(s) · ${fmtSize(size)}`;
+    allBox.checked = checked.size === files.length;
+    startBtn.disabled = checked.size === 0;
+  }
+  function draw() {
+    const rows = visible();
+    const frag = [];
+    const q = query.toLowerCase();
+    for (const e of rows) {
+      if (e.dir) {
+        const prefix = e.name.endsWith('/') ? e.name : e.name + '/';
+        const kids = files.filter(f => f.name.startsWith(prefix));
+        const on = kids.length > 0 && kids.every(f => checked.has(f.name));
+        const cb = el('input', { type: 'checkbox', onchange: ev => {
+          for (const f of kids) { if (ev.target.checked) checked.add(f.name); else checked.delete(f.name); }
+          refreshCount(); draw();
+        } });
+        cb.checked = on;
+        frag.push(el('div', { style: { display: 'flex', alignItems: 'center', gap: '7px', padding: '5px 10px', fontWeight: '600', fontSize: '12px', color: '#475569' } }, cb, '📁 ' + e.name.replace(/\/$/, '')));
+      } else {
+        const cb = el('input', { type: 'checkbox', onchange: ev => {
+          if (ev.target.checked) checked.add(e.name); else checked.delete(e.name);
+          refreshCount(); allBox.checked = checked.size === files.length;
+        } });
+        cb.checked = checked.has(e.name);
+        frag.push(el('div', { style: { display: 'flex', alignItems: 'center', gap: '7px', padding: '4px 10px 4px 24px', fontSize: '12px', borderTop: '1px solid #eef2f7' } },
+          cb, el('span', { style: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: e.name, text: e.name.split('/').pop() }),
+          el('span', { class: 'dim', style: { fontSize: '11px', flex: 'none' }, text: fmtSize(e.size) })));
+      }
+    }
+    if (!frag.length) frag.push(el('div', { class: 'dim', style: { padding: '18px', textAlign: 'center' }, text: 'Nada encontrado com esse filtro.' }));
+    list.replaceChildren(...frag);
+  }
+  allBox.onchange = () => {
+    checked.clear();
+    if (allBox.checked) for (const f of files) checked.add(f.name);
+    refreshCount(); draw();
+  };
+  filter.oninput = () => { query = filter.value.trim(); draw(); };
+
+  const startBtn = el('button', { class: 'btn primary', onclick: async () => {
+    const chosen = checked.size === files.length ? [] : [...checked];
+    const dest = destInput.value.trim();
+    startBtn.disabled = true;
+    startBtn.textContent = 'Iniciando…';
+    try {
+      const r = await api('archive/extract', null, { method: 'POST', body: JSON.stringify({ path, dest, entries: chosen }) });
+      close(true);
+      showExtractProgress(r);
+    } catch (e) {
+      startBtn.disabled = false;
+      startBtn.textContent = 'Extrair selecionados';
+      toast('Falha ao extrair: ' + e.message, 6000);
+    }
+  } }, 'Extrair selecionados');
+
+  const wrap = el('div', { id: 'modal', onmousedown: e => { if (e.target === wrap) close(false); } },
+    el('div', { class: 'dialog wide' },
+      el('div', { class: 'd-head', text: '📦 ' + zipName }),
+      el('div', { class: 'd-body' },
+        el('div', { class: 'hint', style: { marginBottom: '8px' }, text: 'Escolha somente o que deseja extrair. O ZIP já está completo no celular; a extração cria os arquivos selecionados na pasta abaixo.' }),
+        el('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '6px' } },
+          el('label', { style: { display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', cursor: 'pointer' } }, allBox, 'Selecionar tudo'),
+          el('div', { style: { flex: 1 } }), count),
+        filter, list,
+        el('label', { class: 'f', text: 'Extrair para', style: { marginTop: '10px' } }), destInput),
+      el('div', { class: 'd-foot' },
+        el('button', { class: 'btn', text: 'Cancelar', onclick: () => close(false) }),
+        startBtn)));
+  document.body.append(wrap);
+  refreshCount(); draw();
+  return result;
+}
+
+/** Progress window for a background extraction job. */
+function showExtractProgress(job) {
+  let closed = false;
+  const bar = el('div', { class: 'bar', style: { height: '10px', margin: '10px 0' } }, el('i', { style: { width: '0%' } }));
+  const pct = el('div', { style: { fontSize: '13px', fontWeight: '600' }, text: 'Preparando…' });
+  const cur = el('div', { class: 'dim', style: { fontSize: '11px', marginTop: '4px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, text: job.current || '' });
+  const foot = el('div', { class: 'd-foot' });
+  const close = () => { closed = true; wrap.remove(); };
+  const wrap = el('div', { id: 'modal' }, el('div', { class: 'dialog' },
+    el('div', { class: 'd-head', text: '📦 Extraindo arquivos' }),
+    el('div', { class: 'd-body' }, pct, bar, cur,
+      el('div', { class: 'hint', style: { marginTop: '8px' }, text: 'Você pode fechar esta janela; a extração continua no celular.' })),
+    foot));
+  const cancelBtn = el('button', { class: 'btn danger', text: 'Cancelar', onclick: async () => {
+    cancelBtn.disabled = true;
+    cancelBtn.textContent = 'Cancelando…';
+    try { await api('archive/cancel', { id: job.id }, { method: 'POST' }); } catch { /* worker stops on next chunk */ }
+  } });
+  foot.append(cancelBtn, el('button', { class: 'btn', text: 'Fechar', onclick: close }));
+  document.body.append(wrap);
+
+  async function tick() {
+    if (closed) return;
+    try {
+      const s = await api('archive/status', { id: job.id });
+      const p = Number(s.progress) || 0;
+      bar.firstChild.style.width = p + '%';
+      pct.textContent = s.state === 'done' ? '✓ Concluído' : s.state === 'error' ? '✗ Erro' : s.state === 'cancelled' ? 'Cancelado' : `Extraindo… ${p.toFixed(0)}%`;
+      cur.textContent = s.current ? `${s.current} — ${s.extracted} extraído(s), ${s.skipped} ignorado(s)` : '';
+      if (['done', 'error', 'cancelled'].includes(s.state)) {
+        if (s.error) cur.textContent = s.error;
+        foot.replaceChildren(
+          el('button', { class: 'btn', text: 'Abrir pasta', onclick: () => { close(); openApp('filestation', { path: s.dest }); } }),
+          el('button', { class: 'btn primary', text: 'Fechar', onclick: close }));
+        if (s.state === 'done') toast('Extração concluída');
+        return;
+      }
+    } catch { /* retry */ }
+    setTimeout(tick, 700);
+  }
+  tick();
+}
+
+/** Finds and opens a ZIP belonging to a torrent task. */
+async function openArchiveForTask(t) {
+  try {
+    const r = await api('archive/find', { task: t.id });
+    const zips = r.entries || [];
+    if (!zips.length) return toast('Nenhum ZIP encontrado nos arquivos desse torrent. Baixe o torrent primeiro (ou ele ainda não terminou).', 7000);
+    if (zips.length === 1) return openZipPicker(zips[0].path);
+    const wrap = el('div', { id: 'modal', onmousedown: e => { if (e.target === wrap) wrap.remove(); } },
+      el('div', { class: 'dialog' },
+        el('div', { class: 'd-head', text: 'Escolha o ZIP' }),
+        el('div', { class: 'd-body', style: { display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '420px', overflow: 'auto' } },
+          ...zips.map(z => el('button', { class: 'btn', style: { justifyContent: 'space-between' }, onclick: () => { wrap.remove(); openZipPicker(z.path); } },
+            el('span', { text: z.name }), el('span', { class: 'dim', text: fmtSize(z.size) })))),
+        el('div', { class: 'd-foot' }, el('button', { class: 'btn', text: 'Cancelar', onclick: () => wrap.remove() }))));
+    document.body.append(wrap);
+  } catch (e) { toast('Falha ao localizar ZIP: ' + e.message); }
 }
 
 // ---------------------------------------------------------------- Media Player
@@ -2261,8 +2494,49 @@ const fmtClock = s => {
   return h ? `${h}:${String(m).padStart(2, '0')}:${sec}` : `${m}:${sec}`;
 };
 
+
+/** True for containers that browsers usually refuse even when H.264/AAC is inside. */
+function needsBrowserRemux(name) {
+  return /\.(mkv|avi|mov|ts|m2ts|mpg|mpeg|wmv|flv|vob)$/i.test(name || '');
+}
+
+/**
+ * Sets a browser-playable source. MKV/AVI/TS are remuxed to MP4 on the phone first
+ * (no re-encode, so quality is preserved and it is fast).
+ */
+async function setPlayableSource(video, path, onStatus, isCurrent) {
+  const name = String(path).split('/').pop() || '';
+  if (!needsBrowserRemux(name)) {
+    video.src = fileUrl(path);
+    video.load();
+    return;
+  }
+  const status = onStatus || (() => {});
+  status('Preparando vídeo para o navegador…');
+  let job;
+  try {
+    job = await api('remux', { path }, { method: 'POST' });
+  } catch (e) {
+    throw new Error('conversão indisponível: ' + e.message);
+  }
+  while (job && job.state !== 'done' && job.state !== 'error' && job.state !== 'cancelled') {
+    if (isCurrent && !isCurrent()) return;
+    status(job.state === 'remuxing' ? `Convertendo para MP4… ${Math.round(job.progress || 0)}%` : 'Preparando vídeo para o navegador…');
+    await new Promise(r => setTimeout(r, 700));
+    try { job = await api('remux/status', { id: job.id }); }
+    catch { /* keep polling */ }
+  }
+  if (!job || job.state !== 'done') {
+    throw new Error(job && job.error ? job.error : 'não foi possível converter o vídeo');
+  }
+  if (isCurrent && !isCurrent()) return;
+  status('Vídeo pronto — iniciando…');
+  video.src = '/api/remux/file?id=' + encodeURIComponent(job.id);
+  video.load();
+}
+
 function MediaPlayer(body, win) {
-  const st = { list: [], i: -1, folder: [], shuffle: false, loop: store.get('mp.loop', 'list'), subUrl: null, subs: [] };
+  const st = { list: [], i: -1, folder: [], shuffle: false, loop: store.get('mp.loop', 'list'), subUrl: null, subs: [], seq: 0 };
   const video = el('video', { playsinline: true, preload: 'metadata' });
   video.volume = store.get('mp.vol', 1);
   const art = el('div', { class: 'mp-art hidden' }, el('div', null, el('div', { class: 'disc' }), el('div', { class: 't' }), el('div', { class: 's' })));
@@ -2382,14 +2656,26 @@ function MediaPlayer(body, win) {
     msg.classList.add('hidden');
     [...video.querySelectorAll('track')].forEach(t => t.remove());
     if (st.subUrl) { URL.revokeObjectURL(st.subUrl); st.subUrl = null; }
-    video.src = fileUrl(e.path);
+    const seq = ++st.seq;
     const audio = isAudio(e);
     art.classList.toggle('hidden', !audio);
     if (audio) { art.querySelector('.t').textContent = e.name.replace(/\.[^.]+$/, ''); art.querySelector('.s').textContent = `${st.i + 1} / ${st.list.length} · ${fmtSize(e.size)}`; }
     win.setTitle('Media Player — ' + e.name);
     const pos = resume && store.get('mp.pos', {})[e.path];
     if (pos) video.addEventListener('loadedmetadata', () => { video.currentTime = pos; flash('Resuming from ' + fmtClock(pos)); }, { once: true });
-    video.play().catch(() => {});
+    setPlayableSource(video, e.path, text => {
+      if (seq !== st.seq) return;
+      msg.classList.remove('hidden');
+      msg.textContent = text;
+    }, () => seq === st.seq).then(() => {
+      if (seq !== st.seq) return;
+      msg.classList.add('hidden');
+      video.play().catch(() => {});
+    }).catch(err => {
+      if (seq !== st.seq) return;
+      msg.classList.remove('hidden');
+      msg.textContent = 'Não foi possível tocar este vídeo: ' + err.message + ' — use o VLC pelo menu.';
+    });
     renderList();
     findSubs(e);
   }
@@ -3055,6 +3341,58 @@ function RemoteAccess(body, win) {
     logPre
   );
 
+
+  // ---------- alternative access routes ----------
+  const altList = el('div', { style: { display: 'flex', flexDirection: 'column', gap: '8px' } });
+  const altCard = el('div', { class: 'card' },
+    el('h3', { style: { marginTop: 0 }, text: '🔀 Outras formas de acessar' }),
+    el('div', { class: 'hint', style: { marginBottom: '10px', lineHeight: 1.6 }, text: 'Se o Quick Tunnel estiver bloqueado na sua rede, use uma destas rotas. Elas não dependem da Cloudflare.' }),
+    altList,
+    el('div', { style: { borderTop: '1px solid #e2e8f0', margin: '14px 0 12px' } }),
+    el('h4', { style: { margin: '0 0 6px' }, text: '☁️ Cloudflare com domínio próprio (login)' }),
+    el('div', { style: { fontSize: '13px', lineHeight: 1.7, color: 'var(--text-2)' } },
+      el('p', { style: { margin: '0 0 8px' }, text: 'A NexShare não guarda sua senha da Cloudflare. Faça o login no site, crie o túnel e cole aqui apenas o token do conector — é a forma segura e a que evita o aviso de “site perigoso”.' }),
+      el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', margin: '8px 0' } },
+        el('a', { class: 'btn primary', href: 'https://dash.cloudflare.com/login', target: '_blank', rel: 'noopener', style: { textDecoration: 'none' } }, icon('link'), ' Entrar na Cloudflare'),
+        el('a', { class: 'btn', href: 'https://one.dash.cloudflare.com/', target: '_blank', rel: 'noopener', style: { textDecoration: 'none' } }, ' Zero Trust / Tunnels')),
+      el('ol', { style: { margin: '6px 0 0', paddingLeft: '20px' } },
+        el('li', null, 'Entre na Cloudflare e abra Zero Trust → Networks → Tunnels.'),
+        el('li', null, 'Create a tunnel → Cloudflared → copie o token (ou o comando de instalação).'),
+        el('li', null, 'Em Public hostname, aponte seu domínio para http://localhost:8080.'),
+        el('li', null, 'Cole o token no campo “Conectar com Token” acima e clique em conectar.'))));
+
+  async function loadAltRoutes() {
+    try {
+      const s = await api('system');
+      const rows = [];
+      const add = (title, desc, url) => {
+        if (!url) return;
+        rows.push(el('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '8px', padding: '9px 10px' } },
+          el('div', { style: { flex: 1, minWidth: '190px' } },
+            el('div', { style: { fontSize: '13px', fontWeight: '600' }, text: title }),
+            el('div', { class: 'dim', style: { fontSize: '11px', marginTop: '2px' }, text: desc }),
+            el('div', { class: 'mono', style: { fontSize: '12px', marginTop: '3px', wordBreak: 'break-all' }, text: url })),
+          el('button', { class: 'btn', style: { padding: '4px 10px', fontSize: '12px' }, onclick: () => copy(url) }, 'Copiar')));
+      };
+      const urls = s.urls || [];
+      const lan = urls.find(u => u.kind === 'lan') || (s.ip ? { url: 'http://' + s.ip + ':' + (s.port || 8080) } : null);
+      add('Rede local (Wi-Fi)', 'Mesma rede do celular — mais rápido e sem internet.', lan && lan.url);
+      const ts = urls.find(u => u.kind === 'tailscale');
+      if (ts) add('Tailscale (VPN privada)', 'Funciona fora de casa sem abrir portas. O IP 100.x é privado da sua VPN.', ts.url);
+      else rows.push(el('div', { style: { fontSize: '12px', color: 'var(--text-2)', lineHeight: 1.6, padding: '4px 2px' } },
+        el('b', { text: 'Tailscale: ' }), 'instale o Tailscale no celular e no PC, entre na mesma conta e use o IP 100.x mostrado no app. É a opção mais estável fora de casa.',
+        el('a', { href: 'https://tailscale.com/download', target: '_blank', rel: 'noopener', style: { marginLeft: '5px', fontWeight: 600 }, text: 'Baixar' })));
+      const v6 = urls.find(u => u.kind === 'ipv6') || (s.ipv6 ? { url: 'http://[' + s.ipv6 + ']:' + (s.port || 8080) } : null);
+      if (v6) add('IPv6 direto', 'Só funciona se a operadora e o roteador liberarem IPv6 de entrada.', v6.url);
+      else rows.push(el('div', { class: 'hint', style: { fontSize: '12px' }, text: 'Sem IPv6 global agora. Muitas operadoras usam CGNAT; nesse caso use Tailscale ou Cloudflare.' }));
+      if (!rows.length) rows.push(el('div', { class: 'hint', text: 'Não encontrei endereços de rede. Confira se o Wi-Fi está ligado.' }));
+      altList.replaceChildren(...rows);
+    } catch (e) {
+      altList.replaceChildren(el('div', { class: 'hint', text: 'Não foi possível ler os endereços: ' + e.message }));
+    }
+  }
+  loadAltRoutes();
+
   const safetyCard = el('div', { class: 'card' },
     el('h3', { style: { marginTop: 0 } }, 'Aviso de “site perigoso”'),
     el('p', { style: { margin: '0 0 8px', color: 'var(--text-2)', lineHeight: 1.6 } },
@@ -3068,9 +3406,10 @@ function RemoteAccess(body, win) {
   );
 
   pane.append(
-    el('h2', null, 'Acesso Remoto (Cloudflare Tunnel)'),
+    el('h2', null, 'Acesso Remoto'),
     statusCard,
     actionsCard,
+    altCard,
     safetyCard,
     logsCard
   );
@@ -3115,7 +3454,7 @@ function RemoteAccess(body, win) {
         davHint.style.display = 'block';
         davHint.replaceChildren(
           el('div', null, el('b', { text: 'WebDAV público (Windows): ' }), el('span', { class: 'mono', text: dav })),
-          el('div', { style: { marginTop: '4px', opacity: .85 }, text: 'No Windows, rode map-drive.ps1: ele monta a unidade por uma ponte local, sem certificado e sem ajuste no registro. Use HTTPS em redes que bloqueiam portas.' }),
+          el('div', { style: { marginTop: '4px', opacity: .85 }, text: 'No Windows, rode map-drive.ps1 como administrador: ele monta a unidade por uma ponte local, libera arquivos grandes no WebClient e evita o erro "o arquivo foi movido". Use HTTPS em redes que bloqueiam portas.' }),
           el('button', { class: 'btn', style: { marginTop: '6px' }, onclick: () => copy(dav) }, icon('link'), ' Copiar URL WebDAV')
         );
       } else {
@@ -3200,12 +3539,14 @@ function DebridHub(body, win) {
   const pane = el('div', { class: 'pane' });
   body.append(pane);
 
-  const st = { task: null, files: [], active: [], timer: null, tab: 'stream', busy: false };
+  const st = { task: null, files: [], active: [], timer: null, tab: 'guide', busy: false };
 
+  // Torrents live in their own qBittorrent-style app now. The old stream tab is kept
+  // only as a hidden implementation detail for backwards compatibility.
   const tabStream = el('button', { class: 'btn primary', text: '⚡ Desbridar & Assistir', onclick: () => switchTab('stream') });
-  const tabGuide = el('button', { class: 'btn', text: '🔌 Usar no VLC / Stremio / Windows', onclick: () => switchTab('guide') });
+  const tabGuide = el('button', { class: 'btn primary', text: '🔌 Usar no VLC / Stremio / Windows', onclick: () => switchTab('guide') });
   const tabAddon = el('button', { class: 'btn', text: '⚙️ Configurar Addon Nuvio', onclick: () => switchTab('addon') });
-  const tabBar = el('div', { style: { display: 'flex', gap: '8px', marginBottom: '14px', flexWrap: 'wrap' } }, tabStream, tabGuide, tabAddon);
+  const tabBar = el('div', { style: { display: 'flex', gap: '8px', marginBottom: '14px', flexWrap: 'wrap' } }, tabGuide, tabAddon);
 
   // ---------- stream tab ----------
   const input = el('textarea', {
@@ -3247,8 +3588,11 @@ function DebridHub(body, win) {
     el('button', { class: 'btn', style: { padding: '3px 10px', fontSize: '12px' }, onclick: () => copyText(text, 'Copiado!') }, 'Copiar'));
 
   const keyRow = code(apiKey() || '(faça login no painel para gerar a chave)');
-  const guideCard = el('div', { class: 'card', style: { display: 'none' } },
+  const guideCard = el('div', { class: 'card', style: { display: 'block' } },
     el('h3', { style: { marginTop: 0 }, text: '🔌 NexShare como serviço Debrid' }),
+    el('div', { class: 'notice', style: { margin: '0 0 14px', display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' } },
+      el('span', { style: { flex: 1 }, text: 'Para adicionar magnets, ver a lista de arquivos e baixar como no qBittorrent, use o app Torrent Downloader.' }),
+      el('button', { class: 'btn primary', onclick: () => openApp('torrents') }, icon('download'), ' Abrir Torrent Downloader')),
     el('div', { class: 'notice', style: { margin: '0 0 14px' }, text: 'A API é compatível com o formato do Real-Debrid (/rest/1.0), então VLC, Stremio, Kodi e qualquer cliente que fale a API do RD podem usar o celular como fonte.' }),
     el('h4', { style: { margin: '0 0 6px' }, text: 'Chave de API' }), keyRow,
     el('div', { style: { marginTop: '6px' } },
@@ -3270,10 +3614,10 @@ function DebridHub(body, win) {
     code(State.tunnelUrl ? State.tunnelUrl + '/rest/1.0/' : 'Ligue o Acesso Remoto em Remote Access para ter uma URL pública HTTPS'),
     el('h4', { style: { margin: '16px 0 6px', color: '#1e6fd9' }, text: '1. VLC / MPV / Smart TV' }),
     el('ol', { style: { margin: 0, paddingLeft: '20px', lineHeight: 1.7, fontSize: '13px' } },
-      el('li', null, 'Na aba "Desbridar", cole o magnet e clique em Desbridar.'),
-      el('li', null, 'Clique em "Copiar link VLC" no arquivo desejado.'),
-      el('li', null, 'No VLC: Mídia → Abrir Fluxo de Rede (Ctrl+N), cole o link e clique em Reproduzir.'),
-      el('li', null, 'O vídeo toca enquanto baixa (não precisa esperar o torrent terminar).')),
+      el('li', null, 'Abra o Torrent Downloader, cole o magnet (ou envie um .torrent) e clique em Adicionar.'),
+      el('li', null, 'Quando a lista aparecer, marque só os arquivos que quer e confirme — o download só começa aí.'),
+      el('li', null, 'No menu do torrent (clique com o botão direito), escolha "Copiar link para VLC".'),
+      el('li', null, 'No VLC: Mídia → Abrir Fluxo de Rede (Ctrl+N), cole o link e clique em Reproduzir.')),
     el('h4', { style: { margin: '16px 0 6px', color: '#1e6fd9' }, text: '2. Stremio (addon com suporte a Real-Debrid)' }),
     el('div', { style: { fontSize: '13px', lineHeight: 1.7 } },
       el('p', { style: { margin: '0 0 6px' }, text: 'No addon / configuração de debrid do Stremio, informe:' }),
@@ -3287,7 +3631,7 @@ function DebridHub(body, win) {
       const manifestTunnel = State.tunnelUrl ? State.tunnelUrl + '/addon/' + apiKey() + '/manifest.json' : '';
       const testOut = el('div', { class: 'dim', style: { fontSize: '12px', marginTop: '6px' } });
       return el('div', { style: { fontSize: '13px', lineHeight: 1.7 } },
-        el('p', { style: { margin: '0 0 8px' }, text: 'Este addon faz o Nuvio (e o Stremio) usar o celular como debrid: ele consulta o Torrentio, e o torrent só entra no celular — pausado — quando você toca no stream. O arquivo escolhido começa a baixar e toca na hora.' }),
+        el('p', { style: { margin: '0 0 8px' }, text: 'Este addon faz o Nuvio (e o Stremio) usar o celular como debrid: ele consulta o Torrentio, e o torrent só entra no celular buscando metadados quando você toca no stream. O arquivo escolhido começa a baixar e toca na hora.' }),
         code(manifest),
         manifestTunnel ? el('div', { style: { marginTop: '6px' } }, code(manifestTunnel)) : el('div', null),
         el('ol', { style: { margin: '8px 0 0', paddingLeft: '20px' } },
@@ -3388,7 +3732,8 @@ function DebridHub(body, win) {
   // Load current addon settings
   loadAddonSettings();
 
-  pane.append(tabBar, streamCard, guideCard, addonCard);
+  // streamCard deliberately not appended: torrent add/picker moved to Torrent Downloader.
+  pane.append(tabBar, guideCard, addonCard);
 
   function switchTab(t) {
     st.tab = t;
@@ -3517,7 +3862,7 @@ function DebridHub(body, win) {
     st.checked = new Set(files.filter(f => f.selected !== 0).map(f => f.id));
 
     const entryOf = (f) => ({ path: f.fullPath, name: f.name, dir: false, size: f.size });
-    const isVideoName = (n) => /\.(mp4|mkv|avi|mov|webm|flv|m4v|ts|mpg|mpeg|wmv)$/i.test(n || '');
+    const isVideoName = (n) => /\.(mp4|mkv|avi|mov|webm|flv|m4v|ts|m2ts|mpg|mpeg|wmv|vob|ogv)$/i.test(n || '');
     const videoFiles = files.filter(f => isVideoName(f.name));
     const byId = new Map(files.map(f => [f.id, f]));
 
@@ -3749,8 +4094,8 @@ ${t.name}`,
 
   refreshActive();
   st.timer = setInterval(() => { if (st.tab === 'stream') refreshActive(); }, 2500);
-  switchTab('stream');
-  return { destroy() { clearInterval(st.timer); }, handle(arg) { if (arg && arg.magnet) { input.value = arg.magnet; unrestrict(arg.magnet); } } };
+  switchTab('guide');
+  return { destroy() { clearInterval(st.timer); }, handle(arg) { if (arg && arg.magnet) openApp('torrents', { add: arg.magnet }); } };
 }
 
 // ---------------------------------------------------------------- auth & boot
@@ -3804,6 +4149,7 @@ const APPS = {
   control: { id: 'control', name: 'Control Panel', ico: 'control', w: 620, h: 600, mount: ControlPanel },
   help: { id: 'help', name: 'NexShare Help', ico: 'help', w: 640, h: 560, mount: Help },
   download: { id: 'download', name: 'Download Station', ico: 'download', w: 960, h: 560, mount: DownloadStation },
+  torrents: { id: 'torrents', name: 'Torrent Downloader', ico: 'download', w: 980, h: 600, mount: TorrentDownloader },
   debrid: { id: 'debrid', name: 'Debrid Hub', ico: 'debrid', w: 900, h: 620, mount: DebridHub },
   player: { id: 'player', name: 'Media Player', ico: 'player', w: 1000, h: 600, mount: MediaPlayer },
   packagecenter: { id: 'packagecenter', name: 'Package Center', ico: 'packagecenter', w: 760, h: 580, mount: PackageCenter },

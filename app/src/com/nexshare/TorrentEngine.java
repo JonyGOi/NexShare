@@ -90,7 +90,12 @@ public class TorrentEngine {
                 }
                 TorrentHandle h = handle(t);
                 if (h != null && h.isValid()) {
-                    if (t.status.equals("paused") || t.status.equals("done")) {
+                    if (hold) {
+                        // A held torrent must keep fetching metadata after a restart, never
+                        // inherit a stale "paused" status that would leave the picker empty.
+                        t.status = "metadata";
+                        prepareMetadata(t);
+                    } else if (t.status.equals("paused") || t.status.equals("done")) {
                         pauseHandle(h);
                     } else {
                         applyPriority(t);
@@ -359,6 +364,8 @@ public class TorrentEngine {
                 // Picker/addon has not decided yet: keep every file ignored so metadata can be
                 // fetched without downloading a single byte of payload.
                 h.unsetFlags(TorrentFlags.SEQUENTIAL_DOWNLOAD);
+                h.setFlags(TorrentFlags.AUTO_MANAGED);
+                h.resume();
                 Priority[] none = new Priority[n];
                 for (int i = 0; i < n; i++) none[i] = Priority.IGNORE;
                 h.prioritizeFiles(none);
@@ -499,6 +506,22 @@ public class TorrentEngine {
         if (h == null) throw new IOException("torrent not loaded");
         h.setFlags(TorrentFlags.AUTO_MANAGED);
         h.resume();
+        if (t.awaitingSelection && t.selected == null) {
+            // Stay metadata-only until the user chooses; resume() above only re-enables the
+            // swarm connection so the list can arrive.
+            applyPriority(t);
+        }
+    }
+
+    /** Re-enables a held torrent (metadata only) without downloading payload. */
+    void prepareMetadata(DownloadManager.Task t) {
+        TorrentHandle h = handle(t);
+        if (h == null || !h.isValid()) return;
+        try {
+            h.setFlags(TorrentFlags.AUTO_MANAGED);
+            h.resume();
+            applyPriority(t);
+        } catch (Throwable ignored) { }
     }
 
     void remove(DownloadManager.Task t, boolean deleteFiles) {

@@ -244,8 +244,17 @@ public class DownloadManager {
         if (t == null) return;
         if (t.type.equals("torrent")) {
             try {
-                torrents().resume(t);
-                t.status = "downloading";
+                if (t.awaitingSelection && t.selected == null) {
+                    // Still waiting for the file picker: only metadata may flow. This also
+                    // repairs tasks saved as "paused" by older versions.
+                    t.status = "metadata";
+                    t.error = null;
+                    torrents().resume(t);
+                    torrents().prepareMetadata(t);
+                } else {
+                    torrents().resume(t);
+                    t.status = "downloading";
+                }
             } catch (IOException e) {
                 t.status = "error";
                 t.error = e.getMessage();
@@ -280,7 +289,9 @@ public class DownloadManager {
 
     public synchronized boolean hasActiveTransfers() {
         for (Task t : tasks.values()) {
-            if ("downloading".equals(t.status) || "queued".equals(t.status)) return true;
+            if ("downloading".equals(t.status) || "queued".equals(t.status)
+                || "metadata".equals(t.status) || "choose".equals(t.status)
+                || (t.awaitingSelection && t.selected == null)) return true;
         }
         return false;
     }
