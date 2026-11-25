@@ -41,15 +41,37 @@ function qs(params) {
 }
 
 async function api(path, params, opt = {}) {
-  const r = await fetch('/api/' + path + qs(params), {
+  const headers = {};
+  if (opt.body) headers['Content-Type'] = 'application/json';
+  // The API key survives server restarts (the session cookie token may not), so keep
+  // authenticated calls working even if the background service was rebuilt.
+  if (State.apiKey) headers['X-Api-Key'] = State.apiKey;
+  const run = () => fetch('/api/' + path + qs(params), {
     method: opt.method || 'GET',
     body: opt.body,
-    headers: opt.body ? { 'Content-Type': 'application/json' } : undefined,
+    headers: Object.keys(headers).length ? headers : undefined,
     credentials: 'same-origin',
+    cache: 'no-store',
   });
+  let r;
+  try {
+    r = await run();
+  } catch (e) {
+    // A single retry smooths over a service restart/doze blip instead of painting
+    // "Failed to fetch" in the UI. Never retry POSTs (they may mutate state).
+    if ((opt.method || 'GET') !== 'GET' || opt.noRetry) throw e;
+    await new Promise(resolve => setTimeout(resolve, 700));
+    r = await run();
+  }
   let j = {};
   try { j = await r.json(); } catch { /* empty body */ }
-  if (r.status === 401 && path !== 'login') { Auth.show(); throw Object.assign(new Error('unauthorized'), { status: 401 }); }
+  if (r.status === 401 && path !== 'login') {
+    // Do not keep replaying a rejected API key on every poll; the login screen will
+    // refresh it after a successful sign-in.
+    State.apiKey = '';
+    Auth.show();
+    throw Object.assign(new Error('unauthorized'), { status: 401 });
+  }
   if (!r.ok) throw Object.assign(new Error(j.error || ('HTTP ' + r.status)), { status: r.status });
   return j;
 }
@@ -342,6 +364,9 @@ class Win {
     this.drag();
     this.focus();
     this.ctl = app.mount(this.body, this) || {};
+    // The Torrent Player is a viewing surface, not a small utility window: open it
+    // maximized so the video uses the whole screen/desktop instead of a corner.
+    if (app.max) this.toggleMax();
   }
   setTitle(t) { this.titleEl.textContent = t; }
   focus() {
@@ -1881,6 +1906,22 @@ function addDownloadDialog(info, preset) {
       tName.textContent = torrentFile ? ' ' + torrentFile.name : '';
     } });
     const pc = onlyTorrents ? el('input', { type: 'checkbox' }) : null;
+    const destLabel = el('label', { class: 'f', text: 'Salvar na pasta do celular' });
+    const flowHint = el('div', { class: 'hint', text: onlyTorrents
+      ? 'Primeiro o NexShare busca os metadados e mostra a lista de arquivos. Nada é baixado antes de você confirmar a seleção.'
+      : 'O celular baixa em segundo plano mesmo se você fechar esta página' });
+    const normalHint = flowHint.textContent;
+    const syncPc = () => {
+      const on = !!(pc && pc.checked);
+      // With PC direct download the phone folder is irrelevant and only confuses the
+      // flow; hide it (and explain the temporary cache) until the box is cleared.
+      destLabel.classList.toggle('hidden', on);
+      dest.classList.toggle('hidden', on);
+      flowHint.textContent = on
+        ? 'O PC recebe um link direto e baixa pelo stream do celular. O celular não guarda o arquivo como download; só mantém um cache temporário até o PC terminar ou a tarefa ser excluída.'
+        : normalHint;
+    };
+    if (pc) pc.addEventListener('change', syncPc);
     const close = v => { wrap.remove(); resolve(v); };
     const wrap = el('div', { id: 'modal', onmousedown: e => { if (e.target === wrap) close(null); } },
       el('div', { class: 'dialog wide' },
@@ -1890,12 +1931,10 @@ function addDownloadDialog(info, preset) {
           info.torrent ? el('div', { style: { marginTop: '10px' } },
             el('button', { class: 'btn', onclick: () => tPick.click() }, icon('upload'), 'Escolher arquivo .torrent'), tName, tPick)
             : el('div', { class: 'hint', text: 'BitTorrent não suportado neste dispositivo' }),
-          el('label', { class: 'f', text: 'Salvar na pasta do celular' }), dest,
+          destLabel, dest,
           onlyTorrents ? el('label', { style: { display: 'flex', alignItems: 'center', gap: '8px', marginTop: '10px', cursor: 'pointer', fontSize: '13px' } },
-            pc, 'Baixar no PC por link direto (não baixar no celular)') : null,
-          el('div', { class: 'hint', text: onlyTorrents
-            ? 'Primeiro o NexShare busca os metadados e mostra a lista de arquivos. Nada é baixado antes de você confirmar a seleção.'
-            : 'O celular baixa em segundo plano mesmo se você fechar esta página' })),
+            pc, 'Baixar no PC por link direto (não salvar no celular)') : null,
+          flowHint),
         el('div', { class: 'd-foot' },
           el('button', { class: 'btn', text: 'Cancelar', onclick: () => close(null) }),
           el('button', { class: 'btn primary', text: onlyTorrents ? 'Buscar metadados e escolher arquivos' : 'Próximo: Selecionar Arquivos', onclick: () => close({ urls: urls.value, dest: dest.value.trim(), torrentFile, torrentsOnly: onlyTorrents, showFilePicker: true, pc: !!(pc && pc.checked) }) }))));
@@ -2097,10 +2136,10 @@ function showFilePickerDialog(task, files, defaultDest, onConfirm, pcMode) {
     el('div', { class: 'dialog wide', style: { maxWidth: '900px' } },
       el('div', { class: 'd-head', text: `Selecionar arquivos — ${task.name}` }),
       el('div', { class: 'd-body', style: { maxHeight: '60vh', overflow: 'auto' } },
-        el('label', { class: 'f', text: 'Pasta de destino no celular' }),
-        el('div', { style: { display: 'flex', gap: '8px', marginBottom: '12px', alignItems: 'center' } }, destInput, pickDestBtn),
+        pcMode ? null : el('label', { class: 'f', text: 'Pasta de destino no celular' }),
+        pcMode ? null : el('div', { style: { display: 'flex', gap: '8px', marginBottom: '12px', alignItems: 'center' } }, destInput, pickDestBtn),
         el('div', { class: 'hint', style: { marginBottom: '10px' }, text: pcMode
-          ? 'Marque o que o PC deve baixar. Nada baixa no celular agora: ao confirmar, você recebe um link direto para abrir no navegador do PC.'
+          ? 'Marque o que o PC deve baixar. Nada fica salvo no celular: ao confirmar, você recebe um link direto para abrir no navegador do PC. O celular só envia os pedaços enquanto o PC baixa.'
           : 'Desmarque arquivos/pastas que não quer baixar. O download só começa após clicar em "Confirmar e Baixar". Para outra pasta, cancele e adicione o torrent de novo.' }),
         bar,
         treeBox),
@@ -2109,7 +2148,7 @@ function showFilePickerDialog(task, files, defaultDest, onConfirm, pcMode) {
         applyBtn)));
   document.body.append(wrap);
   redrawTree();
-  destInput.focus();
+  if (!pcMode) destInput.focus();
 }
 
 function waitForTorrentFiles(taskId) {
@@ -4246,7 +4285,7 @@ const APPS = {
   help: { id: 'help', name: 'NexShare Help', ico: 'help', w: 640, h: 560, mount: Help },
   download: { id: 'download', name: 'Download Station', ico: 'download', w: 960, h: 560, mount: DownloadStation },
   torrents: { id: 'torrents', name: 'Torrent Downloader', ico: 'torrent', w: 980, h: 600, mount: TorrentDownloader },
-  torrentplayer: { id: 'torrentplayer', name: 'Torrent Player', ico: 'player', w: 1040, h: 660, mount: TorrentPlayer },
+  torrentplayer: { id: 'torrentplayer', name: 'Torrent Player', ico: 'player', w: 1040, h: 660, max: true, mount: TorrentPlayer },
   debrid: { id: 'debrid', name: 'Debrid Hub', ico: 'debrid', w: 900, h: 620, mount: DebridHub },
   player: { id: 'player', name: 'Media Player', ico: 'player', w: 1000, h: 600, mount: MediaPlayer },
   packagecenter: { id: 'packagecenter', name: 'Package Center', ico: 'packagecenter', w: 760, h: 580, mount: PackageCenter },

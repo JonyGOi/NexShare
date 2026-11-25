@@ -4,6 +4,7 @@ import android.app.ActivityManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.media.ThumbnailUtils;
@@ -40,6 +41,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -57,6 +59,7 @@ public class WebApi implements HttpServer.Handler {
     private final RootApi rootApi;
     private final WebDavHandler webDavHandler;
     private final Set<String> tokens = Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>());
+    private final SharedPreferences sessionPrefs;
     private final Map<String, int[]> failures = new ConcurrentHashMap<>(); // ip -> {count, lockUntilSec}
     private final Map<String, byte[]> assetCache = new ConcurrentHashMap<>();
     private final java.util.Map<String, String> hashes = new java.util.HashMap<>();
@@ -76,6 +79,21 @@ public class WebApi implements HttpServer.Handler {
         this.serverRef = serverRef;
         this.rootApi = new RootApi(ctx);
         this.webDavHandler = new WebDavHandler(ctx);
+        this.sessionPrefs = this.ctx.getSharedPreferences("web_sessions", Context.MODE_PRIVATE);
+        // Session tokens used to live only in RAM. A service restart (or Android killing
+        // the process while the screen was off) silently logged the browser out and made
+        // the Torrent Player pop the PIN/password dialog again. Persist them so the 30-day
+        // cookie actually behaves like a 30-day session.
+        try {
+            Set<String> saved = sessionPrefs.getStringSet("tokens", Collections.<String>emptySet());
+            if (saved != null) for (String t : saved) if (t != null && !t.isEmpty()) tokens.add(t);
+        } catch (Throwable ignored) { }
+    }
+
+    private void saveSessions() {
+        try {
+            sessionPrefs.edit().putStringSet("tokens", new HashSet<String>(tokens)).apply();
+        } catch (Throwable ignored) { }
     }
 
     @Override
@@ -182,7 +200,7 @@ public class WebApi implements HttpServer.Handler {
             return;
         }
         switch (p) {
-            case "/api/logout": tokens.remove(req.cookie("ns_token")); res.json(200, "{}"); break;
+            case "/api/logout": tokens.remove(req.cookie("ns_token")); saveSessions(); res.json(200, "{}"); break;
             case "/api/roots": roots(res); break;
             case "/api/list": list(req, res); break;
             case "/api/search": search(req, res); break;
@@ -330,6 +348,7 @@ public class WebApi implements HttpServer.Handler {
         for (byte x : b) sb.append(String.format(Locale.ROOT, "%02x", x));
         String token = sb.toString();
         tokens.add(token);
+        saveSessions();
         res.header("Set-Cookie", "ns_token=" + token + "; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000");
         res.json(200, "{\"ok\":true,\"token\":\"" + token + "\"}");
     }

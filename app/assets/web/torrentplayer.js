@@ -3,7 +3,7 @@ function TorrentPlayer(body, win) {
   const st = {
     tasks: [], id: null, data: null, loading: false, timer: null, busy: false,
     playing: null, videoEl: null, playError: '', showAll: false, destroyed: false, autoPicked: false,
-    ephemeral: false, discarding: false
+    ephemeral: false, discarding: false, refreshing: false, listError: false
   };
   const pane = el('div', { class: 'pane tp-pane' });
   body.append(pane);
@@ -128,7 +128,8 @@ function TorrentPlayer(body, win) {
   function discardBeacon(id) {
     if (!id) return;
     try {
-      navigator.sendBeacon('/api/dl/remove?id=' + encodeURIComponent(id) + '&files=1');
+      const key = State.apiKey ? '&token=' + encodeURIComponent(State.apiKey) : '';
+      navigator.sendBeacon('/api/dl/remove?id=' + encodeURIComponent(id) + '&files=1' + key);
     } catch (e) { /* ignore */ }
   }
 
@@ -157,7 +158,10 @@ function TorrentPlayer(body, win) {
   }
 
   async function refreshTasks() {
-    if (st.discarding) return;
+    // The player polls while a torrent is active. Without this guard a slow response can
+    // stack requests until the phone/browser starts reporting "Failed to fetch".
+    if (st.discarding || st.refreshing) return;
+    st.refreshing = true;
     try {
       const r = await api('dl/list', { ephemeral: 1 });
       if (st.destroyed) return;
@@ -177,8 +181,19 @@ function TorrentPlayer(body, win) {
         return;
       }
       if (st.id) await loadTask(st.id);
+      if (st.listError) {
+        st.listError = false;
+        setAddStatus('Nada fica salvo: o torrent baixa só enquanto você assiste. Ao parar ou fechar, os arquivos temporários são apagados.', false);
+      }
     } catch (e) {
-      if (!st.destroyed) setAddStatus('Não foi possível listar os torrents: ' + e.message, true);
+      if (st.destroyed) return;
+      st.listError = true;
+      const network = /failed to fetch|networkerror|load failed|fetch/i.test(e.message || '');
+      setAddStatus(network
+        ? 'Sem conexão com o servidor do celular. Vou tentar de novo automaticamente…'
+        : 'Não foi possível listar os torrents: ' + e.message, true);
+    } finally {
+      st.refreshing = false;
     }
   }
 
@@ -377,8 +392,10 @@ function TorrentPlayer(body, win) {
     setAddStatus('Enviando o .torrent e buscando metadados…', false);
     try {
       await discardCurrent(true);
-      const r = await fetch('/api/dl/torrent?paused=1&ephemeral=1', { method: 'POST', body: f, credentials: 'same-origin' });
+      const headers = State.apiKey ? { 'X-Api-Key': State.apiKey } : undefined;
+      const r = await fetch('/api/dl/torrent?paused=1&ephemeral=1', { method: 'POST', body: f, headers, credentials: 'same-origin' });
       const j = await r.json().catch(() => ({}));
+      if (r.status === 401) { State.apiKey = ''; Auth.show(); throw new Error('sessão expirada'); }
       if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
       const id = j.ids && j.ids[0];
       if (!id) throw new Error('o servidor não retornou a tarefa');
@@ -406,7 +423,7 @@ function TorrentPlayer(body, win) {
   st.timer = setInterval(() => {
     if (st.destroyed || st.busy) return;
     refreshTasks();
-  }, 1800);
+  }, 3000);
 
   return {
     destroy() {

@@ -138,11 +138,28 @@ public class DownloadManager {
         return dir;
     }
 
+    /** One subfolder per player session, so removing a session can never delete a new one. */
+    private File ephemeralSessionDir(Task t) throws IOException {
+        File dir = new File(playerDir(), t.id);
+        if (!dir.isDirectory() && !dir.mkdirs()) throw new IOException("cannot create player session folder");
+        return dir;
+    }
+
     private void cleanupPlayerFiles() {
         try {
             File base = ctx.getExternalFilesDir(null);
             if (base != null) deleteTree(new File(base, "torrentplayer"));
         } catch (Throwable ignored) { }
+    }
+
+    /** Deleting a multi-GB cache must never block /api/dl/list or the player UI. */
+    private static void deleteTreeAsync(final File f) {
+        if (f == null || !f.exists()) return;
+        Thread th = new Thread(new Runnable() {
+            public void run() { deleteTree(f); }
+        }, "nexshare-player-cleanup");
+        th.setDaemon(true);
+        th.start();
     }
 
     private static void deleteTree(File f) {
@@ -171,6 +188,7 @@ public class DownloadManager {
         if (url.startsWith("magnet:")) return addTorrent(url, null, dir, ephemeral);
         if (!url.startsWith("http://") && !url.startsWith("https://")) throw new IOException("unsupported link");
         Task t = newTask("http", url, ephemeral ? playerDir() : dir);
+        if (ephemeral) t.dest = ephemeralSessionDir(t).getAbsolutePath();
         t.name = guessName(url);
         t.ephemeral = ephemeral;
         tasks.put(t.id, t);
@@ -187,14 +205,26 @@ public class DownloadManager {
         TorrentEngine te = torrents();
         File targetDir = ephemeral ? playerDir() : dir;
         Task t = newTask("torrent", magnet != null ? magnet : "(torrent file)", targetDir);
+        if (ephemeral) {
+            targetDir = ephemeralSessionDir(t);
+            t.dest = targetDir.getAbsolutePath();
+        }
         t.name = magnet != null ? magnetName(magnet) : "torrent";
         t.ephemeral = ephemeral;
         t.status = "downloading";
         te.add(t, magnet, torrentFile, targetDir);
         for (Task other : tasks.values()) {
             if (t.hash != null && t.hash.equals(other.hash)) {
-                // Already in the list: drop the duplicate handle and reuse the existing task.
-                te.remove(t, false);
+                // Already in the list: reuse the existing task. Never call te.remove(t) here:
+                // libtorrent resolves handles by info-hash, so it would remove the *existing*
+                // torrent while leaving its task in the list without a working handle.
+                if (ephemeral) {
+                    // Remove only the fresh, empty session folder. A duplicate add must
+                    // never delete payload that the existing torrent may already share.
+                    File dupDir = new File(t.dest);
+                    String[] kids = dupDir.list();
+                    if (kids != null && kids.length == 0) dupDir.delete();
+                }
                 return other;
             }
         }
@@ -330,18 +360,23 @@ public class DownloadManager {
         save();
     }
 
-    public synchronized void remove(String id, boolean deleteFiles) {
-        Task t = tasks.remove(id);
-        if (t == null) return;
-        t.stop = true;
-        if (t.type.equals("torrent")) {
-            if (torrents != null) torrents.remove(t, deleteFiles);
-        } else {
-            new File(t.dest, t.name + ".part").delete();
-            if (deleteFiles && t.status.equals("done")) new File(t.dest, t.name).delete();
+    public void remove(String id, boolean deleteFiles) {
+        Task t;
+        synchronized (this) {
+            t = tasks.remove(id);
+            if (t == null) return;
+            t.stop = true;
+            if (t.type.equals("torrent")) {
+                // For a player session, release the native handle without DELETE_FILES: the
+                // recursive delete below runs off the lock and cannot stall every API call.
+                if (torrents != null) torrents.remove(t, deleteFiles && !t.ephemeral);
+            } else {
+                new File(t.dest, t.name + ".part").delete();
+                if (deleteFiles && t.status.equals("done")) new File(t.dest, t.name).delete();
+            }
+            save();
         }
-        if (t.ephemeral && deleteFiles) deleteTree(new File(t.dest));
-        save();
+        if (t.ephemeral && deleteFiles) deleteTreeAsync(new File(t.dest));
     }
 
     /** Removes every Torrent Player task (and its partial files) without touching downloads. */
