@@ -1,10 +1,13 @@
-NexShare bundles FFmpeg 8.1.3 ("mini" builds) for real-time container
+NexShare bundles custom FFmpeg 8.1 builds for real-time HLS/MP4
 conversion in the Torrent Player, for both 64-bit and 32-bit ARM devices.
+These builds enable the HLS and MPEG-TS muxers, the pipe protocol and
+the H.264/HEVC Annex-B bitstream filters used by the player.
 
-Source: https://github.com/yearsyan/ffmpeg-android-build
-Builds: ffmpeg_android_aarch64_mini (v8.1.3-r1)
-        ffmpeg_android_arm_mini (v8.1.3-r1)
-Both builds are without --enable-gpl.
+Source: https://github.com/yearsyan/ffmpeg-android-build (FFmpeg 8.1,
+        commit a8029b6) with a minimal Android configuration.
+The build is without --enable-gpl and links only the LGPL FFmpeg
+libraries. The source code and build configuration are available on
+request from the NexShare project repository.
 
 FFmpeg is licensed under the GNU Lesser General Public License, version 2.1
 or later. The binary is invoked as a separate process; NexShare's Java code
