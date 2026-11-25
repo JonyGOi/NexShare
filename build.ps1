@@ -26,7 +26,7 @@ $Cloudflared = @{ 'arm64-v8a' = 'libs\cloudflared-linux-arm64'; 'armeabi-v7a' = 
 # busybox (one static binary, ~300 unix tools) for the root edition's terminal.
 $Busybox = @{ 'arm64-v8a' = 'libs\busybox-arm64'; 'armeabi-v7a' = 'libs\busybox-arm' }
 # ffmpeg: real-time remux/transcode for the Torrent Player (arm64 build).
-$Ffmpeg = @{ 'arm64-v8a' = 'libs\ffmpeg-aarch64' }
+$Ffmpeg = @{ 'arm64-v8a' = 'libs\ffmpeg-aarch64'; 'armeabi-v7a' = 'libs\ffmpeg-armv7a\libffmpeg.so' }
 
 function Run($exe, [string[]]$argv) {
     $ErrorActionPreference = 'Continue' # tools write notes to stderr; rely on exit codes

@@ -1,8 +1,10 @@
-NexShare bundles FFmpeg 8.1.3 (aarch64 "mini" build) for real-time
-container conversion in the Torrent Player.
+NexShare bundles FFmpeg 8.1.3 ("mini" builds) for real-time container
+conversion in the Torrent Player, for both 64-bit and 32-bit ARM devices.
 
 Source: https://github.com/yearsyan/ffmpeg-android-build
-Build:  ffmpeg_android_aarch64_mini (v8.1.3-r1), without --enable-gpl.
+Builds: ffmpeg_android_aarch64_mini (v8.1.3-r1)
+        ffmpeg_android_arm_mini (v8.1.3-r1)
+Both builds are without --enable-gpl.
 
 FFmpeg is licensed under the GNU Lesser General Public License, version 2.1
 or later. The binary is invoked as a separate process; NexShare's Java code

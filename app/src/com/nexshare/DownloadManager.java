@@ -435,6 +435,7 @@ public class DownloadManager {
     }
 
     public void shutdown() {
+        LiveHls.stopAll();
         synchronized (this) {
             cleanupEphemeral();
             for (Task t : tasks.values()) t.stop = true;

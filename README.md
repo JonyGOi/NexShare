@@ -49,10 +49,12 @@ root prompt.
   (magnet links and `.torrent` files, via libtorrent4j) straight to the phone,
   with pause/resume, progress, speed and peers.
 - **Torrent Player (live conversion)** — a staged player: paste a magnet or pick a
-  `.torrent`, press **Assistir**, choose one file and it starts. On arm64, a bundled
-  FFmpeg reads only the pieces already on disk and writes fragmented MP4 on the fly,
-  so MKV/AVI/TS and AC3/DTS audio start playing before the whole file downloads.
-  No VLC round-trip is needed. Other ABIs fall back to the full-file MP4 remux.
+  `.torrent`, press **Assistir**, choose one file and it starts. A bundled FFmpeg
+  reads only the pieces already on disk and writes short HLS/MPEG-TS segments while
+  the rest downloads, so MKV/AVI/TS and AC3/DTS audio start on the first segment and
+  the player can seek inside what has already been converted. No VLC round-trip is
+  needed. If the segmented path is unavailable, the player falls back to a continuous
+  MP4 stream and finally to a full-file MP4 remux.
 - **Debrid Hub** — turn the phone into a tiny Real-Debrid. Paste a magnet and the
   video starts streaming in seconds: the biggest video file is prioritised, pieces are
   fetched sequentially, and playback throttles itself until the bytes being read are on
@@ -375,11 +377,12 @@ the network drive.
 - **Small files performance**: Because WebDAV issues HTTP round-trips for metadata (`PROPFIND`) on each file/folder, browsing directories with thousands of small files will be slower than a local disk.
 - **Tunnel limits**: Cloudflare Quick Tunnels are free but get a new random URL on every restart and cap request bodies (uploads over WebDAV) at 100 MB. Large downloads/streams are fine; for big uploads use the LAN or a named tunnel on your own domain.
 - **Debrid is local, not a cloud cache**: NexShare streams what the phone itself downloads from the swarm — it does not mirror files to a datacenter or unlock premium hosters. Speed and start-up time depend on seeders, and files stay on the phone until you delete them.
-- **Live conversion is arm64-only and forward-only**: the bundled FFmpeg real-time path
-  is included for `arm64-v8a` phones. On 32-bit devices the player falls back to downloading
-  the selected file and remuxing it. Seeking inside the live stream restarts the conversion
-  from the beginning; the full-file path keeps normal seeking. HEVC/H.265 is copied, so a
-  browser without HEVC support can still refuse it (VLC remains the last resort).
+- **Segmented conversion has limits**: the bundled FFmpeg real-time path is included for
+  `arm64-v8a` and `armeabi-v7a`. It copies the video stream (no re-encode), so HEVC/H.265
+  still needs a browser with HEVC support; VLC remains the last resort. Seeking works
+  inside the HLS segments already generated; if the player has to restart the conversion,
+  the first segment can take a few seconds. A very large movie temporarily uses extra
+  cache space for those segments until you leave the player.
 
 ## Build from source (Windows)
 

@@ -209,6 +209,9 @@ public class WebApi implements HttpServer.Handler {
             case "/api/media": media(req, res); break;
             case "/api/file": file(req, res); break;
             case "/api/live": live(req, res); break;
+            case "/api/live/start": liveStart(req, res); break;
+            case "/api/live/stop": liveStop(req, res); break;
+            case "/api/hls": hls(req, res); break;
             case "/api/player/open": playerOpen(req, res); break;
             case "/api/hash": hash(req, res); break;
             case "/api/thumb": thumb(req, res); break;
@@ -595,6 +598,205 @@ public class WebApi implements HttpServer.Handler {
         OutputStream out = res.begin(200, "video/mp4", -1);
         if ("HEAD".equals(req.method)) return;
         LiveRemux.stream(ctx, f, stream, out);
+    }
+
+    /**
+     * Starts a segmented HLS conversion for one selected torrent file. The response is only
+     * sent after the first segment exists, so the player does not open an empty playlist.
+     */
+    private void liveStart(HttpServer.Request req, HttpServer.Response res) throws IOException {
+        JSONObject body;
+        try {
+            body = new JSONObject(req.bodyString(8192));
+        } catch (Exception e) {
+            res.error(400, "bad request");
+            return;
+        }
+        String id = body.optString("id");
+        int index = body.optInt("index", -1);
+        DownloadManager dm = DownloadManager.get(ctx);
+        DownloadManager.Task t = dm.getTask(id);
+        if (t == null) {
+            res.error(404, "task not found");
+            return;
+        }
+        TorrentEngine te = dm.torrentEngine();
+        if (te == null) {
+            res.error(503, "torrent engine indisponível");
+            return;
+        }
+        List<JSONObject> files = te.listFiles(t);
+        if (index < 0 || index >= files.size()) {
+            res.error(400, "arquivo inválido");
+            return;
+        }
+        if (!LiveRemux.available(ctx)) {
+            res.error(501, "conversão ao vivo indisponível neste aparelho");
+            return;
+        }
+        if (t.dest == null || t.dest.isEmpty()) {
+            res.error(500, "pasta do torrent indisponível");
+            return;
+        }
+        File baseDir = new File(t.dest);
+        File f;
+        try {
+            f = new File(baseDir, files.get(index).optString("path")).getCanonicalFile();
+            String rootPath = baseDir.getCanonicalPath() + File.separator;
+            if (!f.getPath().startsWith(rootPath)) {
+                res.error(400, "arquivo inválido");
+                return;
+            }
+        } catch (IOException e) {
+            res.error(400, "arquivo inválido");
+            return;
+        }
+        te.prioritizeFile(t, index, true);
+        dm.resume(t.id);
+        if (!f.isFile()) {
+            long until = System.currentTimeMillis() + 8000L;
+            while (!f.isFile() && System.currentTimeMillis() < until) {
+                try { Thread.sleep(100L); } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }
+        if (!f.isFile()) {
+            res.error(503, "o arquivo ainda está sendo criado pelo torrent");
+            return;
+        }
+        DownloadManager.StreamRef ref = dm.locateTorrentFile(f);
+        LiveHls.Session session;
+        try {
+            session = LiveHls.start(ctx, f, ref);
+        } catch (Exception e) {
+            res.error(500, "conversão ao vivo falhou: " + e.getMessage());
+            return;
+        }
+        String token = getOrCreateStreamToken();
+        String playlist = "/api/hls?session=" + encodeQuery(session.id)
+            + "&file=index.m3u8&token=" + encodeQuery(token);
+        JSONObject o = new JSONObject();
+        put(o, "session", session.id);
+        put(o, "playlist", playlist);
+        put(o, "live", true);
+        res.json(200, o.toString());
+    }
+
+    private void liveStop(HttpServer.Request req, HttpServer.Response res) throws IOException {
+        String id = req.param("session");
+        if (id == null || id.isEmpty()) {
+            try {
+                JSONObject body = new JSONObject(req.bodyString(4096));
+                id = body.optString("session");
+            } catch (Exception ignored) { }
+        }
+        LiveHls.stop(id);
+        res.json(200, "{\"ok\":true}");
+    }
+
+    /** Serves the growing event playlist and the finished MPEG-TS segments. */
+    private void hls(HttpServer.Request req, HttpServer.Response res) throws IOException {
+        LiveHls.Session session = LiveHls.get(req.param("session"));
+        if (session == null) {
+            res.error(404, "sessão não encontrada");
+            return;
+        }
+        session.touch();
+        String name = req.param("file");
+        if (name == null || name.isEmpty()) name = "index.m3u8";
+        if ("index.m3u8".equals(name)) {
+            String playlist = readSmallText(session.playlist, 1 << 20);
+            if (playlist == null || !playlist.contains("#EXTINF")) {
+                res.header("Cache-Control", "no-store");
+                res.error(404, "playlist ainda vazia");
+                return;
+            }
+            String token = getOrCreateStreamToken();
+            StringBuilder out = new StringBuilder(playlist.length() + 256);
+            for (String line : playlist.split("\n", -1)) {
+                String trimmed = line.trim();
+                if (trimmed.matches("seg[0-9]{6}\\.ts")) {
+                    out.append("/api/hls?session=").append(encodeQuery(session.id))
+                        .append("&file=").append(encodeQuery(trimmed))
+                        .append("&token=").append(encodeQuery(token));
+                } else {
+                    out.append(line);
+                }
+                out.append('\n');
+            }
+            res.header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+            res.header("Access-Control-Allow-Origin", "*");
+            res.text(200, "application/vnd.apple.mpegurl", out.toString());
+            return;
+        }
+        if (!name.matches("seg[0-9]{6}\\.ts")) {
+            res.error(400, "arquivo inválido");
+            return;
+        }
+        File seg = session.segment(name);
+        if (!seg.isFile()) {
+            res.error(404, "segmento ainda não disponível");
+            return;
+        }
+        long len = seg.length();
+        if (len <= 0) {
+            res.error(404, "segmento vazio");
+            return;
+        }
+        long start = 0, end = len - 1;
+        boolean partial = false;
+        String range = req.header("range");
+        if (range != null && range.startsWith("bytes=") && !range.contains(",")) {
+            String[] r = range.substring(6).split("-", -1);
+            try {
+                if (r[0].isEmpty()) start = Math.max(0, len - Long.parseLong(r[1]));
+                else {
+                    start = Long.parseLong(r[0]);
+                    if (!r[1].isEmpty()) end = Math.min(Long.parseLong(r[1]), len - 1);
+                }
+                partial = true;
+            } catch (NumberFormatException | ArrayIndexOutOfBoundsException ignored) { }
+            if (start >= len || start > end) {
+                res.header("Content-Range", "bytes */" + len);
+                res.error(416, "range inválido");
+                return;
+            }
+        }
+        long count = end - start + 1;
+        res.header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+        res.header("Accept-Ranges", "bytes");
+        if (partial) res.header("Content-Range", "bytes " + start + "-" + end + "/" + len);
+        OutputStream out = res.begin(partial ? 206 : 200, "video/mp2t", count);
+        if ("HEAD".equals(req.method)) return;
+        try (RandomAccessFile raf = new RandomAccessFile(seg, "r")) {
+            raf.seek(start);
+            byte[] buf = new byte[64 * 1024];
+            long left = count;
+            while (left > 0) {
+                int n = raf.read(buf, 0, (int) Math.min(buf.length, left));
+                if (n <= 0) break;
+                out.write(buf, 0, n);
+                left -= n;
+            }
+            out.flush();
+        }
+    }
+
+    private static String readSmallText(File f, int max) {
+        if (f == null || !f.isFile()) return null;
+        try (FileInputStream in = new FileInputStream(f); ByteArrayOutputStream bo = new ByteArrayOutputStream()) {
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) > 0) {
+                if (bo.size() + n > max) break;
+                bo.write(buf, 0, n);
+            }
+            return new String(bo.toByteArray(), StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            return null;
+        }
     }
 
     private void file(HttpServer.Request req, HttpServer.Response res) throws IOException {
@@ -1206,11 +1408,17 @@ public class WebApi implements HttpServer.Handler {
         // Torrent Player sessions are visible only to the player (ephemeral=1). The regular
         // Downloader never lists them, so closing the session leaves no task history behind.
         boolean wantEphemeral = "1".equals(req.param("ephemeral"));
+        // Keep the task currently open in the player even when it was reused from the normal
+        // Downloader (same info-hash) and therefore is not ephemeral. Without this, one poll
+        // could hide the session and the next request would answer "task not found".
+        String keepId = req.param("id");
         JSONArray visible = new JSONArray();
         JSONArray all = dm.list();
         for (int i = 0; i < all.length(); i++) {
             JSONObject t = all.optJSONObject(i);
-            if (t != null && t.optBoolean("ephemeral") == wantEphemeral) visible.put(t);
+            if (t == null) continue;
+            if (t.optBoolean("ephemeral") == wantEphemeral
+                || (keepId != null && keepId.equals(t.optString("id")))) visible.put(t);
         }
         put(o, "tasks", visible);
         put(o, "defaultDir", DownloadManager.defaultDir().getAbsolutePath());

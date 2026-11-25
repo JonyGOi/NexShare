@@ -5,6 +5,8 @@ function TorrentPlayer(body, win) {
     playing: null, videoEl: null, playError: '', showAll: false, destroyed: false,
     ephemeral: false, discarding: false, refreshing: false, listError: false,
     prep: null, prepTimer: null, liveTimer: null,
+    epoch: 0, taskMisses: 0, loadError: '',
+    hls: null, hlsSession: null,
     // start -> pick a file -> player. The initial screen intentionally shows only
     // the magnet/.torrent field and one confirmation button.
     stage: 'start', torrentFile: null, starting: false, startingFile: null
@@ -153,12 +155,36 @@ function TorrentPlayer(body, win) {
     }
   }
 
+  function stopHlsSession() {
+    const session = st.hlsSession;
+    st.hlsSession = null;
+    if (st.hls) {
+      try { st.hls.destroy(); } catch (e) { /* ignore */ }
+      st.hls = null;
+    }
+    if (session) {
+      api('live/stop', { session }, { method: 'POST', noRetry: true }).catch(() => { });
+    }
+    return session;
+  }
+
+  function hlsBeacon(session) {
+    if (!session) return;
+    try {
+      const key = State.apiKey ? '&token=' + encodeURIComponent(State.apiKey) : '';
+      navigator.sendBeacon('/api/live/stop?session=' + encodeURIComponent(session) + key);
+    } catch (e) { /* ignore */ }
+  }
+
   function stopPlayback() {
     if (st.liveTimer) { clearTimeout(st.liveTimer); st.liveTimer = null; }
+    const session = stopHlsSession();
     if (st.videoEl) {
-      try { st.videoEl.pause(); st.videoEl.removeAttribute('src'); st.videoEl.load(); } catch (e) { /* ignore */ }
+      const v = st.videoEl;
+      st.videoEl = null;
+      try { v.pause(); v.removeAttribute('src'); v.load(); } catch (e) { /* ignore */ }
     }
-    st.videoEl = null;
+    if (session) hlsBeacon(session);
     st.playing = null;
     st.playError = '';
   }
@@ -177,27 +203,109 @@ function TorrentPlayer(body, win) {
   }
 
   /**
-   * Starts the real-time path: ffmpeg converts the container/audio while the torrent is still
-   * downloading and Chrome plays the first MP4 fragment. If the endpoint or codec fails, the
-   * video error handler falls back to the full-file remux (and, last, VLC).
+   * Starts the segmented path: ffmpeg writes the first HLS segment as soon as the beginning of
+   * the file is available, so playback starts long before the torrent finishes. If HLS is not
+   * available, try the older continuous MP4 endpoint before falling back to a full remux.
    */
-  function startLive(f) {
+  async function startLive(f) {
     if (!f || !st.id) return;
     const id = st.id;
+    const epoch = st.epoch;
+    endPlayback();
+    st.stage = 'player';
+    st.starting = true;
+    st.startingFile = f;
+    st.playError = '';
+    st.loadError = '';
+    setAddStatus('Preparando o primeiro trecho do vídeo…', false);
+    renderDetail();
+    let controller = null;
+    let timeout = null;
+    try {
+      controller = new AbortController();
+      timeout = setTimeout(() => controller.abort(), 45000);
+      const r = await api('live/start', null, {
+        method: 'POST',
+        body: JSON.stringify({ id, index: f.id }),
+        signal: controller.signal
+      });
+      if (st.destroyed || st.id !== id || st.epoch !== epoch) {
+        api('live/stop', { session: r.session }, { method: 'POST', noRetry: true }).catch(() => { });
+        return;
+      }
+      st.starting = false;
+      st.hlsSession = r.session;
+      st.playing = { task: id, index: f.id, file: f, live: true, hls: true, src: r.playlist, session: r.session };
+      setAddStatus('Conversão em partes: o primeiro trecho já está pronto; o restante converte enquanto você assiste.', false);
+      if (st.liveTimer) clearTimeout(st.liveTimer);
+      st.liveTimer = setTimeout(() => {
+        if (st.videoEl && st.videoEl.readyState < 2) startMp4Fallback(f, 'O player demorou para abrir o primeiro trecho');
+      }, 40000);
+      renderDetail();
+    } catch (e) {
+      if (st.destroyed || st.id !== id || st.epoch !== epoch) return;
+      st.starting = false;
+      const why = e && e.name === 'AbortError' ? 'A preparação do primeiro trecho demorou demais' : 'A conversão em partes não iniciou';
+      startMp4Fallback(f, why + ' (' + (e.message || 'tempo esgotado') + ')');
+    } finally {
+      if (timeout) clearTimeout(timeout);
+    }
+  }
+
+  function startMp4Fallback(f, why) {
+    if (!f || !st.id) return;
+    const id = st.id;
+    stopPlayback();
     st.stage = 'player';
     st.starting = false;
     st.startingFile = f;
     st.playError = '';
     st.playing = { task: id, index: f.id, file: f, live: true, src: liveUrl(f) };
-    setAddStatus('Conversão ao vivo: o vídeo começa antes de o download terminar.', false);
-    // If ffmpeg cannot produce a first fragment, do not leave the user on a silent spinner.
+    setAddStatus((why ? why + '. ' : '') + 'Tentando o modo MP4 contínuo…', false);
     if (st.liveTimer) clearTimeout(st.liveTimer);
     st.liveTimer = setTimeout(() => {
-      if (st.playing && st.playing.live && st.videoEl && st.videoEl.readyState < 2) {
-        beginPrepare(st.playing.file);
-      }
+      if (st.playing && st.playing.live && st.videoEl && st.videoEl.readyState < 2) beginPrepare(f);
     }, 22000);
     renderDetail();
+  }
+
+  /** Attaches hls.js to the video element; HLS.js is bundled so playback works offline. */
+  function attachHls(v, src) {
+    const HlsCtor = window.Hls;
+    if (!HlsCtor || !HlsCtor.isSupported()) {
+      v.src = src;
+      return;
+    }
+    const hls = new HlsCtor({
+      // The playlist is an EVENT playlist that grows while ffmpeg converts. By default
+      // hls.js jumps to the live edge, which would skip the beginning of a movie that
+      // already has several converted segments. Treat the start as position 0 and do
+      // not chase the live edge: this is a growing VOD, not a live broadcast.
+      startPosition: 0,
+      liveSyncDurationCount: 1000000,
+      liveMaxLatencyDurationCount: 1000001,
+      maxBufferLength: 60,
+      backBufferLength: 30,
+      manifestLoadingTimeOut: 15000,
+      manifestLoadingMaxRetry: 5,
+      levelLoadingMaxRetry: 5,
+      fragLoadingMaxRetry: 5,
+      enableWorker: false,
+      lowLatencyMode: false
+    });
+    st.hls = hls;
+    hls.on(HlsCtor.Events.ERROR, (ev, data) => {
+      if (!data || !data.fatal || st.hls !== hls || st.videoEl !== v) return;
+      startMp4Fallback(st.playing && st.playing.file, 'O navegador recusou um trecho do vídeo');
+    });
+    hls.on(HlsCtor.Events.MANIFEST_PARSED, () => {
+      if (st.videoEl === v) v.play().catch(() => { /* autoplay blocked */ });
+    });
+    hls.on(HlsCtor.Events.FRAG_LOADED, () => {
+      if (st.liveTimer) { clearTimeout(st.liveTimer); st.liveTimer = null; }
+    });
+    hls.loadSource(src);
+    hls.attachMedia(v);
   }
 
   function removeRemux(id) {
@@ -247,6 +355,7 @@ function TorrentPlayer(body, win) {
     const id = st.id;
     const ephemeral = !!st.ephemeral;
     st.discarding = true;
+    st.epoch++;
     endPlayback();
     st.id = null;
     st.data = null;
@@ -255,6 +364,8 @@ function TorrentPlayer(body, win) {
     st.stage = 'start';
     st.starting = false;
     st.startingFile = null;
+    st.taskMisses = 0;
+    st.loadError = '';
     if (id) st.tasks = st.tasks.filter(t => t.id !== id);
     renderTasks();
     renderDetail();
@@ -265,26 +376,46 @@ function TorrentPlayer(body, win) {
     if (!quiet) setAddStatus('Sessão encerrada. Torrent e arquivos temporários apagados.', false);
   }
 
+  function endSession(message) {
+    st.epoch++;
+    st.id = null;
+    st.data = null;
+    st.ephemeral = false;
+    st.stage = 'start';
+    st.starting = false;
+    st.startingFile = null;
+    st.taskMisses = 0;
+    endPlayback();
+    renderDetail();
+    if (message) setAddStatus(message, true);
+  }
+
   async function refreshTasks() {
     // The player polls while a torrent is active. Without this guard a slow response can
     // stack requests until the phone/browser starts reporting "Failed to fetch".
     if (st.discarding || st.refreshing) return;
+    const epoch = st.epoch;
     st.refreshing = true;
     try {
-      const r = await api('dl/list', { ephemeral: 1 });
-      if (st.destroyed) return;
+      const r = await api('dl/list', { ephemeral: 1, id: st.id });
+      if (st.destroyed || epoch !== st.epoch || st.busy) return;
       // Only live player sessions belong here. Torrents from Torrent Downloader stay in
-      // their own app and are never copied into this temporary list.
+      // their own app and are never copied into this temporary list. The current id is kept
+      // in the response too, in case the magnet was reused from the normal Downloader.
       st.tasks = (r.tasks || []).filter(t => t && t.type === 'torrent' && t.ephemeral);
+      const current = (r.tasks || []).find(t => t && t.id === st.id);
+      if (current && !st.tasks.some(t => t.id === current.id)) st.tasks.unshift(current);
       renderTasks();
-      if (st.id && st.ephemeral && !st.tasks.some(t => t.id === st.id)) {
-        st.id = null;
-        st.data = null;
-        st.stage = 'start';
-        st.starting = false;
-        st.startingFile = null;
-        endPlayback();
-        renderDetail();
+      if (st.id && st.ephemeral && !(r.tasks || []).some(t => t.id === st.id)) {
+        // One missing poll can be a transient list/restart blip. Do not destroy a live
+        // session on a single response: that race produced "task not found" right after
+        // clicking Assistir. Give the server two more polls before giving up.
+        st.taskMisses = (st.taskMisses || 0) + 1;
+        if (st.taskMisses >= 3) {
+          endSession('A sessão do torrent expirou no servidor. Cole o magnet ou escolha o .torrent novamente.');
+        }
+      } else {
+        st.taskMisses = 0;
       }
       if (st.id) await loadTask(st.id);
       if (st.listError) {
@@ -304,19 +435,27 @@ function TorrentPlayer(body, win) {
   }
 
   async function loadTask(id) {
-    if (!id || st.loading || st.destroyed) return;
+    if (!id || st.loading || st.destroyed) return false;
+    const epoch = st.epoch;
     st.loading = true;
     try {
       const d = await api('debrid/files', { id });
-      if (st.destroyed || st.id !== id) return;
+      if (st.destroyed || st.id !== id || st.epoch !== epoch) return false;
       st.data = d;
       st.ephemeral = !!(d.task && d.task.ephemeral);
+      st.loadError = '';
       if (st.playing) updatePlayingStats();
       else renderDetail();
+      return true;
     } catch (e) {
-      if (!st.destroyed && st.id === id && !st.data) {
-        detail.replaceChildren(el('div', { class: 'tp-empty', text: 'Carregando metadados do torrent…' }));
+      if (!st.destroyed && st.id === id && st.epoch === epoch) {
+        if (e.status === 404) {
+          endSession('A tarefa deste torrent não existe mais no servidor. Cole o magnet ou escolha o .torrent de novo.');
+        } else if (!st.data) {
+          detail.replaceChildren(el('div', { class: 'tp-empty', text: 'Carregando metadados do torrent…' }));
+        }
       }
+      return false;
     } finally {
       st.loading = false;
     }
@@ -326,12 +465,15 @@ function TorrentPlayer(body, win) {
     if (st.discarding) return;
     if (st.id && st.id !== id) await discardCurrent(true);
     endPlayback();
+    st.epoch++;
     st.stage = 'pick';
     st.starting = false;
     st.startingFile = null;
     st.id = id;
     st.data = null;
     st.ephemeral = !!ephemeral;
+    st.taskMisses = 0;
+    st.loadError = '';
     st.showAll = false;
     renderTasks();
     renderDetail();
@@ -383,10 +525,10 @@ function TorrentPlayer(body, win) {
     const pct = downloading ? (Number(p.file && p.file.progress) || 0) : (Number(p.progress) || 0);
     return el('div', { class: 'tp-player tp-prep' },
       el('div', { class: 'tp-prep-box' },
-        el('h4', { text: downloading ? 'Baixando o arquivo para preparar o navegador' : 'Convertendo para MP4 (vídeo sem reencode)' }),
+        el('h4', { text: downloading ? 'Modo alternativo: completando o arquivo' : 'Modo alternativo: convertendo o arquivo inteiro' }),
         el('div', { class: 'hint', text: downloading
-          ? 'MKV, AVI e TS não tocam diretamente no navegador. O player precisa completar este arquivo uma vez; o download continua sob demanda e você pode cancelar.'
-          : 'O vídeo é copiado sem reencode; se o áudio for AC3/DTS, ele é convertido para AAC para tocar no navegador.' }),
+          ? 'A conversão em partes não conseguiu abrir este vídeo. Neste modo alternativo o player precisa completar o arquivo uma vez; o download continua sob demanda e você pode cancelar.'
+          : 'O vídeo é copiado sem reencode; se o áudio for AC3/DTS, ele é convertido para AAC. Este é o plano B quando o stream em partes não é compatível.' }),
         bar(pct, 'big'),
         el('div', { class: 'tp-sub' },
           el('span', { text: Math.round(pct) + (downloading ? '% do arquivo' : '% convertido') }),
@@ -409,7 +551,7 @@ function TorrentPlayer(body, win) {
       return;
     }
     if (!t) {
-      detail.append(el('div', { class: 'tp-empty', text: 'Carregando metadados do torrent…' }));
+      detail.append(el('div', { class: 'tp-empty', text: st.loadError || 'Carregando metadados do torrent…' }));
       return;
     }
     if (st.stage === 'pick') renderPick(t);
@@ -468,6 +610,10 @@ function TorrentPlayer(body, win) {
 
   async function pickFile(f) {
     if (st.busy) return;
+    if (!st.id) {
+      setAddStatus('A sessão do torrent não está mais aberta. Toque em Assistir para começar de novo.', true);
+      return;
+    }
     st.stage = 'player';
     st.starting = true;
     st.startingFile = f;
@@ -500,66 +646,64 @@ function TorrentPlayer(body, win) {
 
     if (st.prep) {
       detail.append(renderPrepare());
-    } else if (st.playing) {
-      if (st.playError) {
-        detail.append(el('div', { class: 'tp-player' }, fallbackBox(st.playing.file)));
-      } else {
-        if (st.playing.live) {
-          detail.append(el('div', { class: 'tp-live-note' },
-            icon('play'), el('span', { text: 'Conversão ao vivo: o vídeo toca enquanto o restante do arquivo baixa. Arrastar a barra pode reiniciar a conversão.' })));
-        }
-        detail.append(el('div', { class: 'tp-player' },
-          el('div', { class: 'tp-video-wrap' },
-            (() => {
-              const v = el('video', {
-                class: 'tp-video', controls: true, autoplay: true, playsinline: true,
-                src: st.playing.src || st.playing.file.streamUrl
-              });
-              st.videoEl = v;
-              v.addEventListener('error', () => {
-                if (st.videoEl !== v) return;
-                if (st.playing && st.playing.index === st.playing.file.id) {
-                  const f = st.playing.file;
-                  if (st.playing.live) {
-                    // Live conversion failed (old ABI, unsupported video codec or no fragments).
-                    // Fall back to the full-file MP4 conversion, which also handles AC-3.
-                    beginPrepare(f);
-                  } else if (!st.playing.remuxId) {
-                    // Direct play failed: first retry through the live converter, so an MP4 with
-                    // AC-3/DTS audio does not have to wait for the whole file.
-                    startLive(f);
-                  } else {
-                    st.playError = 'O navegador não abriu este vídeo (codec não suportado). O torrent continua baixando normalmente.';
-                    renderDetail();
-                  }
-                }
-              });
-              v.addEventListener('playing', () => {
-                if (st.videoEl !== v) return;
-                if (st.liveTimer) { clearTimeout(st.liveTimer); st.liveTimer = null; }
-              });
-              v.addEventListener('ended', () => {
-                if (st.videoEl === v) discardCurrent(true);
-              });
-              setTimeout(() => { if (st.videoEl === v) v.play().catch(() => { /* autoplay blocked */ }); }, 80);
-              return v;
-            })(),
-            el('div', { class: 'tp-player-bar' },
-              el('span', { id: 'tp-playing-stat', class: 'hint', text: statusLabel(t) + ' · ' + fmtSize(t.done) + ' / ' + fmtSize(t.total) }),
-              el('span', { class: 'tp-player-acts' },
-                el('button', { class: 'btn', onclick: chooseAnother }, 'Escolher outro'),
-                el('button', { class: 'btn', onclick: () => discardCurrent(false) }, 'Parar e apagar'),
-                el('button', { class: 'btn', onclick: () => openExternal(st.playing.file) }, 'Abrir no VLC'),
-                el('button', { class: 'btn', onclick: () => copyLink(st.playing.file) }, 'Copiar link'))))));
-      }
-    } else if (st.playError && st.startingFile) {
-      detail.append(el('div', { class: 'tp-player' }, fallbackBox(st.startingFile)));
-    } else {
-      detail.append(el('div', { class: 'tp-empty' },
-        el('div', { class: 'tp-empty-ico' }, icon('play')),
-        el('h3', { text: 'Iniciando o player…' }),
-        el('p', { class: 'hint', text: 'Preparando o stream e a lista de pedaços do vídeo.' })));
+      return;
     }
+    if (!st.playing) {
+      if (st.playError && st.startingFile) {
+        detail.append(el('div', { class: 'tp-player' }, fallbackBox(st.startingFile)));
+      } else {
+        detail.append(el('div', { class: 'tp-empty' },
+          el('div', { class: 'tp-empty-ico' }, icon('play')),
+          el('h3', { text: 'Iniciando o player…' }),
+          el('p', { class: 'hint', text: st.starting && st.startingFile ? 'Preparando o primeiro trecho do vídeo…' : 'Preparando o stream.' })));
+      }
+      return;
+    }
+    if (st.playError) {
+      detail.append(el('div', { class: 'tp-player' }, fallbackBox(st.playing.file)));
+      return;
+    }
+    if (st.playing.live) {
+      detail.append(el('div', { class: 'tp-live-note' },
+        icon('play'), el('span', { text: st.playing.hls
+          ? 'Conversão em partes (HLS): o primeiro trecho toca enquanto o restante baixa e é convertido. Você pode avançar dentro do que já foi gerado.'
+          : 'Conversão ao vivo: o vídeo toca enquanto o restante do arquivo baixa. Arrastar a barra pode reiniciar a conversão.' })));
+    }
+    const v = el('video', { class: 'tp-video', controls: true, autoplay: true, playsinline: true });
+    st.videoEl = v;
+    v.addEventListener('error', () => {
+      if (st.videoEl !== v || !st.playing) return;
+      const f = st.playing.file;
+      if (st.playing.live) {
+        if (st.playing.hls) startMp4Fallback(f, 'O navegador recusou o stream em partes');
+        else beginPrepare(f);
+      } else if (!st.playing.remuxId) {
+        startLive(f);
+      } else {
+        st.playError = 'O navegador não abriu este vídeo (codec não suportado). O torrent continua baixando normalmente.';
+        renderDetail();
+      }
+    });
+    v.addEventListener('playing', () => {
+      if (st.videoEl !== v) return;
+      if (st.liveTimer) { clearTimeout(st.liveTimer); st.liveTimer = null; }
+    });
+    v.addEventListener('ended', () => {
+      if (st.videoEl === v) discardCurrent(true);
+    });
+    detail.append(el('div', { class: 'tp-player' },
+      el('div', { class: 'tp-video-wrap' },
+        v,
+        el('div', { class: 'tp-player-bar' },
+          el('span', { id: 'tp-playing-stat', class: 'hint', text: statusLabel(t) + ' · ' + fmtSize(t.done) + ' / ' + fmtSize(t.total) }),
+          el('span', { class: 'tp-player-acts' },
+            el('button', { class: 'btn', onclick: chooseAnother }, 'Escolher outro'),
+            el('button', { class: 'btn', onclick: () => discardCurrent(false) }, 'Parar e apagar'),
+            el('button', { class: 'btn', onclick: () => openExternal(st.playing.file) }, 'Abrir no VLC'),
+            el('button', { class: 'btn', onclick: () => copyLink(st.playing.file) }, 'Copiar link'))))));
+    if (st.playing.hls) attachHls(v, st.playing.src);
+    else v.src = st.playing.src || st.playing.file.streamUrl;
+    setTimeout(() => { if (st.videoEl === v) v.play().catch(() => { /* autoplay blocked */ }); }, 80);
   }
 
   function beginPrepare(f) {
@@ -586,6 +730,7 @@ function TorrentPlayer(body, win) {
       return toast('Link de stream indisponível para este arquivo.');
     }
     const id = st.id;
+    const epoch = st.epoch;
     endPlayback();
     st.stage = 'player';
     st.starting = true;
@@ -594,7 +739,7 @@ function TorrentPlayer(body, win) {
     renderDetail();
     try {
       await api('debrid/prioritize', null, { method: 'POST', body: JSON.stringify({ id, fileIndex: f.id, confirm: true }) });
-      if (st.destroyed || st.id !== id) return;
+      if (st.destroyed || st.id !== id || st.epoch !== epoch) return;
       st.playError = '';
       // MKV/AVI/TS and AC-3 audio cannot go straight to Chrome. Try the live MP4 fragment
       // converter first; a browser error then falls back to the full-file remux.
@@ -740,17 +885,21 @@ function TorrentPlayer(body, win) {
       st.torrentFile = null;
       fileInput.value = '';
       updateFilePick();
+      st.epoch++;
       st.stage = 'pick';
       st.starting = false;
       st.startingFile = null;
       st.id = id;
       st.data = null;
       st.ephemeral = true;
+      st.taskMisses = 0;
+      st.loadError = '';
       st.showAll = false;
       renderTasks();
       renderDetail();
-      await loadTask(id);
-      setAddStatus('Lista pronta. Escolha um dos arquivos para abrir o player.', false);
+      const loaded = await loadTask(id);
+      if (loaded) setAddStatus('Lista pronta. Escolha um dos arquivos para abrir o player.', false);
+      else if (st.id === id && !st.loadError) setAddStatus('O servidor ainda está preparando a lista de arquivos…', false);
     } catch (e) {
       st.stage = 'start';
       renderDetail();
@@ -764,6 +913,7 @@ function TorrentPlayer(body, win) {
   }
 
   const onUnload = () => {
+    if (st.hlsSession) hlsBeacon(st.hlsSession);
     if (st.id && st.ephemeral) discardBeacon(st.id);
     if (st.playing && st.playing.remuxId) remuxBeacon(st.playing.remuxId);
     if (st.prep && st.prep.jobId) remuxBeacon(st.prep.jobId);
@@ -784,6 +934,7 @@ function TorrentPlayer(body, win) {
       st.destroyed = true;
       clearInterval(st.timer);
       window.removeEventListener('beforeunload', onUnload);
+      if (st.hlsSession) hlsBeacon(st.hlsSession);
       if (st.playing && st.playing.remuxId) remuxBeacon(st.playing.remuxId);
       if (st.prep && st.prep.jobId) remuxBeacon(st.prep.jobId);
       stopPlayback();
