@@ -419,14 +419,18 @@ public class TorrentEngine {
                 return;
             }
 
-            if (stream >= 0) {
+            if (stream >= 0 && stream < n) {
                 h.setFlags(TorrentFlags.SEQUENTIAL_DOWNLOAD);
                 int sp = fs.pieceIndexAtFile(stream);
                 int ep = fs.lastPieceIndexAtFile(stream);
-                if (ep >= sp) h.setSequentialRange(sp, ep);
-                h.setPieceDeadline(sp, 500);
-                if (sp + 1 <= ep) h.setPieceDeadline(sp + 1, 1000);
-                if (ep > sp + 1) h.setPieceDeadline(ep, 1500);
+                // A zero-sized or still-metadata file can report -1. Passing that to
+                // libtorrent's native deadline/range calls can abort the app.
+                if (sp >= 0 && ep >= sp) {
+                    h.setSequentialRange(sp, ep);
+                    h.setPieceDeadline(sp, 500);
+                    if (sp + 1 <= ep) h.setPieceDeadline(sp + 1, 1000);
+                    if (ep > sp + 1) h.setPieceDeadline(ep, 1500);
+                }
             } else {
                 // Sequential anyway: downloads happen in file order, so finished files can be
                 // moved to the PC and deleted even when the torrent is bigger than the disk.

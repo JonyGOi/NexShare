@@ -6,12 +6,14 @@ import android.util.Log;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.RandomAccessFile;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Date;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -31,6 +33,7 @@ public final class LiveHls {
     private static final AtomicInteger STARTING = new AtomicInteger();
     private static File root;
     private static Thread cleaner;
+    private static final Object DIAG_LOCK = new Object();
 
     private LiveHls() { }
 
@@ -124,6 +127,7 @@ public final class LiveHls {
             }
         }
 
+        diag("start " + key + " size=" + source.length());
         String id = UUID.randomUUID().toString().replace("-", "").substring(0, 16);
         File dir = new File(root, id);
         if (!dir.mkdirs()) throw new IOException("sem espaço para o cache de conversão");
@@ -161,6 +165,7 @@ public final class LiveHls {
         try {
             p = new ProcessBuilder(cmd).redirectErrorStream(false).start();
         } catch (Exception e) {
+            diag("spawn failed: " + e);
             deleteTree(dir);
             throw new IOException("ffmpeg não iniciou: " + e.getMessage(), e);
         }
@@ -178,8 +183,12 @@ public final class LiveHls {
         s.feeder = feed;
         feed.start();
         Thread watch = new Thread(() -> {
-            try { p.waitFor(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
-            if (!s.closed) Log.d(TAG, "ffmpeg ended: " + s.errorTail());
+            int code = -1;
+            try { code = p.waitFor(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            if (!s.closed) {
+                diag("ffmpeg exit " + code + (s.errorTail().isEmpty() ? "" : ": " + s.errorTail()));
+                Log.d(TAG, "ffmpeg ended: " + s.errorTail());
+            }
         }, "nexshare-hls-wait");
         watch.setDaemon(true);
         watch.start();
@@ -312,6 +321,7 @@ public final class LiveHls {
                 if (line.isEmpty()) continue;
                 Log.w(TAG, line);
                 s.appendError(line);
+                diag("ffmpeg: " + line);
             }
         } catch (IOException ignored) { }
     }
@@ -321,6 +331,22 @@ public final class LiveHls {
         try (InputStream stream = in) {
             while (stream.read(buf) > 0) { /* discard */ }
         } catch (IOException ignored) { }
+    }
+
+    private static void diag(String line) {
+        if (root == null) return;
+        File f = new File(root.getParentFile(), "player.log");
+        synchronized (DIAG_LOCK) {
+            try {
+                if (f.length() > 512 * 1024) f.delete();
+                try (FileWriter w = new FileWriter(f, true)) {
+                    w.write(new Date().toString());
+                    w.write(' ');
+                    w.write(line);
+                    w.write('\n');
+                }
+            } catch (Throwable ignored) { }
+        }
     }
 
     private static void deleteTree(File f) {

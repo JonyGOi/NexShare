@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.nexshare"
-    android:versionCode="39"
-    android:versionName="1.10.16">
+    android:versionCode="40"
+    android:versionName="1.10.17">
 
     <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="34" />
 
@@ -24,6 +24,7 @@
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
+        android:name="com.nexshare.NexApp"
         android:label="NexShare"
         android:icon="@drawable/ic_launcher"
         android:roundIcon="@drawable/ic_launcher"

@@ -1,6 +1,7 @@
 package com.nexshare;
 
 import android.app.ActivityManager;
+import android.app.ApplicationExitInfo;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
@@ -261,6 +262,7 @@ public class WebApi implements HttpServer.Handler {
             case "/api/update/install": installUpdate(req, res); break;
             case "/api/update/status": updateStatus(res); break;
             case "/api/update/auto": updateAuto(req, res); break;
+            case "/api/diag": diag(res); break;
             default: res.error(404, "not found");
         }
     }
@@ -2166,6 +2168,70 @@ public class WebApi implements HttpServer.Handler {
         public static volatile String message = "";
         public static volatile String error = "";
         public static volatile String version = "";
+    }
+
+    private void diag(HttpServer.Response res) throws IOException {
+        JSONObject o = new JSONObject();
+        put(o, "version", Flavor.VERSION);
+        put(o, "model", Build.MANUFACTURER + " " + Build.MODEL);
+        put(o, "android", Build.VERSION.RELEASE);
+        put(o, "sdk", Build.VERSION.SDK_INT);
+        put(o, "abi", Build.SUPPORTED_ABIS);
+        put(o, "playerLog", tailFile(new File(ctx.getCacheDir(), "player.log"), 30_000));
+        put(o, "crashLog", tailFile(new File(ctx.getFilesDir(), "last-crash.txt"), 30_000));
+        JSONArray exits = new JSONArray();
+        try {
+            ActivityManager am = (ActivityManager) ctx.getSystemService(Context.ACTIVITY_SERVICE);
+            if (Build.VERSION.SDK_INT >= 30 && am != null) {
+                List<ApplicationExitInfo> list =
+                        am.getHistoricalProcessExitReasons(ctx.getPackageName(), 0, 12);
+                for (ApplicationExitInfo e : list) {
+                    JSONObject x = new JSONObject();
+                    put(x, "time", new java.util.Date(e.getTimestamp()).toString());
+                    put(x, "reason", exitReason(e.getReason()));
+                    put(x, "description", e.getDescription());
+                    put(x, "importance", e.getImportance());
+                    put(x, "status", e.getStatus());
+                    exits.put(x);
+                }
+            }
+        } catch (Throwable e) {
+            put(o, "exitError", e.toString());
+        }
+        put(o, "exits", exits);
+        res.json(200, o.toString());
+    }
+
+    private static String exitReason(int reason) {
+        switch (reason) {
+            case ApplicationExitInfo.REASON_CRASH: return "crash";
+            case ApplicationExitInfo.REASON_CRASH_NATIVE: return "crash_native";
+            case ApplicationExitInfo.REASON_ANR: return "anr";
+            case ApplicationExitInfo.REASON_INITIALIZATION_FAILURE: return "initialization_failure";
+            case ApplicationExitInfo.REASON_SIGNALED: return "signaled";
+            case ApplicationExitInfo.REASON_EXIT_SELF: return "exit_self";
+            case ApplicationExitInfo.REASON_LOW_MEMORY: return "low_memory";
+            case ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE: return "excessive_resource_usage";
+            case ApplicationExitInfo.REASON_FREEZER: return "freezer";
+            case ApplicationExitInfo.REASON_OTHER: return "other";
+            case ApplicationExitInfo.REASON_PACKAGE_STATE_CHANGE: return "package_state_change";
+            case ApplicationExitInfo.REASON_PACKAGE_UPDATED: return "package_updated";
+            case ApplicationExitInfo.REASON_USER_REQUESTED: return "user_requested";
+            default: return "reason_" + reason;
+        }
+    }
+
+    private static String tailFile(File f, int max) {
+        if (f == null || !f.isFile()) return "";
+        try (RandomAccessFile raf = new RandomAccessFile(f, "r")) {
+            long start = Math.max(0, raf.length() - max);
+            raf.seek(start);
+            byte[] data = new byte[(int) (raf.length() - start)];
+            raf.readFully(data);
+            return new String(data, StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            return "log error: " + e.getMessage();
+        }
     }
 
     private void updateStatus(HttpServer.Response res) throws IOException {
