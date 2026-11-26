@@ -3064,6 +3064,7 @@ public class WebApi implements HttpServer.Handler {
      */
     private static final String DEFAULT_ADDON_SCRAPER = "https://torrentio.strem.fun";
     private final java.util.Map<String, java.util.Map<String, CachedScraperResult>> scraperCache = new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.Set<String> scraperRefreshing = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     private static class CachedScraperResult {
         final JSONObject data;
@@ -3102,6 +3103,10 @@ public class WebApi implements HttpServer.Handler {
         }
         if (tail.startsWith("/stream/") && tail.endsWith(".json")) {
             addonStreams(req, res, tail, key);
+            return true;
+        }
+        if (tail.equals("/stream")) {
+            addonStreamFile(req, res, key);
             return true;
         }
         if (tail.equals("/play")) {
@@ -3150,7 +3155,7 @@ public class WebApi implements HttpServer.Handler {
     private void addonManifest(HttpServer.Response res) throws IOException {
         JSONObject m = new JSONObject();
         put(m, "id", "com.nexshare.debrid");
-        put(m, "version", "1.2.0");
+        put(m, "version", "1.3.0");
         put(m, "name", "NexShare Debrid");
         put(m, "description", "Seu celular como debrid: escolha o stream e ele baixa e entrega na hora. Cache configurável, múltiplos scrapers.");
         put(m, "types", new JSONArray().put("movie").put("series"));
@@ -3173,10 +3178,17 @@ public class WebApi implements HttpServer.Handler {
         String cacheKey = type + ":" + id;
         java.util.Map<String, CachedScraperResult> typeCache = scraperCache.computeIfAbsent(type, k -> new java.util.concurrent.ConcurrentHashMap<>());
         CachedScraperResult cached = typeCache.get(cacheKey);
-        if (cached != null && !cached.isExpired(cacheMinutes)) {
+        String base = addonScraperUrl();
+        if (cached != null) {
+            if (!cached.isExpired(cacheMinutes)) {
+                return cached.data;
+            }
+            // Stale-while-revalidate: Nuvio is much more sensitive to a slow addon response
+            // than to a few minutes-old Torrentio list. Answer immediately with the old list
+            // and refresh it in the background for the next zap/stream list.
+            refreshScraperAsync(base, type, id, cacheKey, typeCache);
             return cached.data;
         }
-        String base = addonScraperUrl();
         JSONObject result;
         try {
             result = fetchScraperJson(base, type, id);
@@ -3199,6 +3211,24 @@ public class WebApi implements HttpServer.Handler {
             }
         }
         return result;
+    }
+
+    /** Refreshes an expired scraper entry without making Nuvio wait for Torrentio. */
+    private void refreshScraperAsync(String base, String type, String id, String cacheKey,
+                                     java.util.Map<String, CachedScraperResult> typeCache) {
+        if (!scraperRefreshing.add(cacheKey)) return;
+        Thread th = new Thread(() -> {
+            try {
+                JSONObject fresh = fetchScraperJson(base, type, id);
+                typeCache.put(cacheKey, new CachedScraperResult(fresh));
+            } catch (Throwable ignored) {
+                // Keep serving the stale entry; the next request tries again.
+            } finally {
+                scraperRefreshing.remove(cacheKey);
+            }
+        }, "NexShare-scraper-refresh");
+        th.setDaemon(true);
+        th.start();
     }
 
     /**
@@ -3295,7 +3325,11 @@ public class WebApi implements HttpServer.Handler {
                         // throwing them away: Stremio uses them to group and label the streams.
                         JSONObject hints = st.optJSONObject("behaviorHints");
                         JSONObject merged = hints != null ? new JSONObject(hints.toString()) : new JSONObject();
-                        merged.put("notWebReady", true);
+                        // The addon now hands Nuvio a browser/ExoPlayer-friendly URL for
+                        // containers those players cannot read, so this is no longer a
+                        // web-only stream. Leaving this true made some clients jump straight
+                        // to their libmpv fallback even when the phone could serve MP4.
+                        merged.put("notWebReady", false);
                         o.put("behaviorHints", merged);
                         StringBuilder u = new StringBuilder(base).append("/addon/").append(key).append("/play?h=").append(hash);
                         int fidx = st.optInt("fileIdx", -1);
@@ -3502,8 +3536,43 @@ public class WebApi implements HttpServer.Handler {
         res.json(200, "{\"ok\":true}");
     }
 
-    /** Adds (paused) the torrent of that hash, picks the file and redirects to the stream. */
+    /**
+     * Returns the player a stable URL immediately.  Waiting for torrent metadata here used to
+     * make Nuvio receive a 503 after seven seconds and report a playback error before the
+     * player had even opened the stream.  The real wait now happens in /addon/&lt;key&gt;/stream,
+     * while the player already has an HTTP connection open.
+     */
     private void addonPlay(HttpServer.Request req, HttpServer.Response res, String key) throws IOException {
+        String hash = req.param("h");
+        if (hash == null || hash.length() < 20) {
+            res.error(400, "hash invalido");
+            return;
+        }
+        hash = hash.toLowerCase(Locale.ROOT);
+        int want = -1;
+        try {
+            want = Integer.parseInt(req.param("i"));
+        } catch (Exception ignored) { }
+        StringBuilder u = new StringBuilder(addonBase(req))
+            .append("/addon/").append(key).append("/stream?h=").append(hash);
+        if (want >= 0) u.append("&i=").append(want);
+        for (String raw : req.params("tr")) {
+            if (raw != null && !raw.trim().isEmpty()) {
+                u.append("&tr=").append(encodeQuery(raw));
+            }
+        }
+        res.header("Location", u.toString());
+        res.header("Access-Control-Allow-Origin", "*");
+        res.begin(302, null, 0);
+    }
+
+    /**
+     * Resolves one addon stream after the player has connected. For MKV/AVI/TS we hand out the
+     * live fragmented-MP4 endpoint: libmpv then does not have to seek a half-downloaded
+     * Matroska file, which is where Nuvio was falling back to libmpv and failing. MP4/WebM stay
+     * on /api/file so they keep real byte-range seeking.
+     */
+    private void addonStreamFile(HttpServer.Request req, HttpServer.Response res, String key) throws IOException {
         String hash = req.param("h");
         if (hash == null || hash.length() < 20) {
             res.error(400, "hash invalido");
@@ -3532,15 +3601,18 @@ public class WebApi implements HttpServer.Handler {
             res.error(503, "torrent engine unavailable");
             return;
         }
-        int timeoutMs = Settings.addonMetadataTimeoutMs(ctx);
+        // The player is already connected here, so give the swarm more time than the old
+        // addon-resolution timeout. This is visible as a loading spinner in Nuvio, not as an
+        // instant "playback error".
+        int timeoutMs = Math.max(15_000, Settings.addonMetadataTimeoutMs(ctx));
         long deadline = System.currentTimeMillis() + timeoutMs;
         List<JSONObject> files = te.listFiles(t);
         while (files.isEmpty() && System.currentTimeMillis() < deadline) {
-            try { Thread.sleep(300); } catch (InterruptedException e) { break; }
+            try { Thread.sleep(250); } catch (InterruptedException e) { break; }
             files = te.listFiles(t);
         }
         if (files.isEmpty()) {
-            res.error(503, "metadados ainda nao chegaram - toque de novo no stream");
+            res.error(503, "metadados ainda nao chegaram - tente outro stream");
             return;
         }
         int idx = -1;
@@ -3552,20 +3624,33 @@ public class WebApi implements HttpServer.Handler {
             res.error(404, "nenhum video encontrado no torrent");
             return;
         }
-        // Only narrow the selection when the addon created the torrent; a torrent the user is
-        // already downloading from the panel keeps its own selection.
+        // Narrow the selection only when the addon owns the torrent; a panel download keeps
+        // its own selection. This also fixes tapping a different file of the same pack after
+        // the first stream had already selected one file.
         if (t.fromAddon) {
-            if (t.selected == null) te.setSelection(t, new int[]{idx});
+            if (t.selected == null || t.selected.length != 1 || t.selected[0] != idx) {
+                te.setSelection(t, new int[]{idx});
+            }
             t.awaitingSelection = false;
         }
-        te.prioritizeFile(t, idx, t.awaitingSelection);
+        te.prioritizeFile(t, idx, t.fromAddon || t.awaitingSelection);
         dm.resume(t.id);
         dm.save();
-        String path = files.get(idx).optString("fullPath");
-        String url = addonBase(req) + "/api/file?path=" + encodeQuery(path) + "&token=" + key;
+        String rel = files.get(idx).optString("path", "");
+        String path = files.get(idx).optString("fullPath", "");
+        if (path.isEmpty()) path = new File(t.dest, rel).getAbsolutePath();
+        boolean convert = addonNeedsConversion(rel) && LiveRemux.available(ctx);
+        String url = addonBase(req) + (convert ? "/api/live?path=" : "/api/file?path=")
+            + encodeQuery(path) + "&token=" + key;
         res.header("Location", url);
         res.header("Access-Control-Allow-Origin", "*");
         res.begin(302, null, 0);
+    }
+
+    /** Containers for which the browser/ExoPlayer needs the phone-side remux. */
+    private static boolean addonNeedsConversion(String name) {
+        String n = name == null ? "" : name.toLowerCase(Locale.ROOT);
+        return !(n.endsWith(".mp4") || n.endsWith(".m4v") || n.endsWith(".webm"));
     }
 
     /** Diagnostic used by the web setup page: can the phone reach the scraper? */
