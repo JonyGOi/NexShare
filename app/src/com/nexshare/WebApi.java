@@ -614,7 +614,7 @@ public class WebApi implements HttpServer.Handler {
         File f = resolvePlayer(req.param("path"));
         DownloadManager.StreamRef stream = DownloadManager.get(ctx).locateTorrentFile(f);
         if (!f.isFile() && stream != null) {
-            long until = System.currentTimeMillis() + 5000;
+            long until = System.currentTimeMillis() + 20000;
             while (!f.isFile() && System.currentTimeMillis() < until) {
                 try { Thread.sleep(100); } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
@@ -623,6 +623,7 @@ public class WebApi implements HttpServer.Handler {
             }
         }
         if (!f.isFile()) {
+            if (stream != null) res.header("Retry-After", "2");
             res.error(stream == null ? 404 : 503, stream == null ? "not found" : "arquivo ainda sendo criado");
             return;
         }
@@ -855,12 +856,13 @@ public class WebApi implements HttpServer.Handler {
         // dl=1 is a plain file download and deliberately bypasses torrent streaming.
         DownloadManager.StreamRef stream = "1".equals(req.param("dl")) ? null : DownloadManager.get(ctx).locateTorrentFile(f);
         if (!f.isFile() && stream != null) {
-            long until = System.currentTimeMillis() + 5000;
+            long until = System.currentTimeMillis() + 20000;
             while (!f.isFile() && System.currentTimeMillis() < until) {
                 try { Thread.sleep(100); } catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
             }
         }
         if (!f.isFile()) {
+            if (stream != null) res.header("Retry-After", "2");
             res.error(stream == null ? 404 : 503, stream == null ? "not found" : "arquivo ainda sendo criado");
             return;
         }
@@ -887,6 +889,7 @@ public class WebApi implements HttpServer.Handler {
             }
         }
         res.header("Accept-Ranges", "bytes");
+        if (stream != null) res.header("Cache-Control", "no-store");
         res.header("Last-Modified", HttpServer.httpDate(f.lastModified()));
         String fmime = mime(f.getName());
         // Never render HTML/SVG/JS from the storage inline on the app's own origin: that is how
@@ -3082,6 +3085,8 @@ public class WebApi implements HttpServer.Handler {
     private boolean handleAddon(HttpServer.Request req, HttpServer.Response res, String p) throws IOException {
         res.header("Access-Control-Allow-Origin", "*");
         res.header("Access-Control-Allow-Headers", "Content-Type");
+        // A tunnel/proxy must never cache the addon negotiation or a transient 503.
+        res.header("Cache-Control", "no-store");
         if ("OPTIONS".equals(req.method)) {
             res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
             res.header("Access-Control-Max-Age", "86400");
@@ -3137,15 +3142,33 @@ public class WebApi implements HttpServer.Handler {
     }
 
     private String addonBase(HttpServer.Request req) {
-        String host = req.header("host");
+        // Reverse tunnels usually rewrite Host and terminate TLS, so a redirect built from the
+        // raw socket is often the HTTP internal address. Nuvio then refuses the mixed-content
+        // URL (or reports a confusing HTTPS 503). Prefer the public forwarded host/scheme.
+        String host = req.header("x-forwarded-host");
+        if (host == null || host.trim().isEmpty()) host = req.header("host");
+        String proto = null;
         String fwd = req.header("x-forwarded-proto");
         if (fwd != null) {
             int comma = fwd.indexOf(',');
             if (comma > 0) fwd = fwd.substring(0, comma);
             fwd = fwd.trim();
+            if (fwd.equalsIgnoreCase("https") || fwd.equalsIgnoreCase("http")) proto = fwd.toLowerCase(Locale.ROOT);
         }
-        String proto = (fwd != null && (fwd.equals("https") || fwd.equals("http"))) ? fwd : (req.isSecure ? "https" : "http");
-        return proto + "://" + (host != null ? host : (MdnsResponder.HOST + ":" + ServerService.PORT));
+        if (proto == null) {
+            String forwarded = req.header("forwarded");
+            if (forwarded != null && forwarded.toLowerCase(Locale.ROOT).contains("proto=https")) proto = "https";
+        }
+        if (proto == null) {
+            String cf = req.header("cf-visitor");
+            if (cf != null && cf.toLowerCase(Locale.ROOT).contains("\"scheme\":\"https\"")) proto = "https";
+        }
+        if (proto == null) {
+            String ssl = req.header("x-forwarded-ssl");
+            if (ssl != null && ssl.equalsIgnoreCase("on")) proto = "https";
+        }
+        if (proto == null) proto = req.isSecure ? "https" : "http";
+        return proto + "://" + (host != null && !host.trim().isEmpty() ? host : (MdnsResponder.HOST + ":" + ServerService.PORT));
     }
 
     private String addonScraperUrl() {
@@ -3639,6 +3662,15 @@ public class WebApi implements HttpServer.Handler {
         String rel = files.get(idx).optString("path", "");
         String path = files.get(idx).optString("fullPath", "");
         if (path.isEmpty()) path = new File(t.dest, rel).getAbsolutePath();
+        // The player will request /api/live or /api/file immediately. If libtorrent has not
+        // created the file yet those endpoints answer 503, which Nuvio surfaces as
+        // "loading failed HTTPS 503". Wait for the file here, while this is still the addon
+        // redirect request, instead of letting the player race the filesystem.
+        File source = new File(path);
+        long fileDeadline = System.currentTimeMillis() + 20_000;
+        while (!source.isFile() && System.currentTimeMillis() < fileDeadline) {
+            try { Thread.sleep(200); } catch (InterruptedException e) { break; }
+        }
         boolean convert = addonNeedsConversion(rel) && LiveRemux.available(ctx);
         String url = addonBase(req) + (convert ? "/api/live?path=" : "/api/file?path=")
             + encodeQuery(path) + "&token=" + key;
