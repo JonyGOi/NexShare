@@ -45,10 +45,10 @@ jobs:
           ref: v2.1.0-39
           submodules: recursive
           path: lt4j
-      - name: Apply upstream part-file and owner-lifetime fixes
+      - name: Apply part-file race fix backported to libtorrent 2.0
         run: |
-          git -C lt4j/swig/deps/libtorrent apply "$GITHUB_WORKSPACE/.github/lt4j/partfile.patch"
-          git -C lt4j/swig/deps/libtorrent apply "$GITHUB_WORKSPACE/.github/lt4j/owner.patch"
+          git -C lt4j/swig/deps/libtorrent apply "$GITHUB_WORKSPACE/.github/lt4j/partfile-2.0.patch"
+          git -C lt4j/swig/deps/libtorrent diff --stat
           git -C lt4j/swig/deps/libtorrent log -1 --oneline
       - name: Setup Boost
         run: |

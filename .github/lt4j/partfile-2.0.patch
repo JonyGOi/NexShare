@@ -1,0 +1,94 @@
+diff --git a/include/libtorrent/aux_/mmap_storage.hpp b/include/libtorrent/aux_/mmap_storage.hpp
+index f0bc596..3357910 100644
+--- a/include/libtorrent/aux_/mmap_storage.hpp
++++ b/include/libtorrent/aux_/mmap_storage.hpp
+@@ -171,7 +171,10 @@ namespace libtorrent::aux {
+ 		// to make all storage instances share the pool
+ 		aux::file_view_pool& m_pool;
+ 
+-		// used for skipped files
++		// used for skipped files. tick() runs outside the job fence that
++		// serializes every other access, so creating and destroying the
++		// part file must be locked against it
++		std::mutex m_part_file_mutex;
+ 		std::unique_ptr<part_file> m_part_file;
+ 
+ 		// this is a bitfield with one bit per file. A bit being set means
+diff --git a/include/libtorrent/aux_/posix_storage.hpp b/include/libtorrent/aux_/posix_storage.hpp
+index 06513ea..90add98 100644
+--- a/include/libtorrent/aux_/posix_storage.hpp
++++ b/include/libtorrent/aux_/posix_storage.hpp
+@@ -21,6 +21,7 @@ see LICENSE file.
+ #include "libtorrent/aux_/file_pointer.hpp"
+ #include "libtorrent/aux_/posix_part_file.hpp"
+ #include <memory>
++#include <mutex>
+ #include <string>
+ 
+ namespace libtorrent {
+@@ -93,6 +94,9 @@ namespace aux {
+ 		aux::vector<bool, file_index_t> m_use_partfile;
+ 
+ 		std::string m_part_file_name;
++		// tick/flush runs outside the job fence that serializes every other
++		// access, so creating and destroying the part file must be locked.
++		std::mutex m_part_file_mutex;
+ 		std::unique_ptr<posix_part_file> m_part_file;
+ 	};
+ }
+diff --git a/src/mmap_storage.cpp b/src/mmap_storage.cpp
+index fd4d421..5a74039 100644
+--- a/src/mmap_storage.cpp
++++ b/src/mmap_storage.cpp
+@@ -121,6 +121,7 @@ error_code translate_error(std::error_code const& err, bool const write)
+ 
+ 	void mmap_storage::need_partfile()
+ 	{
++		std::lock_guard<std::mutex> l(m_part_file_mutex);
+ 		if (m_part_file) return;
+ 
+ 		m_part_file = std::make_unique<part_file>(
+@@ -486,7 +487,10 @@ error_code translate_error(std::error_code const& err, bool const write)
+ 		// if there's a part file open, make sure to destruct it to have it
+ 		// release the underlying part file. Otherwise we may not be able to
+ 		// delete it
+-		if (m_part_file) m_part_file.reset();
++		{
++			std::lock_guard<std::mutex> l(m_part_file_mutex);
++			m_part_file.reset();
++		}
+ 
+ 		std::string part_file = combine_path(
+ 			m_part_file_dir.empty() ? m_save_path : combine_path(m_save_path, m_part_file_dir)
+@@ -1020,6 +1024,7 @@ error_code translate_error(std::error_code const& err, bool const write)
+ 	bool mmap_storage::tick()
+ 	{
+ 		error_code ec;
++		std::lock_guard<std::mutex> l(m_part_file_mutex);
+ 		if (m_part_file) m_part_file->flush_metadata(ec);
+ 
+ 		return false;
+diff --git a/src/posix_storage.cpp b/src/posix_storage.cpp
+index 769de7c..1742c47 100644
+--- a/src/posix_storage.cpp
++++ b/src/posix_storage.cpp
+@@ -57,6 +57,7 @@ namespace aux {
+ 
+ 	void posix_storage::need_partfile()
+ 	{
++		std::lock_guard<std::mutex> l(m_part_file_mutex);
+ 		if (m_part_file) return;
+ 
+ 		m_part_file = std::make_unique<posix_part_file>(
+@@ -295,7 +296,10 @@ namespace aux {
+ 		// if there's a part file open, make sure to destruct it to have it
+ 		// release the underlying part file. Otherwise we may not be able to
+ 		// delete it
+-		if (m_part_file) m_part_file.reset();
++		{
++			std::lock_guard<std::mutex> l(m_part_file_mutex);
++			m_part_file.reset();
++		}
+ 		std::string part_file = combine_path(
+ 			m_part_file_dir.empty() ? m_save_path : combine_path(m_save_path, m_part_file_dir)
+ 			, m_part_file_name);
