@@ -611,7 +611,10 @@ public class WebApi implements HttpServer.Handler {
      * real-time path for MKV/AVI/TS and for files whose audio codec the browser cannot decode.
      */
     private void live(HttpServer.Request req, HttpServer.Response res) throws IOException {
-        File f = resolvePlayer(req.param("path"));
+        live(req, res, resolvePlayer(req.param("path")));
+    }
+
+    private void live(HttpServer.Request req, HttpServer.Response res, File f) throws IOException {
         DownloadManager.StreamRef stream = DownloadManager.get(ctx).locateTorrentFile(f);
         if (!f.isFile() && stream != null) {
             long until = System.currentTimeMillis() + 5000;
@@ -847,7 +850,10 @@ public class WebApi implements HttpServer.Handler {
     }
 
     private void file(HttpServer.Request req, HttpServer.Response res) throws IOException {
-        File f = resolvePlayer(req.param("path"));
+        file(req, res, resolvePlayer(req.param("path")));
+    }
+
+    private void file(HttpServer.Request req, HttpServer.Response res, File f) throws IOException {
         // A torrent file may not have been created on disk yet when the player asks for it.
         // Find its torrent metadata first so the expected size is known even before the first
         // piece arrives, otherwise the browser receives a zero-length video and gives up.
@@ -3349,7 +3355,7 @@ public class WebApi implements HttpServer.Handler {
                         // to their libmpv fallback even when the phone could serve MP4.
                         merged.put("notWebReady", false);
                         o.put("behaviorHints", merged);
-                        StringBuilder u = new StringBuilder(base).append("/addon/").append(key).append("/play?h=").append(hash);
+                        StringBuilder u = new StringBuilder(base).append("/addon/").append(key).append("/stream?h=").append(hash);
                         int fidx = st.optInt("fileIdx", -1);
                         if (fidx >= 0) u.append("&i=").append(fidx);
                         // Torrentio resolves peers through these trackers; without them the phone
@@ -3657,21 +3663,32 @@ public class WebApi implements HttpServer.Handler {
         String rel = files.get(idx).optString("path", "");
         String path = files.get(idx).optString("fullPath", "");
         if (path.isEmpty()) path = new File(t.dest, rel).getAbsolutePath();
-        // The player will request /api/live or /api/file immediately. If libtorrent has not
-        // created the file yet those endpoints answer 503, which Nuvio surfaces as
-        // "loading failed HTTPS 503". Wait for the file here, while this is still the addon
-        // redirect request, instead of letting the player race the filesystem.
+        // Serve the media from this same request instead of redirecting to /api/live or
+        // /api/file. Nuvio/libmpv is happier with one stable media URL, and removing the
+        // redirect also removes the race where the player reached the next endpoint before
+        // libtorrent had created the file (the old HTTPS 503 / "invalid content" error).
         File source = new File(path);
         long fileDeadline = System.currentTimeMillis() + 15_000;
         while (!source.isFile() && System.currentTimeMillis() < fileDeadline) {
             try { Thread.sleep(200); } catch (InterruptedException e) { break; }
         }
+        // libtorrent creates the .part/file immediately, often before the first piece is
+        // written. Starting ffmpeg on that zero-byte file gives the player an empty 200
+        // response (Nuvio: "conteúdo inválido"). Wait for a first byte as well.
+        DownloadManager.StreamRef earlyStream = dm.locateTorrentFile(source);
+        long dataDeadline = System.currentTimeMillis() + 15_000;
+        while (source.isFile() && source.length() == 0
+                && (earlyStream == null || earlyStream.downloaded() == 0)
+                && System.currentTimeMillis() < dataDeadline) {
+            try { Thread.sleep(200); } catch (InterruptedException e) { break; }
+            earlyStream = dm.locateTorrentFile(source);
+        }
         boolean convert = addonNeedsConversion(rel) && LiveRemux.available(ctx);
-        String url = addonBase(req) + (convert ? "/api/live?path=" : "/api/file?path=")
-            + encodeQuery(path) + "&token=" + key;
-        res.header("Location", url);
-        res.header("Access-Control-Allow-Origin", "*");
-        res.begin(302, null, 0);
+        if (convert) {
+            live(req, res, source);
+        } else {
+            file(req, res, source);
+        }
     }
 
     /** Containers for which the browser/ExoPlayer needs the phone-side remux. */

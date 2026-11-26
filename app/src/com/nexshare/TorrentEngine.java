@@ -43,8 +43,8 @@ public class TorrentEngine {
         sp.activeTrackerLimit(50);
         sp.activeDhtLimit(100);
         sp.activeLsdLimit(50);
-        sp.connectionsLimit(600);
-        sp.maxPeerlistSize(1500);
+        sp.connectionsLimit(400);
+        sp.maxPeerlistSize(1200);
         sp.maxQueuedDiskBytes(32 * 1024 * 1024);
         sp.sendBufferWatermark(512 * 1024);
         sp.setEnableDht(true);
@@ -57,13 +57,12 @@ public class TorrentEngine {
         sp.setBoolean(settings_pack.bool_types.announce_to_all_tiers.swigValue(), true);
         sp.setBoolean(settings_pack.bool_types.prefer_udp_trackers.swigValue(), true);
         sp.setBoolean(settings_pack.bool_types.dht_aggressive_lookups.swigValue(), true);
-        sp.setInteger(settings_pack.int_types.peer_connect_timeout.swigValue(), 5);
-        sp.setInteger(settings_pack.int_types.request_timeout.swigValue(), 5);
-        sp.setInteger(settings_pack.int_types.piece_timeout.swigValue(), 8);
-        sp.setInteger(settings_pack.int_types.tracker_completion_timeout.swigValue(), 4);
+        // Do not shorten request/piece timeouts. On a mobile swarm that makes peers drop
+        // healthy but slow pieces, which leaves the stream file stuck at 0% and shows up as
+        // a playback error in Nuvio. Connect/tracker timeouts stay moderate.
+        sp.setInteger(settings_pack.int_types.peer_connect_timeout.swigValue(), 10);
+        sp.setInteger(settings_pack.int_types.tracker_completion_timeout.swigValue(), 5);
         sp.setInteger(settings_pack.int_types.unchoke_slots_limit.swigValue(), 20);
-        sp.setInteger(settings_pack.int_types.recv_socket_buffer_size.swigValue(), 512 * 1024);
-        sp.setInteger(settings_pack.int_types.send_socket_buffer_size.swigValue(), 512 * 1024);
         session = new SessionManager(false);
         session.start(new SessionParams(sp));
         session.startDht();
