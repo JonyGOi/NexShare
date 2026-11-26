@@ -614,7 +614,7 @@ public class WebApi implements HttpServer.Handler {
         File f = resolvePlayer(req.param("path"));
         DownloadManager.StreamRef stream = DownloadManager.get(ctx).locateTorrentFile(f);
         if (!f.isFile() && stream != null) {
-            long until = System.currentTimeMillis() + 20000;
+            long until = System.currentTimeMillis() + 5000;
             while (!f.isFile() && System.currentTimeMillis() < until) {
                 try { Thread.sleep(100); } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
@@ -856,7 +856,7 @@ public class WebApi implements HttpServer.Handler {
         // dl=1 is a plain file download and deliberately bypasses torrent streaming.
         DownloadManager.StreamRef stream = "1".equals(req.param("dl")) ? null : DownloadManager.get(ctx).locateTorrentFile(f);
         if (!f.isFile() && stream != null) {
-            long until = System.currentTimeMillis() + 20000;
+            long until = System.currentTimeMillis() + 5000;
             while (!f.isFile() && System.currentTimeMillis() < until) {
                 try { Thread.sleep(100); } catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
             }
@@ -3142,11 +3142,9 @@ public class WebApi implements HttpServer.Handler {
     }
 
     private String addonBase(HttpServer.Request req) {
-        // Reverse tunnels usually rewrite Host and terminate TLS, so a redirect built from the
-        // raw socket is often the HTTP internal address. Nuvio then refuses the mixed-content
-        // URL (or reports a confusing HTTPS 503). Prefer the public forwarded host/scheme.
-        String host = req.header("x-forwarded-host");
-        if (host == null || host.trim().isEmpty()) host = req.header("host");
+        // Keep the public Host the client used. Only normalize the scheme here: some tunnels
+        // terminate TLS and forward the request to the phone over plain HTTP.
+        String host = req.header("host");
         String proto = null;
         String fwd = req.header("x-forwarded-proto");
         if (fwd != null) {
@@ -3667,7 +3665,7 @@ public class WebApi implements HttpServer.Handler {
         // "loading failed HTTPS 503". Wait for the file here, while this is still the addon
         // redirect request, instead of letting the player race the filesystem.
         File source = new File(path);
-        long fileDeadline = System.currentTimeMillis() + 20_000;
+        long fileDeadline = System.currentTimeMillis() + 15_000;
         while (!source.isFile() && System.currentTimeMillis() < fileDeadline) {
             try { Thread.sleep(200); } catch (InterruptedException e) { break; }
         }
