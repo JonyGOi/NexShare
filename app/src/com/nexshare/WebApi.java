@@ -123,9 +123,15 @@ public class WebApi implements HttpServer.Handler {
         }
         if (Settings.webdavEnabled(ctx)) {
             String m = req.method;
-            if ("OPTIONS".equals(m) || "PROPFIND".equals(m) || "PROPPATCH".equals(m) ||
-                "MKCOL".equals(m) || "COPY".equals(m) || "MOVE".equals(m) ||
-                "LOCK".equals(m) || "UNLOCK".equals(m)) {
+            boolean davMethod = "OPTIONS".equals(m) || "PROPFIND".equals(m) || "PROPPATCH".equals(m) ||
+                    "MKCOL".equals(m) || "COPY".equals(m) || "MOVE".equals(m) ||
+                    "LOCK".equals(m) || "UNLOCK".equals(m) ||
+                    // Windows can mount the server root instead of /dav/. In that case
+                    // creating/renaming/deleting a file uses PUT/DELETE on the root URL.
+                    // Without these two the PROPFIND works but every write returns 404.
+                    "PUT".equals(m) || "DELETE".equals(m);
+            boolean davGet = ("GET".equals(m) || "HEAD".equals(m)) && isDavClient(req);
+            if ((davMethod || davGet) && !p.startsWith("/api/")) {
                 webDavHandler.handle(req, res);
                 return;
             }
@@ -265,6 +271,17 @@ public class WebApi implements HttpServer.Handler {
             case "/api/diag": diag(res); break;
             default: res.error(404, "not found");
         }
+    }
+
+    /** Windows/macOS WebDAV clients send these headers when browsing a mounted root. */
+    private static boolean isDavClient(HttpServer.Request req) {
+        String translate = req.header("translate");
+        if (translate != null && "f".equalsIgnoreCase(translate)) return true;
+        String ua = req.header("user-agent");
+        if (ua == null) return false;
+        String s = ua.toLowerCase(Locale.ROOT);
+        return s.contains("webdav") || s.contains("davclnt") || s.contains("mini-redir")
+                || s.contains("gvfs") || s.contains("davfs");
     }
 
     // ---------- auth ----------
@@ -2199,6 +2216,16 @@ public class WebApi implements HttpServer.Handler {
             put(o, "exitError", e.toString());
         }
         put(o, "exits", exits);
+        if (Flavor.ROOT && RootShell.available()) {
+            try {
+                String log = RootShell.main().exec(
+                        "logcat -b crash -d -t 3000; echo '--- main ---'; logcat -d -t 1500 --pid="
+                                + android.os.Process.myPid(), 10000);
+                put(o, "rootLog", log.length() > 40_000 ? log.substring(log.length() - 40_000) : log);
+            } catch (Throwable e) {
+                put(o, "rootLogError", e.toString());
+            }
+        }
         res.json(200, o.toString());
     }
 

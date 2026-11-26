@@ -657,13 +657,30 @@ public class WebDavHandler implements HttpServer.Handler {
         }
 
         if (target.exists()) target.delete();
-        if (!tmp.renameTo(target)) {
+        boolean moved = tmp.renameTo(target);
+        if (!moved && copyFile(tmp, target)) {
+            tmp.delete();
+            moved = true;
+        }
+        if (!moved) {
             tmp.delete();
             res.begin(500, null, 0);
             return;
         }
 
         res.begin(existed ? 204 : 201, null, 0);
+    }
+
+    private static boolean copyFile(File src, File dst) {
+        try (InputStream in = new FileInputStream(src);
+             OutputStream out = new FileOutputStream(dst)) {
+            byte[] buf = new byte[65536];
+            int n;
+            while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+            return true;
+        } catch (IOException e) {
+            return false;
+        }
     }
 
     private void handleDelete(HttpServer.Request req, HttpServer.Response res) throws IOException {

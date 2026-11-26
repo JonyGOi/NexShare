@@ -298,6 +298,13 @@ public class HttpServer {
                     if (c > 0) req.headers.put(h.substring(0, c).trim().toLowerCase(Locale.ROOT), h.substring(c + 1).trim());
                 }
                 if (h == null) break;
+                // WebDAV clients (Windows MiniRedir, davfs) may wait for this before
+                // sending a PUT body. Without it the upload stalls and Explorer reports
+                // that the file could not be found.
+                if ("100-continue".equalsIgnoreCase(req.header("expect"))) {
+                    out.write("HTTP/1.1 100 Continue\r\n\r\n".getBytes(StandardCharsets.US_ASCII));
+                    out.flush();
+                }
                 long cl = 0;
                 try {
                     String v = req.header("content-length");
