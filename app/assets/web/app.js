@@ -1252,7 +1252,7 @@ function ResourceMonitor(body) {
   };
 }
 
-const updateState = { info: null, checking: false, installing: false, progress: 0, statusMsg: '', pollTimer: null, autoUpdate: true, activeTransfers: 0, busy: false };
+const updateState = { info: null, checking: false, installing: false, progress: 0, statusMsg: '', error: '', pollTimer: null, autoUpdate: true, activeTransfers: 0, busy: false };
 
 function ControlPanel(body) {
   const pane = el('div', { class: 'pane' });
@@ -1346,11 +1346,14 @@ function ControlPanel(body) {
             disabled: updateState.checking || updateState.installing,
             onclick: async () => {
               updateState.checking = true;
+              updateState.error = '';
               render();
               try {
                 updateState.info = await api('update/check');
               } catch (err) {
-                toast('Failed to check for updates: ' + (err.message || err));
+                updateState.info = null;
+                updateState.error = 'Não foi possível consultar o GitHub: ' + (err.message || err);
+                toast(updateState.error);
               } finally {
                 updateState.checking = false;
                 render();
@@ -1377,6 +1380,9 @@ function ControlPanel(body) {
         updateState.activeTransfers > 0
           ? el('div', { style: { fontSize: '12px', color: '#d97706', marginBottom: '8px' }, text: `⏳ Active file transfers: ${updateState.activeTransfers} (updates will pause until transfers finish)` })
           : el('div', { style: { fontSize: '12px', color: '#64748b', marginBottom: '8px' }, text: '✓ Transfer guard: Idle (safe to update)' }),
+        updateState.error
+          ? el('div', { style: { background: '#fef2f2', color: '#b91c1c', padding: '8px 10px', borderRadius: '4px', fontSize: '12px', marginBottom: '8px', border: '1px solid #fecaca' }, text: updateState.error })
+          : null,
         updateState.statusMsg && (updateState.statusMsg.includes('Waiting') || updateState.statusMsg.includes('transfer'))
           ? el('div', { style: { background: '#fef3c7', color: '#92400e', padding: '8px 10px', borderRadius: '4px', fontSize: '12px', marginBottom: '8px', border: '1px solid #fde68a' }, text: updateState.statusMsg })
           : null,

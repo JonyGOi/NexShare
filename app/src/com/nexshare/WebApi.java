@@ -2171,39 +2171,36 @@ public class WebApi implements HttpServer.Handler {
     }
 
     private void checkUpdate(HttpServer.Response res) throws IOException {
-        new Thread(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    // Use GitHub release pages instead of api.github.com: the
-                    // unauthenticated API is limited to 60 requests/hour and returns
-                    // 403 when that quota is exhausted.
-                    GitHubRelease.Release rel = GitHubRelease.latest();
-                    String latestVer = rel.version;
-                    String currentVer = Flavor.VERSION;
-                    boolean hasUpdate = AutoUpdater.isNewerVersion(latestVer, currentVer)
-                        && rel.downloadUrl != null && !rel.downloadUrl.isEmpty();
+        try {
+            // This must stay synchronous. The HTTP server writes the response after
+            // handle() returns; doing the network lookup on a detached thread let the
+            // server send its own 404/close first, and the browser reported
+            // "Failed to fetch" instead of showing the update result.
+            // Use GitHub release pages instead of api.github.com: the
+            // unauthenticated API is limited to 60 requests/hour and returns
+            // 403 when that quota is exhausted.
+            GitHubRelease.Release rel = GitHubRelease.latest();
+            String latestVer = rel.version;
+            String currentVer = Flavor.VERSION;
+            boolean hasUpdate = AutoUpdater.isNewerVersion(latestVer, currentVer)
+                && rel.downloadUrl != null && !rel.downloadUrl.isEmpty();
 
-                    JSONObject out = new JSONObject();
-                    put(out, "ok", true);
-                    put(out, "currentVersion", currentVer);
-                    put(out, "latestVersion", latestVer);
-                    put(out, "hasUpdate", hasUpdate);
-                    put(out, "title", rel.title);
-                    put(out, "notes", rel.notes);
-                    put(out, "releaseUrl", rel.pageUrl);
-                    put(out, "downloadUrl", rel.downloadUrl);
-                    put(out, "assetName", rel.assetName);
-                    put(out, "size", rel.size);
-                    put(out, "flavor", Flavor.ROOT ? "root" : "normal");
-                    res.json(200, out.toString());
-                } catch (Exception e) {
-                    try {
-                        res.error(500, "Failed to check update: " + e.getMessage());
-                    } catch (Exception ignored) { }
-                }
-            }
-        }, "update-check").start();
+            JSONObject out = new JSONObject();
+            put(out, "ok", true);
+            put(out, "currentVersion", currentVer);
+            put(out, "latestVersion", latestVer);
+            put(out, "hasUpdate", hasUpdate);
+            put(out, "title", rel.title);
+            put(out, "notes", rel.notes);
+            put(out, "releaseUrl", rel.pageUrl);
+            put(out, "downloadUrl", rel.downloadUrl);
+            put(out, "assetName", rel.assetName);
+            put(out, "size", rel.size);
+            put(out, "flavor", Flavor.ROOT ? "root" : "normal");
+            res.json(200, out.toString());
+        } catch (Exception e) {
+            res.error(500, "Failed to check update: " + e.getMessage());
+        }
     }
 
     public static class UpdateTask {

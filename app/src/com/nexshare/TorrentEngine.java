@@ -16,6 +16,7 @@ import org.libtorrent4j.TorrentHandle;
 import org.libtorrent4j.TorrentInfo;
 import org.libtorrent4j.TorrentStatus;
 import org.libtorrent4j.swig.file_progress_flags_t;
+import org.libtorrent4j.swig.settings_pack;
 import org.libtorrent4j.swig.torrent_flags_t;
 
 import java.io.File;
@@ -34,9 +35,35 @@ public class TorrentEngine {
         torrentDir = new File(ctx.getFilesDir(), "torrents");
         torrentDir.mkdirs();
         SettingsPack sp = new SettingsPack();
-        sp.activeDownloads(4);
+        // Phones usually have one Wi-Fi/5G link, not a desktop swarm. These values keep the
+        // engine responsive while giving a single stream enough peers to fill that link.
+        sp.activeDownloads(6);
         sp.activeSeeds(4);
+        sp.activeLimit(16);
+        sp.activeTrackerLimit(50);
+        sp.activeDhtLimit(100);
+        sp.activeLsdLimit(50);
+        sp.connectionsLimit(600);
+        sp.maxPeerlistSize(1500);
+        sp.maxQueuedDiskBytes(32 * 1024 * 1024);
+        sp.sendBufferWatermark(512 * 1024);
         sp.setEnableDht(true);
+        sp.setEnableLsd(true);
+        sp.setBoolean(settings_pack.bool_types.enable_upnp.swigValue(), true);
+        sp.setBoolean(settings_pack.bool_types.enable_natpmp.swigValue(), true);
+        sp.setBoolean(settings_pack.bool_types.enable_outgoing_utp.swigValue(), true);
+        sp.setBoolean(settings_pack.bool_types.enable_incoming_utp.swigValue(), true);
+        sp.setBoolean(settings_pack.bool_types.announce_to_all_trackers.swigValue(), true);
+        sp.setBoolean(settings_pack.bool_types.announce_to_all_tiers.swigValue(), true);
+        sp.setBoolean(settings_pack.bool_types.prefer_udp_trackers.swigValue(), true);
+        sp.setBoolean(settings_pack.bool_types.dht_aggressive_lookups.swigValue(), true);
+        sp.setInteger(settings_pack.int_types.peer_connect_timeout.swigValue(), 5);
+        sp.setInteger(settings_pack.int_types.request_timeout.swigValue(), 5);
+        sp.setInteger(settings_pack.int_types.piece_timeout.swigValue(), 8);
+        sp.setInteger(settings_pack.int_types.tracker_completion_timeout.swigValue(), 4);
+        sp.setInteger(settings_pack.int_types.unchoke_slots_limit.swigValue(), 20);
+        sp.setInteger(settings_pack.int_types.recv_socket_buffer_size.swigValue(), 512 * 1024);
+        sp.setInteger(settings_pack.int_types.send_socket_buffer_size.swigValue(), 512 * 1024);
         session = new SessionManager(false);
         session.start(new SessionParams(sp));
         session.startDht();

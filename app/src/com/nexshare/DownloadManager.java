@@ -26,7 +26,7 @@ import java.util.UUID;
 /** Download Station: HTTP(S) downloads with pause/resume, plus BitTorrent via TorrentEngine. */
 public class DownloadManager {
 
-    public static final int MAX_ACTIVE = 3;
+    public static final int MAX_ACTIVE = 4;
 
     public static class Task {
         public String id, type, url, name, dest, status, error, hash;
@@ -537,6 +537,9 @@ public class DownloadManager {
             c.setConnectTimeout(20000);
             c.setReadTimeout(30000);
             c.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android) NexShare/1.1");
+            // Direct/debrid links must arrive byte-for-byte: a compressed transfer breaks
+            // Content-Length accounting and range resume.
+            c.setRequestProperty("Accept-Encoding", "identity");
             if (have > 0) c.setRequestProperty("Range", "bytes=" + have + "-");
             int code = c.getResponseCode();
             if (code >= 300 && code < 400 && c.getHeaderField("Location") != null && redirects < 10) {
