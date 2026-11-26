@@ -2009,19 +2009,26 @@ function showFilePickerDialog(task, files, defaultDest, onConfirm, pcMode) {
   const st = {
     files: files,
     checked: new Set(files.filter(f => f.selected !== 0).map(f => f.id)),
+    expanded: new Set(),
     dirty: false,
     dest: defaultDest
   };
 
-  // Build folder tree
-  const root = { name: '', dirs: new Map(), files: [] };
+  // Build folder tree. Each folder keeps its path so it can be expanded/collapsed
+  // without rebuilding the tree or losing the check marks.
+  const root = { name: '', path: '', dirs: new Map(), files: [] };
   const byId = new Map(files.map(f => [f.id, f]));
   for (const f of files) {
     const parts = String(f.path || f.name || '').split('/').filter(Boolean);
     parts.pop();
     let node = root;
     for (const part of parts) {
-      if (!node.dirs.has(part)) node.dirs.set(part, { name: part, dirs: new Map(), files: [] });
+      if (!node.dirs.has(part)) node.dirs.set(part, {
+        name: part,
+        path: (node.path ? node.path + '/' : '') + part,
+        dirs: new Map(),
+        files: []
+      });
       node = node.dirs.get(part);
     }
     node.files.push(f);
@@ -2058,7 +2065,13 @@ function showFilePickerDialog(task, files, defaultDest, onConfirm, pcMode) {
     redrawTree();
   }
 
-  const treeBox = el('div', { style: { display: 'flex', flexDirection: 'column', gap: '2px', maxHeight: '400px', overflow: 'auto' } });
+  const treeBox = el('div', { style: { display: 'flex', flexDirection: 'column', gap: '3px', maxHeight: '400px', overflowY: 'auto', overflowX: 'hidden' } });
+
+  // Small packs open their first level automatically; big season packs stay collapsed
+  // so the picker remains fast and readable.
+  if (files.length <= 50) {
+    for (const d of root.dirs.values()) st.expanded.add(d.path);
+  }
 
   function fileRow(f, depth) {
     const on = st.checked.has(f.id);
@@ -2066,25 +2079,26 @@ function showFilePickerDialog(task, files, defaultDest, onConfirm, pcMode) {
     const isVideo = isVideoName(f.name);
     const cb = el('input', {
       type: 'checkbox',
-      style: { flex: 'none', marginRight: '8px' },
       onchange: e => {
         if (e.target.checked) st.checked.add(f.id); else st.checked.delete(f.id);
         st.dirty = true;
-        refreshCount();
+        redrawTree();
       }
     });
     cb.checked = on;
     return el('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', padding: '7px 8px', paddingLeft: (8 + depth * 18) + 'px', borderRadius: '6px', background: on ? '#eef4ff' : '#f8fafc', border: '1px solid #e2e8f0' } },
       cb,
       el('div', { style: { minWidth: 0, flex: 1 } },
-        el('div', { style: { fontSize: '13px', fontWeight: on ? '600' : '400', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: f.path || f.name, text: f.name }),
+        el('div', { style: { display: 'flex', alignItems: 'baseline', gap: '10px' } },
+          el('div', { style: { minWidth: 0, flex: 1, fontSize: '13px', fontWeight: on ? '600' : '400', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: f.path || f.name, text: f.name }),
+          el('span', { style: { flex: 'none', fontSize: '12px', fontWeight: '600', color: '#475569' }, text: fmtSize(f.size) })),
         el('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', marginTop: '3px' } },
           el('div', { class: 'bar', style: { flex: 1, height: '4px', maxWidth: '220px' } }, el('i', { style: { width: pct.toFixed(1) + '%' } })),
-          el('span', { style: { fontSize: '11px', color: 'var(--text-3)' }, text: `${pct.toFixed(0)}% de ${fmtSize(f.size)}` }))),
+          el('span', { style: { fontSize: '11px', color: 'var(--text-3)' }, text: `${pct.toFixed(0)}% baixado` }))),
       el('div', { style: { display: 'flex', gap: '6px', flex: 'none', flexWrap: 'wrap' } },
         isVideo ? el('button', {
           class: 'btn', style: { padding: '3px 9px', fontSize: '12px' },
-          onclick: () => { if (!st.checked.has(f.id)) { st.checked.add(f.id); st.dirty = true; refreshCount(); } previewFile(f); }
+          onclick: () => { if (!st.checked.has(f.id)) { st.checked.add(f.id); st.dirty = true; redrawTree(); } previewFile(f); }
         }, '▶ Preview') : null));
   }
 
@@ -2092,19 +2106,31 @@ function showFilePickerDialog(task, files, defaultDest, onConfirm, pcMode) {
     const ids = idsUnder(node);
     const on = ids.filter(id => st.checked.has(id)).length;
     const all = on === ids.length && ids.length > 0;
-    const cb = el('input', { type: 'checkbox', style: { flex: 'none', marginRight: '8px' }, onchange: e => toggleSubtree(node, e.target.checked) });
+    const open = st.expanded.has(node.path);
+    const cb = el('input', { type: 'checkbox', onchange: e => toggleSubtree(node, e.target.checked) });
     cb.checked = all;
     cb.indeterminate = !all && on > 0;
-    return el('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', padding: '7px 8px', paddingLeft: (8 + depth * 18) + 'px', borderRadius: '6px', background: '#f1f5f9', border: '1px solid #e2e8f0' } },
+    const toggle = () => {
+      if (open) st.expanded.delete(node.path); else st.expanded.add(node.path);
+      redrawTree();
+    };
+    return el('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', padding: '7px 8px', paddingLeft: (8 + depth * 18) + 'px', borderRadius: '6px', background: on > 0 ? '#eef4ff' : '#f1f5f9', border: '1px solid #e2e8f0' } },
+      el('button', {
+        type: 'button', title: open ? 'Recolher pasta' : 'Abrir pasta',
+        style: { flex: 'none', width: '20px', height: '20px', padding: '0', border: '0', borderRadius: '4px', background: 'transparent', color: '#475569', fontSize: '13px', cursor: 'pointer' },
+        onclick: e => { e.stopPropagation(); toggle(); }
+      }, open ? '▾' : '▸'),
       cb,
-      el('div', { style: { minWidth: 0, flex: 1, fontSize: '13px', fontWeight: '600', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, text: '📁 ' + node.name }),
+      el('div', { style: { minWidth: 0, flex: 1, display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '13px', fontWeight: '600', overflow: 'hidden', whiteSpace: 'nowrap' }, title: 'Abrir/recolher ' + node.name, onclick: toggle },
+        el('span', { text: '📁' }),
+        el('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis' }, text: node.name })),
       el('span', { class: 'dim', style: { fontSize: '11px', flex: 'none' }, text: `${ids.length} arq. · ${fmtSize(sizeUnder(node))}` }));
   }
 
   function renderNode(node, depth, out) {
     for (const d of node.dirs.values()) {
       out.push(folderRow(d, depth));
-      renderNode(d, depth + 1, out);
+      if (st.expanded.has(d.path)) renderNode(d, depth + 1, out);
     }
     for (const f of node.files) out.push(fileRow(f, depth));
   }
