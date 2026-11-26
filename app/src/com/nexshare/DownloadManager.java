@@ -125,17 +125,14 @@ public class DownloadManager {
     }
 
     /**
-     * Isolated folder for Torrent Player sessions. It lives in the app-specific external
-     * folder so /api/file can stream from it, but it is never shown as a download destination
-     * and is wiped when the player stops, the window closes or the app restarts.
+     * Isolated folder for Torrent Player sessions. It must live in internal app storage:
+     * Android 14 MediaProvider aborts with "active_nodes_.find(node) != active_nodes_.end()"
+     * when a native FD opens a fresh file under /storage/emulated/0/Android/data. That kills
+     * the MediaProvider process and the app is torn down while ffmpeg is reading the file.
+     * Internal /data/user/0 paths bypass FUSE entirely. The HTTP server can still stream them.
      */
     public File playerDir() throws IOException {
-        File base = ctx.getExternalFilesDir(null);
-        if (base == null) {
-            base = new File(Environment.getExternalStorageDirectory(),
-                "Android/data/" + ctx.getPackageName() + "/files");
-        }
-        File dir = new File(base, "torrentplayer");
+        File dir = new File(ctx.getFilesDir(), "torrentplayer");
         if (!dir.isDirectory() && !dir.mkdirs()) throw new IOException("cannot create player folder");
         return dir;
     }
@@ -149,9 +146,10 @@ public class DownloadManager {
 
     private void cleanupPlayerFiles() {
         try {
-            File base = ctx.getExternalFilesDir(null);
-            if (base != null) deleteTree(new File(base, "torrentplayer"));
+            deleteTree(new File(ctx.getFilesDir(), "torrentplayer"));
         } catch (Throwable ignored) { }
+        // Do NOT touch the old external torrentplayer folder here. Opening/deleting files below
+        // /storage/emulated/0/Android/data is what trips the Android 14 MediaProvider bug.
     }
 
     /** Deleting a multi-GB cache must never block /api/dl/list or the player UI. */
