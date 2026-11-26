@@ -1,0 +1,134 @@
+From 9d26837b821c23d030cb747185acb77800161041 Mon Sep 17 00:00:00 2001
+From: Arvid Norberg <arvid@libtorrent.org>
+Date: Wed, 14 Oct 2026 07:45:37 +0200
+Subject: [PATCH] torrent objects should not be held alive by disk I/O threads.
+ only the torrent_info is needed
+
+---
+ include/libtorrent/aux_/mmap_storage.hpp  | 12 ++++--------
+ include/libtorrent/aux_/pread_storage.hpp | 12 ++++--------
+ include/libtorrent/disk_interface.hpp     | 11 ++++++-----
+ src/torrent.cpp                           | 19 ++++++++++---------
+ 4 files changed, 24 insertions(+), 30 deletions(-)
+
+diff --git a/include/libtorrent/aux_/mmap_storage.hpp b/include/libtorrent/aux_/mmap_storage.hpp
+index 99d76ad29a7..ff392bdc981 100644
+--- a/include/libtorrent/aux_/mmap_storage.hpp
++++ b/include/libtorrent/aux_/mmap_storage.hpp
+@@ -112,7 +112,7 @@ namespace libtorrent::aux {
+ 			tick();
+ 		}
+ 
+-		void set_owner(std::shared_ptr<void> const& tor) { m_torrent = tor; }
++		void set_owner(std::shared_ptr<void> const& owner) { m_owner = owner; }
+ 
+ 		storage_index_t storage_index() const { return m_storage_index; }
+ 		void set_storage_index(storage_index_t st) { m_storage_index = st; }
+@@ -138,13 +138,9 @@ namespace libtorrent::aux {
+ 
+ 		file_storage const& m_files;
+ 
+-		// the reason for this to be a void pointer
+-		// is to avoid creating a dependency on the
+-		// torrent. This shared_ptr is here only
+-		// to keep the torrent object alive until
+-		// the storage destructs. This is because
+-		// the file_storage object is owned by the torrent.
+-		std::shared_ptr<void> m_torrent;
++		// keeps whatever owns m_files alive until the storage destructs. It's
++		// opaque to avoid a dependency on the torrent
++		std::shared_ptr<void> m_owner;
+ 
+ 		storage_index_t m_storage_index{0};
+ 
+diff --git a/include/libtorrent/aux_/pread_storage.hpp b/include/libtorrent/aux_/pread_storage.hpp
+index 27ec6681f5b..a3cc472d95b 100644
+--- a/include/libtorrent/aux_/pread_storage.hpp
++++ b/include/libtorrent/aux_/pread_storage.hpp
+@@ -103,7 +103,7 @@ namespace libtorrent::aux {
+ 			tick();
+ 		}
+ 
+-		void set_owner(std::shared_ptr<void> const& tor) { m_torrent = tor; }
++		void set_owner(std::shared_ptr<void> const& owner) { m_owner = owner; }
+ 
+ 		storage_index_t storage_index() const { return m_storage_index; }
+ 		void set_storage_index(storage_index_t st) { m_storage_index = st; }
+@@ -136,13 +136,9 @@ namespace libtorrent::aux {
+ 		bool m_need_tick = false;
+ 		file_storage const& m_files;
+ 
+-		// the reason for this to be a void pointer
+-		// is to avoid creating a dependency on the
+-		// torrent. This shared_ptr is here only
+-		// to keep the torrent object alive until
+-		// the storage destructs. This is because
+-		// the file_storage object is owned by the torrent.
+-		std::shared_ptr<void> m_torrent;
++		// keeps whatever owns m_files alive until the storage destructs. It's
++		// opaque to avoid a dependency on the torrent
++		std::shared_ptr<void> m_owner;
+ 
+ 		storage_index_t m_storage_index{0};
+ 
+diff --git a/include/libtorrent/disk_interface.hpp b/include/libtorrent/disk_interface.hpp
+index fc7286f8d7f..c6d4b5a52c5 100644
+--- a/include/libtorrent/disk_interface.hpp
++++ b/include/libtorrent/disk_interface.hpp
+@@ -186,13 +186,14 @@ namespace file_open_mode {
+ 		// it should be flushed to disk
+ 		static constexpr disk_job_flags_t flush_piece = 7_bit;
+ 
+-		// this is called when a new torrent is added. The shared_ptr can be
+-		// used to hold the internal torrent object alive as long as there are
+-		// outstanding disk operations on the storage.
++		// this is called when a new torrent is added. The shared_ptr owns the
++		// object ``p.files`` refers into. Holding on to it keeps that
++		// reference valid as long as there are outstanding disk operations on
++		// the storage.
+ 		// The returned storage_holder is an owning reference to the underlying
+ 		// storage that was just created. It is fundamentally a storage_index_t
+-		virtual storage_holder new_torrent(storage_params const& p
+-			, std::shared_ptr<void> const& torrent) = 0;
++		virtual storage_holder new_torrent(
++			storage_params const& p, std::shared_ptr<void> const& owner) = 0;
+ 
+ 		// remove the storage with the specified index. This is not expected to
+ 		// delete any files from disk, just to clean up any resources associated
+diff --git a/src/torrent.cpp b/src/torrent.cpp
+index b5434fbff43..0a03844d559 100644
+--- a/src/torrent.cpp
++++ b/src/torrent.cpp
+@@ -800,12 +800,10 @@ aux::vector<download_priority_t, piece_index_t> file_to_piece_prio(
+ 		// the torrent must be destructed on the network thread. The peer list
+ 		// returns its entries to the session's peer allocator, which is not
+ 		// thread safe, and extensions expect their destructors to run on the
+-		// network thread, like their callbacks. The disk storage holds a
+-		// reference to the torrent and may be released from another thread,
+-		// so whoever does that has to hand the last reference over to the
+-		// network thread. At shutdown, the thread destructing the session
+-		// registers itself as the network thread first, so this holds for
+-		// torrents kept alive by the disk I/O until then as well
++		// network thread, like their callbacks. This is why the disk I/O is
++		// not handed a reference to the torrent, only to its torrent_info.
++		// At shutdown, the thread destructing the session registers itself
++		// as the network thread first
+ 		TORRENT_ASSERT(m_ses.is_single_thread());
+ 
+ 		TORRENT_ASSERT(m_peer_class == peer_class_t{0});
+@@ -1930,9 +1928,12 @@ aux::vector<download_priority_t, piece_index_t> file_to_piece_prio(
+ 			m_torrent_file->v2()
+ 		};
+ 
+-		// the shared_from_this() will create an intentional
+-		// cycle of ownership, se the hpp file for description.
+-		m_storage = m_ses.disk_thread().new_torrent(params, shared_from_this());
++		// the storage references m_torrent_file's file_storage, so the disk I/O
++		// keeps the torrent_info alive while it has jobs for the storage. It
++		// must not keep the torrent alive, that has to be destructed on the
++		// network thread
++		m_storage = m_ses.disk_thread().new_torrent(
++			params, std::const_pointer_cast<torrent_info>(m_torrent_file));
+ 	}
+ 
+ 	peer_connection* torrent::find_lowest_ranking_peer() const

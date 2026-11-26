@@ -1,0 +1,207 @@
+From 73dbf6a335091e975b7afc02df3442746622556e Mon Sep 17 00:00:00 2001
+From: Arvid Norberg <arvid@libtorrent.org>
+Date: Mon, 12 Oct 2026 01:22:25 +0200
+Subject: [PATCH] fix (rare) data race with part files
+
+---
+ ChangeLog                                 |  1 +
+ include/libtorrent/aux_/mmap_storage.hpp  |  5 +-
+ include/libtorrent/aux_/pread_storage.hpp |  5 +-
+ src/mmap_storage.cpp                      |  7 ++-
+ src/pread_storage.cpp                     |  7 ++-
+ test/test_storage.cpp                     | 64 +++++++++++++++++++++++
+ 6 files changed, 85 insertions(+), 4 deletions(-)
+
+diff --git a/ChangeLog b/ChangeLog
+index fa36a6efe5f..5fbc88ff638 100644
+--- a/ChangeLog
++++ b/ChangeLog
+@@ -1,5 +1,6 @@
+ 2.1.3 not released
+ 
++	* fix (rare) data race with part files
+ 	* mitigate DHT peer storage flooding from a single IPv6 prefix
+ 	* fix CPU issue when tracker list includes invalid entries
+ 	* fix out of bounds write in the alert_message C binding on non-positive size
+diff --git a/include/libtorrent/aux_/mmap_storage.hpp b/include/libtorrent/aux_/mmap_storage.hpp
+index eb58ca31f7e..99d76ad29a7 100644
+--- a/include/libtorrent/aux_/mmap_storage.hpp
++++ b/include/libtorrent/aux_/mmap_storage.hpp
+@@ -187,7 +187,10 @@ namespace libtorrent::aux {
+ 		// to make all storage instances share the pool
+ 		aux::file_view_pool& m_pool;
+ 
+-		// used for skipped files
++		// used for skipped files. tick() runs outside the job fence that
++		// serializes every other access, so creating and destroying the
++		// part file must be locked against it
++		std::mutex m_part_file_mutex;
+ 		std::unique_ptr<part_file> m_part_file;
+ 
+ 		// this is a bitfield with one bit per file. A bit being set means
+diff --git a/include/libtorrent/aux_/pread_storage.hpp b/include/libtorrent/aux_/pread_storage.hpp
+index 3136db878cb..27ec6681f5b 100644
+--- a/include/libtorrent/aux_/pread_storage.hpp
++++ b/include/libtorrent/aux_/pread_storage.hpp
+@@ -188,7 +188,10 @@ namespace libtorrent::aux {
+ 		// to make all storage instances share the pool
+ 		aux::file_pool& m_pool;
+ 
+-		// used for skipped files
++		// used for skipped files. tick() runs outside the job fence that
++		// serializes every other access, so creating and destroying the
++		// part file must be locked against it
++		std::mutex m_part_file_mutex;
+ 		std::unique_ptr<part_file> m_part_file;
+ 
+ 		// this is a bitfield with one bit per file. A bit being set means
+diff --git a/src/mmap_storage.cpp b/src/mmap_storage.cpp
+index f79ba477c7a..68eeb1dcc25 100644
+--- a/src/mmap_storage.cpp
++++ b/src/mmap_storage.cpp
+@@ -147,6 +147,7 @@ mmap_storage::mmap_storage(storage_params const& params, aux::file_view_pool& po
+ 
+ 	void mmap_storage::need_partfile()
+ 	{
++		std::lock_guard<std::mutex> l(m_part_file_mutex);
+ 		if (m_part_file) return;
+ 
+ 		m_part_file = std::make_unique<part_file>(
+@@ -444,7 +445,10 @@ mmap_storage::mmap_storage(storage_params const& params, aux::file_view_pool& po
+ 		// if there's a part file open, make sure to destruct it to have it
+ 		// release the underlying part file. Otherwise we may not be able to
+ 		// delete it
+-		if (m_part_file) m_part_file.reset();
++		{
++			std::lock_guard<std::mutex> l(m_part_file_mutex);
++			m_part_file.reset();
++		}
+ 
+ 		std::string part_file = combine_path(
+ 			m_part_file_dir.empty() ? m_save_path : combine_path(m_save_path, m_part_file_dir)
+@@ -977,6 +981,7 @@ mmap_storage::mmap_storage(storage_params const& params, aux::file_view_pool& po
+ 	bool mmap_storage::tick()
+ 	{
+ 		error_code ec;
++		std::lock_guard<std::mutex> l(m_part_file_mutex);
+ 		if (m_part_file) m_part_file->flush_metadata(ec);
+ 
+ 		return false;
+diff --git a/src/pread_storage.cpp b/src/pread_storage.cpp
+index b6cf4cb72ac..252f8b5dd0c 100644
+--- a/src/pread_storage.cpp
++++ b/src/pread_storage.cpp
+@@ -99,6 +99,7 @@ namespace libtorrent::aux {
+ 
+ 	void pread_storage::need_partfile()
+ 	{
++		std::lock_guard<std::mutex> l(m_part_file_mutex);
+ 		if (m_part_file) return;
+ 
+ 		m_part_file = std::make_unique<part_file>(
+@@ -344,7 +345,10 @@ namespace libtorrent::aux {
+ 		// if there's a part file open, make sure to destruct it to have it
+ 		// release the underlying part file. Otherwise we may not be able to
+ 		// delete it
+-		if (m_part_file) m_part_file.reset();
++		{
++			std::lock_guard<std::mutex> l(m_part_file_mutex);
++			m_part_file.reset();
++		}
+ 		std::string const part_file = combine_path(
+ 			m_part_file_dir.empty() ? m_save_path : combine_path(m_save_path, m_part_file_dir)
+ 			, m_part_file_name);
+@@ -803,6 +807,7 @@ namespace libtorrent::aux {
+ 	bool pread_storage::tick()
+ 	{
+ 		error_code ec;
++		std::lock_guard<std::mutex> l(m_part_file_mutex);
+ 		if (m_part_file) m_part_file->flush_metadata(ec);
+ 
+ 		return false;
+diff --git a/test/test_storage.cpp b/test/test_storage.cpp
+index 1945c08f4c7..b36ee757de8 100644
+--- a/test/test_storage.cpp
++++ b/test/test_storage.cpp
+@@ -44,10 +44,12 @@ see LICENSE file.
+ #include "libtorrent/load_torrent.hpp"
+ 
+ #include <array>
++#include <atomic>
+ #include <memory>
+ #include <functional> // for bind
+ #include <fstream>
+ #include <iostream>
++#include <thread>
+ 
+ #ifndef TORRENT_WINDOWS
+ #include <sys/stat.h>
+@@ -1038,6 +1040,68 @@ TORRENT_TEST(remove_pread_disk_io)
+ 	test_remove<pread_storage>(current_working_directory());
+ }
+ 
++// tick() runs on a disk thread outside the job fence, so it can race the jobs
++// that create and destroy the part file. Drive both sides from separate
++// threads so thread sanitizer gets to see any unsynchronized access
++template <typename StorageType>
++void test_tick_partfile_race(std::string const& test_path)
++{
++	delete_dirs(combine_path(test_path, "temp_storage"));
++
++	std::vector<char> buf;
++	typename file_pool_type<StorageType>::type fp;
++	aux::session_settings set;
++	auto info = setup_torrent_info(buf);
++
++	// a skipped file that doesn't exist on disk makes the storage use a part file
++	aux::vector<download_priority_t, file_index_t> priorities{lt::dont_download};
++	renamed_files rf;
++	storage_params p{info->layout(),
++		rf,
++		test_path,
++		{},
++		storage_mode_sparse,
++		priorities,
++		sha1_hash{},
++		info->v1(),
++		info->v2()};
++	auto s = make_storage<StorageType>(p, fp);
++	storage_error se;
++	s->initialize(set, se);
++	TEST_CHECK(!se.ec);
++
++	std::atomic<bool> done{false};
++	std::thread ticker([&] {
++		while (!done)
++			s->tick();
++	});
++
++	// set_file_priority() recreates the part file even with unchanged
++	// priorities, so each iteration is one destroy and one create
++	for (int i = 0; i < 200; ++i)
++	{
++		s->delete_files(session::delete_files, se);
++		s->set_file_priority(set, priorities, se);
++		TEST_CHECK(!se.ec);
++	}
++	done = true;
++	ticker.join();
++}
++
++#if TORRENT_HAVE_MMAP || TORRENT_HAVE_MAP_VIEW_OF_FILE
++TORRENT_TEST(tick_partfile_race_mmap)
++{
++	test_tick_partfile_race<mmap_storage>(current_working_directory());
++}
++#endif
++
++#ifndef TORRENT_WINDOWS
++TORRENT_TEST(tick_partfile_race_pread)
++{
++	test_tick_partfile_race<pread_storage>(current_working_directory());
++}
++#endif
++
+ #if TORRENT_HAS_SYMLINK
+ // builds and loads a torrent for a symlink test. Piece hashes are
+ // arbitrary: these tests never exercise piece verification, only on-disk

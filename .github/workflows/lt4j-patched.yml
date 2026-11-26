@@ -1,0 +1,126 @@
+name: Build patched libtorrent4j
+
+on:
+  push:
+    branches:
+      - tmp-lt4j-build
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  BOOST_DOT_VERSION: "1.90.0"
+  BOOST_VERSION: "1_90_0"
+  NDK_VERSION: "r29"
+  OPENSSL_VERSION: "3.5.5"
+  OPENSSL_NO_OPTS: "no-deprecated no-shared no-makedepend no-static-engine no-stdio no-posix-io no-threads no-ui-console no-zlib no-zlib-dynamic -fno-strict-aliasing -fvisibility=hidden -O3"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - abi: arm64-v8a
+            prefix: aarch64-linux-android28
+            config: android-arm64-config.jam
+            toolset: clang-arm64
+            openssl_target: linux-aarch64
+            march: -march=armv8-a+crypto
+          - abi: armeabi-v7a
+            prefix: armv7a-linux-androideabi28
+            config: android-arm-config.jam
+            toolset: clang-linux-arm
+            openssl_target: linux-armv4
+            march: -march=armv7-a -mfpu=neon
+    steps:
+      - name: Checkout NexShare build recipe
+        uses: actions/checkout@v5
+      - name: Checkout libtorrent4j 2.1.0-39 with submodules
+        uses: actions/checkout@v5
+        with:
+          repository: aldenml/libtorrent4j
+          ref: v2.1.0-39
+          submodules: recursive
+          path: lt4j
+      - name: Apply upstream part-file and owner-lifetime fixes
+        run: |
+          git -C lt4j/swig/deps/libtorrent apply "$GITHUB_WORKSPACE/.github/lt4j/partfile.patch"
+          git -C lt4j/swig/deps/libtorrent apply "$GITHUB_WORKSPACE/.github/lt4j/owner.patch"
+          git -C lt4j/swig/deps/libtorrent log -1 --oneline
+      - name: Setup Boost
+        run: |
+          cd lt4j
+          wget -nv -O boost.tar.gz "https://archives.boost.io/release/${BOOST_DOT_VERSION}/source/boost_${BOOST_VERSION}.tar.gz"
+          tar xzf boost.tar.gz
+          mv "boost_${BOOST_VERSION}" boost
+          cd boost
+          ./bootstrap.sh
+      - name: Setup Android NDK
+        run: |
+          cd lt4j
+          wget -nv -O android-ndk.zip "https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip"
+          unzip -qq android-ndk.zip
+          mv "android-ndk-${NDK_VERSION}" android-ndk
+      - name: Setup OpenSSL
+        run: |
+          cd lt4j
+          export TOOLCHAIN="$GITHUB_WORKSPACE/lt4j/android-ndk/toolchains/llvm/prebuilt/linux-x86_64"
+          export CC="${TOOLCHAIN}/bin/${{ matrix.prefix }}-clang"
+          export AR="${TOOLCHAIN}/bin/llvm-ar"
+          export LD="${TOOLCHAIN}/bin/ld"
+          export RANLIB="${TOOLCHAIN}/bin/llvm-ranlib"
+          wget -nv -O openssl.tar.gz "https://www.openssl.org/source/openssl-${OPENSSL_VERSION}.tar.gz"
+          tar xzf openssl.tar.gz
+          cd "openssl-${OPENSSL_VERSION}"
+          ./Configure ${{ matrix.openssl_target }} ${OPENSSL_NO_OPTS} ${{ matrix.march }} -fPIC --prefix="$GITHUB_WORKSPACE/lt4j/openssl"
+          make -j4
+          make install_sw
+      - name: Build libtorrent4j native library
+        run: |
+          cd lt4j/swig
+          export ANDROID_TOOLCHAIN="$GITHUB_WORKSPACE/lt4j/android-ndk/toolchains/llvm/prebuilt/linux-x86_64"
+          export BOOST_ROOT="$GITHUB_WORKSPACE/lt4j/boost"
+          export OPENSSL_ROOT="$GITHUB_WORKSPACE/lt4j/openssl"
+          export LIBTORRENT_ROOT="$GITHUB_WORKSPACE/lt4j/swig/deps/libtorrent"
+          export CXX="${ANDROID_TOOLCHAIN}/bin/${{ matrix.prefix }}-clang++"
+          export CC="${ANDROID_TOOLCHAIN}/bin/${{ matrix.prefix }}-clang"
+          export AR="${ANDROID_TOOLCHAIN}/bin/llvm-ar"
+          export LD="${ANDROID_TOOLCHAIN}/bin/ld"
+          export RANLIB="${ANDROID_TOOLCHAIN}/bin/llvm-ranlib"
+          "${BOOST_ROOT}/b2" -j4 --user-config="config/${{ matrix.config }}" variant=release toolset=${{ matrix.toolset }} target-os=android location=bin/release/android/${{ matrix.abi }}
+      - name: Collect shared library
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          cp "lt4j/swig/bin/release/android/${{ matrix.abi }}/libtorrent4j.so" "$GITHUB_WORKSPACE/out/libtorrent4j-${{ matrix.abi }}.so"
+          ls -lh "$GITHUB_WORKSPACE/out"
+      - name: Upload shared library artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lt4j-${{ matrix.abi }}
+          path: out/*.so
+          retention-days: 5
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download built libraries
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: Prepare release files
+        run: |
+          mkdir -p out
+          find dist -name "*.so" -exec cp {} out/ \;
+          ls -lh out
+      - name: Publish temporary release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: lt4j-patched-${{ github.run_number }}
+          name: libtorrent4j 2.1.0-39 patched ${{ github.run_number }}
+          body: "Backport of upstream libtorrent fixes 73dbf6a3 (part-file data race) and 9d26837b (disk I/O owner lifetime) for NexShare Torrent Player."
+          files: out/*.so
+          prerelease: true
+          make_latest: false
