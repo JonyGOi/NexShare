@@ -456,6 +456,24 @@ public class WebApi implements HttpServer.Handler {
         throw new SecurityException("outside storage");
     }
 
+    /**
+     * Player sessions now live in internal storage, outside the public roots accepted by
+     * resolve(). Allow exactly that subtree (never the rest of /data) so /api/file and the
+     * remux fallback can still open the temporary file the player is downloading.
+     */
+    private File resolvePlayer(String path) throws IOException {
+        try {
+            return resolve(path);
+        } catch (SecurityException e) {
+            if (path == null || path.isEmpty()) throw e;
+            File f = new File(path).getCanonicalFile();
+            String dir = DownloadManager.get(ctx).playerDir().getCanonicalPath();
+            String fp = f.getPath();
+            if (fp.equals(dir) || fp.startsWith(dir + "/")) return f;
+            throw e;
+        }
+    }
+
     private boolean isRoot(File f) throws IOException {
         for (File r : rootDirs()) if (r.getCanonicalPath().equals(f.getPath())) return true;
         return false;
@@ -828,7 +846,7 @@ public class WebApi implements HttpServer.Handler {
     }
 
     private void file(HttpServer.Request req, HttpServer.Response res) throws IOException {
-        File f = resolve(req.param("path"));
+        File f = resolvePlayer(req.param("path"));
         // A torrent file may not have been created on disk yet when the player asks for it.
         // Find its torrent metadata first so the expected size is known even before the first
         // piece arrives, otherwise the browser receives a zero-length video and gives up.
@@ -1662,7 +1680,7 @@ public class WebApi implements HttpServer.Handler {
         }
         File src;
         try {
-            src = resolve(body.optString("path", ""));
+            src = resolvePlayer(body.optString("path", ""));
         } catch (SecurityException e) {
             res.error(403, "fora do armazenamento");
             return;
