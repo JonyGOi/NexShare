@@ -42,6 +42,18 @@ public class TorrentEngine {
         session.startDht();
     }
 
+    /** Info-hash of a magnet or .torrent, without adding it to the session. */
+    String hashOf(String magnet, byte[] torrentFile) {
+        try {
+            if (magnet != null) {
+                return AddTorrentParams.parseMagnetUri(magnet).getInfoHashes().getBest().toHex();
+            }
+            return new TorrentInfo(torrentFile).infoHash().toHex();
+        } catch (Throwable e) {
+            return null;
+        }
+    }
+
     void add(DownloadManager.Task t, String magnet, byte[] torrentFile, File dir) throws IOException {
         try {
             if (magnet != null) {
@@ -304,13 +316,15 @@ public class TorrentEngine {
      */
     public void prioritizeFile(DownloadManager.Task t, int fileIndex, boolean confirm) {
         if (t == null) return;
+        int oldPriority = t.priorityFile;
+        boolean oldAwaiting = t.awaitingSelection;
+        int[] oldSelection = t.selected == null ? null : t.selected.clone();
         t.priorityFile = Math.max(0, fileIndex);
         if (confirm) {
             // A play/PC action downloads this file, not a whole season pack. If the user had
             // selected everything, narrow to the file being watched/sent.
             if (t.selected == null || t.awaitingSelection) t.selected = new int[]{t.priorityFile};
             t.awaitingSelection = false;
-            t.selectionApplied = false;
         }
         if (t.selected != null && !contains(t.selected, t.priorityFile)) {
             // Playing a file the user did not select: make sure it downloads too.
@@ -318,8 +332,15 @@ public class TorrentEngine {
             grown[grown.length - 1] = t.priorityFile;
             java.util.Arrays.sort(grown);
             t.selected = grown;
-            t.selectionApplied = false;
         }
+        // The Torrent Player calls debrid/prioritize and then live/start for the same file.
+        // Reapplying identical priorities destroys and recreates the native part file while
+        // its disk thread is ticking; that race aborts the process. Only touch the native
+        // handle when the requested selection really changed.
+        boolean changed = oldPriority != t.priorityFile || oldAwaiting != t.awaitingSelection
+            || !sameSelection(oldSelection, t.selected);
+        if (!changed && t.prioApplied && t.selectionApplied) return;
+        t.selectionApplied = false;
         t.prioApplied = false;
         applyPriority(t);
     }
@@ -330,6 +351,8 @@ public class TorrentEngine {
      */
     public void setSelection(DownloadManager.Task t, int[] indices) {
         if (t == null) return;
+        int[] oldSelection = t.selected == null ? null : t.selected.clone();
+        boolean oldAwaiting = t.awaitingSelection;
         if (indices == null) {
             t.selected = null;
         } else {
@@ -338,6 +361,9 @@ public class TorrentEngine {
             t.selected = copy;
         }
         t.awaitingSelection = false;
+        if (!oldAwaiting && sameSelection(oldSelection, t.selected) && t.prioApplied && t.selectionApplied) {
+            return;
+        }
         t.selectionApplied = false;
         t.prioApplied = false;
         applyPriority(t);
@@ -353,6 +379,13 @@ public class TorrentEngine {
     private static boolean contains(int[] arr, int value) {
         for (int i : arr) if (i == value) return true;
         return false;
+    }
+
+    private static boolean sameSelection(int[] a, int[] b) {
+        if (a == null || b == null) return a == b;
+        if (a.length != b.length) return false;
+        for (int i = 0; i < a.length; i++) if (a[i] != b[i]) return false;
+        return true;
     }
 
     private static boolean[] wantedMask(DownloadManager.Task t, int count) {
@@ -377,14 +410,15 @@ public class TorrentEngine {
             boolean[] want = wantedMask(t, n);
 
             if (t.awaitingSelection && t.selected == null) {
-                // Picker/addon has not decided yet: keep every file ignored so metadata can be
-                // fetched without downloading a single byte of payload.
+                // Picker/addon has not decided yet. DEFAULT_DONT_DOWNLOAD already holds the
+                // payload, so do NOT call prioritizeFiles here: every extra native priority
+                // update destroys and recreates the part file, and libtorrent4j 2.1.0-39 has a
+                // data race there that aborts the whole process. One priority update when the
+                // user actually chooses the file is much safer.
                 h.unsetFlags(TorrentFlags.SEQUENTIAL_DOWNLOAD);
+                h.setFlags(TorrentFlags.DEFAULT_DONT_DOWNLOAD);
                 h.setFlags(TorrentFlags.AUTO_MANAGED);
                 h.resume();
-                Priority[] none = new Priority[n];
-                for (int i = 0; i < n; i++) none[i] = Priority.IGNORE;
-                h.prioritizeFiles(none);
                 t.prioApplied = true;
                 t.selectionApplied = true;
                 t.total = ti.totalSize();

@@ -844,7 +844,7 @@ function TorrentPlayer(body, win) {
     const r = await api('dl/add', null, { method: 'POST', body: JSON.stringify({ urls: url, paused: true, ephemeral: true }), signal });
     const id = r.ids && r.ids[0];
     if (!id) throw new Error('o servidor não retornou a tarefa');
-    return id;
+    return { id, ephemeral: !!(r.ephemeral && r.ephemeral[0]) };
   }
 
   async function addTorrentTask(f, signal) {
@@ -859,7 +859,7 @@ function TorrentPlayer(body, win) {
     if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
     const id = j.ids && j.ids[0];
     if (!id) throw new Error('o servidor não retornou a tarefa');
-    return id;
+    return { id, ephemeral: !!(j.ephemeral && j.ephemeral[0]) };
   }
 
   /** Confirms the single start form, creates the paused torrent and opens the file picker. */
@@ -880,7 +880,8 @@ function TorrentPlayer(body, win) {
       await discardCurrent(true);
       controller = new AbortController();
       timeout = setTimeout(() => controller.abort(), 45000);
-      const id = file ? await addTorrentTask(file, controller.signal) : await addMagnetTask(url, controller.signal);
+      const added = file ? await addTorrentTask(file, controller.signal) : await addMagnetTask(url, controller.signal);
+      const id = added.id;
       input.value = '';
       st.torrentFile = null;
       fileInput.value = '';
@@ -891,7 +892,9 @@ function TorrentPlayer(body, win) {
       st.startingFile = null;
       st.id = id;
       st.data = null;
-      st.ephemeral = true;
+      // A magnet already present in the normal Downloader is reused, not cloned and not
+      // deleted when this temporary player closes.
+      st.ephemeral = !!added.ephemeral;
       st.taskMisses = 0;
       st.loadError = '';
       st.showAll = false;

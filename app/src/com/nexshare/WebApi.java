@@ -1475,19 +1475,24 @@ public class WebApi implements HttpServer.Handler {
         int added = 0;
         StringBuilder errors = new StringBuilder();
         JSONArray ids = new JSONArray();
+        JSONArray ephemerals = new JSONArray();
         for (String line : urls.split("\\s*\\n\\s*")) {
             line = line.trim();
             if (line.isEmpty()) continue;
             try {
                 DownloadManager.Task t = DownloadManager.get(ctx).addUrl(line, dir, ephemeral);
-                if (hold && "torrent".equals(t.type)) {
+                boolean reuseNormal = t.reused && !t.ephemeral;
+                t.reused = false;
+                if (hold && "torrent".equals(t.type) && !reuseNormal) {
                     // Keep the torrent in metadata-only mode so the workspace can show the
-                    // file list before anything is actually downloaded.
+                    // file list before anything is actually downloaded. A torrent borrowed
+                    // from the normal Downloader must not be paused here.
                     t.awaitingSelection = true;
                     t.status = "metadata";
                     DownloadManager.get(ctx).save();
                 }
                 ids.put(t.id);
+                ephemerals.put(t.ephemeral);
                 added++;
             } catch (IOException e) {
                 errors.append(e.getMessage()).append('\n');
@@ -1497,7 +1502,7 @@ public class WebApi implements HttpServer.Handler {
             res.error(400, errors.length() > 0 ? errors.toString().trim() : "no links");
             return;
         }
-        res.json(200, "{\"added\":" + added + ",\"ids\":" + ids + "}");
+        res.json(200, "{\"added\":" + added + ",\"ids\":" + ids + ",\"ephemeral\":" + ephemerals + "}");
     }
 
     private void dlTorrent(HttpServer.Request req, HttpServer.Response res) throws IOException {
@@ -1516,7 +1521,9 @@ public class WebApi implements HttpServer.Handler {
             res.error(400, e.getMessage());
             return;
         }
-        if (isOn(req, null, "paused")) {
+        boolean reuseNormal = t.reused && !t.ephemeral;
+        t.reused = false;
+        if (isOn(req, null, "paused") && !reuseNormal) {
             // Stay metadata-only, but do NOT pause the handle: a paused magnet never
             // receives metadata and the file picker would stay empty forever.
             t.awaitingSelection = true;
@@ -1525,7 +1532,8 @@ public class WebApi implements HttpServer.Handler {
             TorrentEngine te = DownloadManager.get(ctx).torrentEngine();
             if (te != null) te.prepareMetadata(t);
         }
-        res.json(200, "{\"added\":1,\"ids\":[" + JSONObject.quote(t.id) + "]}");
+        res.json(200, "{\"added\":1,\"ids\":[" + JSONObject.quote(t.id)
+            + "],\"ephemeral\":[" + t.ephemeral + "]}");
     }
 
     /**

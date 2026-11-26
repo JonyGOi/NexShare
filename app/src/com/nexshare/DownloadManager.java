@@ -44,6 +44,8 @@ public class DownloadManager {
         public boolean fromAddon;
         /** Torrent Player session: never persisted, kept in an isolated folder and deleted on stop. */
         public boolean ephemeral;
+        /** True when this add reused an already-running task with the same info-hash. */
+        public volatile boolean reused;
         /**
          * Held in metadata-only mode until the user (or the addon) chooses the files.
          * Nothing is downloaded while this is true and selected is still null.
@@ -203,6 +205,18 @@ public class DownloadManager {
 
     public synchronized Task addTorrent(String magnet, byte[] torrentFile, File dir, boolean ephemeral) throws IOException {
         TorrentEngine te = torrents();
+        // libtorrent identifies torrents by info-hash. Adding the same magnet again before
+        // checking would create a second native handle for one hash; removing or
+        // reprioritising it later is exactly the pattern that corrupts libtorrent 2.1.0-39.
+        // Resolve the hash first and reuse the existing task without touching the session.
+        String knownHash = te.hashOf(magnet, torrentFile);
+        if (knownHash != null) {
+            Task existing = findByHash(knownHash);
+            if (existing != null) {
+                existing.reused = true;
+                return existing;
+            }
+        }
         File targetDir = ephemeral ? playerDir() : dir;
         Task t = newTask("torrent", magnet != null ? magnet : "(torrent file)", targetDir);
         if (ephemeral) {
@@ -225,6 +239,7 @@ public class DownloadManager {
                     String[] kids = dupDir.list();
                     if (kids != null && kids.length == 0) dupDir.delete();
                 }
+                other.reused = true;
                 return other;
             }
         }
