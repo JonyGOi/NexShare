@@ -194,6 +194,21 @@ function TorrentPlayer(body, win) {
     return /\.(mkv|avi|mov|ts|m2ts|mpg|mpeg|wmv|flv|vob)$/i.test((f && (f.name || f.path)) || '');
   }
 
+  function isMkv(f) {
+    return /\.mkv$/i.test((f && (f.name || f.path)) || '');
+  }
+
+  // Some Android browsers (and TV/WebView builds) can open Matroska directly.
+  // Chrome cannot, so the normal path is still the app's ffmpeg remux.
+  const nativeMkv = (() => {
+    try {
+      const probe = document.createElement('video');
+      return !!(probe.canPlayType('video/x-matroska') || probe.canPlayType('video/mkv'));
+    } catch (e) {
+      return false;
+    }
+  })();
+
   /** Same stream URL, but through the live ffmpeg endpoint. */
   function liveUrl(f) {
     const u = (f && f.streamUrl) || '';
@@ -250,6 +265,31 @@ function TorrentPlayer(body, win) {
     } finally {
       if (timeout) clearTimeout(timeout);
     }
+  }
+
+  /**
+   * The dedicated MKV path: play the fragmented MP4 that the app's ffmpeg writes
+   * directly, without an HLS playlist. It starts as soon as the first fragment is
+   * ready; if Chrome refuses it, startLive() switches to the segmented HLS path.
+   */
+  function startMkv(f) {
+    if (!f || !st.id) return;
+    endPlayback();
+    st.stage = 'player';
+    st.starting = false;
+    st.startingFile = f;
+    st.playError = '';
+    st.playing = {
+      task: st.id, index: f.id, file: f, live: true, mkv: true, src: liveUrl(f)
+    };
+    setAddStatus('Player MKV: o vídeo já começa a tocar enquanto o restante baixa.', false);
+    if (st.liveTimer) clearTimeout(st.liveTimer);
+    st.liveTimer = setTimeout(() => {
+      if (st.videoEl && st.videoEl.readyState < 2) {
+        startLive(f);
+      }
+    }, 18000);
+    renderDetail();
   }
 
   function startMp4Fallback(f, why) {
@@ -664,10 +704,12 @@ function TorrentPlayer(body, win) {
       return;
     }
     if (st.playing.live) {
-      detail.append(el('div', { class: 'tp-live-note' },
-        icon('play'), el('span', { text: st.playing.hls
-          ? 'Conversão em partes (HLS): o primeiro trecho toca enquanto o restante baixa e é convertido. Você pode avançar dentro do que já foi gerado.'
-          : 'Conversão ao vivo: o vídeo toca enquanto o restante do arquivo baixa. Arrastar a barra pode reiniciar a conversão.' })));
+      const note = st.playing.hls
+        ? 'Conversão em partes (HLS): o primeiro trecho toca enquanto o restante baixa e é convertido. Você pode avançar dentro do que já foi gerado.'
+        : (st.playing.mkv
+          ? 'Player MKV: o vídeo é remuxado para MP4 fragmentado e toca enquanto baixa. Se o navegador recusar, o modo em partes entra automaticamente.'
+          : 'Conversão ao vivo: o vídeo toca enquanto o restante do arquivo baixa. Arrastar a barra pode reiniciar a conversão.');
+      detail.append(el('div', { class: 'tp-live-note' }, icon('play'), el('span', { text: note })));
     }
     const v = el('video', { class: 'tp-video', controls: true, autoplay: true, playsinline: true });
     st.videoEl = v;
@@ -676,6 +718,7 @@ function TorrentPlayer(body, win) {
       const f = st.playing.file;
       if (st.playing.live) {
         if (st.playing.hls) startMp4Fallback(f, 'O navegador recusou o stream em partes');
+        else if (st.playing.mkv) startLive(f);
         else beginPrepare(f);
       } else if (!st.playing.remuxId) {
         startLive(f);
@@ -741,8 +784,22 @@ function TorrentPlayer(body, win) {
       await api('debrid/prioritize', null, { method: 'POST', body: JSON.stringify({ id, fileIndex: f.id, confirm: true }) });
       if (st.destroyed || st.id !== id || st.epoch !== epoch) return;
       st.playError = '';
-      // MKV/AVI/TS and AC-3 audio cannot go straight to Chrome. Try the live MP4 fragment
-      // converter first; a browser error then falls back to the full-file remux.
+      // MKV is the common case. If the browser really supports Matroska, use the
+      // original file and keep seeking free. Otherwise the app's ffmpeg turns it into
+      // fragmented MP4; HLS is the fallback, not the first step.
+      if (isMkv(f) && nativeMkv) {
+        st.starting = false;
+        st.playing = { task: id, index: f.id, file: f, src: f.streamUrl, nativeMkv: true };
+        setAddStatus('MKV nativo: o navegador está lendo o arquivo diretamente.', false);
+        renderDetail();
+        return;
+      }
+      if (isMkv(f)) {
+        startMkv(f);
+        return;
+      }
+      // AVI/TS/MOV and AC-3 audio cannot go straight to Chrome. Use the segmented
+      // converter first; a browser error then falls back to the continuous MP4.
       if (needsBrowserPrep(f)) {
         startLive(f);
         return;
