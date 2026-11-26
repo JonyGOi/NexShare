@@ -611,7 +611,7 @@ public class WebApi implements HttpServer.Handler {
      * real-time path for MKV/AVI/TS and for files whose audio codec the browser cannot decode.
      */
     private void live(HttpServer.Request req, HttpServer.Response res) throws IOException {
-        File f = resolve(req.param("path"));
+        File f = resolvePlayer(req.param("path"));
         DownloadManager.StreamRef stream = DownloadManager.get(ctx).locateTorrentFile(f);
         if (!f.isFile() && stream != null) {
             long until = System.currentTimeMillis() + 5000;
